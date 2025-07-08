@@ -41,7 +41,7 @@ done
 ```
 
 *NOTE: Several DBs need to be downloaded and installed before the workflow can be fully functional.
-Namely, the CheckM, GUNC, GTDB-tk DBs, the later being quite large.*
+Namely, the CheckM, GUNC, GTDB-tk DBs, the latter being quite large.*
 
 ## Download and install DBs:
 ```
