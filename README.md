@@ -97,8 +97,12 @@ Here is a breakdown of the variable:
 - gunc_db - the GLOBAL path of the GUNC DB.
 
 ## Running the Workflow
-Once configuration is complete. Run the workflow via snakemake
+Once configuration is complete. Run the workflow via snakemake:
 ```
 mamba activate snakemake
 snakemake -p -s Snakefile.genome_qc --use-conda --cores all
 ```
+
+## Test included in Repo
+We have included a few genomes in the test directory of this repo.  
+Just configure the workflow as above using the test dir and run the workflow.
