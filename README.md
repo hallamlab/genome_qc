@@ -2,6 +2,12 @@
 This is the quality control workflow for genomes, SAGs, MAGs, etc...
 It is a Snakemake workflow that relies on an Anaconda environment.
 
+:::note
+COMING SOON:
+- glyph visualization
+- file manifest
+:::
+
 ## Prerequistes:
 Install your preferred `conda/mamba` manager, `mamba` is suggested for it's speed.
 You will need to know where your envs are created for later steps where you save DBs in an env.
