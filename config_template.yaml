@@ -1,0 +1,10 @@
+working_dir: "/full/path/to/working/directory" # global path to WD
+fasta_dir: "fasta" # within the WD
+nthreads: "1" # <= num CPUs/threads
+logs: "logs" # within the WD
+condaenv: "genome_qc"
+filter_size: "1000" # if empty, no filter. if multiple, space delimited. e.g. "1000 2500 10000"
+completeness: "50" # >= checkm completeness
+contamination: "5" # <= checkm contamination
+qscore_min: "50" # >= derived q-score
+gunc_db: "/full/path/to/gunc_db_progenomes2.1.dmnd" # global path to GUNC database

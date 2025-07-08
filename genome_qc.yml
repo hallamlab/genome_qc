@@ -1,0 +1,35 @@
+name: genome_qc
+channels:
+  - conda-forge
+  - bioconda
+  - ursky
+  - defaults
+dependencies:
+  - barrnap=0.9
+  - bedtools=2.31.0
+  - blast=2.14.0
+  - checkm-genome=1.2.2
+  - fastani=1.32
+  - fasttree=2.1.11
+  - gtdbtk=2.4.0
+  - gunc=1.0.5
+  - hmmer=3.3.2
+  - mash=2.3
+  - matplotlib-base=3.7.2
+  - numpy=1.24.4
+  - pandas=2.0.3
+  - pip=23.2.1
+  - plotly=5.15.0
+  - pplacer=1.1.alpha19
+  - prodigal=2.6.3
+  - pysam=0.21.0
+  - python=3.8
+  - scipy=1.10.1
+  - seqkit=2.3.0
+  - tqdm=4.65.0
+  - trnascan-se=2.0.12
+  - parallel=20250622
+  - seaborn=0.13.2
+variables:
+  GTDBTK_DATA_PATH: ${HOME}/mambaforge/envs/genome_qc/share/gtdbtk-2.4.0/db
+prefix: ${HOME}/mambaforge/envs/genome_qc

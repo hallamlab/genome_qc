@@ -1,0 +1,13 @@
+.idea
+tests/test-data
+__pycache__
+build
+dist
+*.egg-info
+*.sif
+
+.snakemake
+config.yaml
+test/*
+!test/fasta/
+!test/fasta/**

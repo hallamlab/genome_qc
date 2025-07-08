@@ -1,0 +1,439 @@
+### Usage: ###
+#snakemake -p -s Snakefile.genome_qc --use-conda --cores all
+
+import os
+import glob
+import sys
+
+# read config info into this namespace
+configfile: "config.yaml"
+
+### WF inputs ###
+working_dir = config["working_dir"]
+genome_dir = config["fasta_dir"]
+nthreads = int(config["nthreads"])
+logs = config["logs"]
+filter_size = config["filter_size"]
+comp = config["completeness"]
+cont = config["contamination"]
+qsmin = config["qscore_min"]
+condaenv = config["condaenv"]
+gunc_db = config["gunc_db"]
+######################
+# Create filtered dir for genomes
+filtered_genome_dir = os.path.join(working_dir, genome_dir + "_filtered")
+# Only proceed with genomes of sufficient quality via CheckM
+subset_genome_dir = os.path.join(working_dir, genome_dir + "_subset")
+logs = os.path.join(working_dir, logs)
+check_dirs = [logs, subset_genome_dir, filtered_genome_dir]
+for d in check_dirs:
+	isExist = os.path.exists(d)
+	if not isExist:
+		os.makedirs(d)
+workflow_modules = ["checkm", "subset_genomes",
+			"seqkit_stat", "seqkit_seq",
+			"qscore", "gtdbtk", "barrnap",
+			"blast", "barblast", "dedupe",
+			"trnascan", "cp_dedupe", "gunc",
+			"merge_master"
+			]
+# Used to pre-filter by completeness and contamination
+FILTER_CMD = "NR==1; NR>1 {if ($12 >= " + comp + " && $13 <= " + cont + ") print $0}"
+DELIM = "\t"
+
+# a pseudo-rule that collects the target files
+rule all:
+	input:
+		expand(os.path.join(working_dir, logs, "{id}.log"), id=workflow_modules)
+
+rule run_seqkit_seq:
+	input:  
+		fasta_dir = os.path.join(working_dir, genome_dir)
+	output: 
+		out_log = os.path.join(working_dir, logs, "seqkit_seq.log")
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		f_size="{filter_size}"
+		if [ -z "$f_size" ];
+		then
+			for g in $(ls {working_dir}/{genome_dir}/*.{{fa,fna,fasta,fna.gz}}); do base=$(basename $g | rev | cut -d'.' -f2- | rev); echo full $base; seqkit seq -g -m 0 -o {filtered_genome_dir}/$base.full.fasta $g; done;
+		else
+			pattern=" "
+			if [[ $f_size =~ $pattern ]]
+			then
+				for size in $f_size; do for g in $(ls {working_dir}/{genome_dir}/*.{{fa,fna,fasta,fna.gz}}); do base=$(basename $g | rev | cut -d'.' -f2- | rev); echo $size $base; seqkit seq -g -m $size -o {filtered_genome_dir}/$base.$size.fasta $g; done; done;
+			else
+				for g in $(ls {working_dir}/{genome_dir}/*.{{fa,fna,fasta,fna.gz}}); do base=$(basename $g | rev | cut -d'.' -f2- | rev); echo $f_size $base; seqkit seq -g -m $f_size -o {filtered_genome_dir}/$base.$f_size.fasta $g; done;
+			fi
+		fi
+		echo "Done."  > {output.out_log}
+		find {filtered_genome_dir}/ -size 0 -print -delete
+		"""
+		
+rule run_checkm:
+	input:  
+		fasta_dir = filtered_genome_dir,
+		seq_log = os.path.join(working_dir, logs, "seqkit_seq.log")
+	output: 
+		out_log = os.path.join(working_dir, logs, "checkm.log"),
+		hpmq_table = os.path.join(working_dir, "checkm/checkm_output_HPMQ.tsv")
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		f_size="{filter_size}"
+		if [ -z "$f_size" ];
+		then
+			python ./checkm_wrapper.py --batchsize 1000 -f {working_dir}/checkm/checkm_output.full.tsv --tab_table -x full.fasta -t {threads} --pplacer_threads {threads} {input.fasta_dir} {working_dir}/checkm;
+			awk -F {DELIM:q} {FILTER_CMD:q} {working_dir}/checkm/checkm_output.full.tsv > {working_dir}/checkm/checkm_output_HPMQ.full.tsv;
+			head -n 1 {working_dir}/checkm/checkm_output_HPMQ.full.tsv > {working_dir}/checkm/checkm_output_HPMQ.tsv;
+			rm -rf {working_dir}/checkm/lineage.ms {working_dir}/checkm/bins {working_dir}/checkm/storage;
+		else
+			pattern=" "
+			if [[ $f_size =~ $pattern ]]
+			then
+				for size in $f_size; do python ./checkm_wrapper.py --batchsize 1000 -f {working_dir}/checkm/checkm_output.$size.tsv --tab_table -x $size.fasta -t {threads} --pplacer_threads {threads} {input.fasta_dir} {working_dir}/checkm; awk -F {DELIM:q} {FILTER_CMD:q} {working_dir}/checkm/checkm_output.$size.tsv > {working_dir}/checkm/checkm_output_HPMQ.$size.tsv; head -n 1 {working_dir}/checkm/checkm_output_HPMQ.$size.tsv > {working_dir}/checkm/checkm_output_HPMQ.tsv; rm -rf {working_dir}/checkm/lineage.ms {working_dir}/checkm/bins {working_dir}/checkm/storage; done;
+			else
+				python ./checkm_wrapper.py --batchsize 1000 -f {working_dir}/checkm/checkm_output.$f_size.tsv --tab_table -x $f_size.fasta -t {threads} --pplacer_threads {threads} {input.fasta_dir} {working_dir}/checkm;
+				awk -F {DELIM:q} {FILTER_CMD:q} {working_dir}/checkm/checkm_output.$f_size.tsv > {working_dir}/checkm/checkm_output_HPMQ.$f_size.tsv;
+				head -n 1 {working_dir}/checkm/checkm_output_HPMQ.$f_size.tsv > {working_dir}/checkm/checkm_output_HPMQ.tsv;
+				rm -rf {working_dir}/checkm/lineage.ms {working_dir}/checkm/bins {working_dir}/checkm/storage;
+			fi
+		fi
+		grep -h -v 'Completeness' {working_dir}/checkm/checkm_output_HPMQ.*.tsv >> {working_dir}/checkm/checkm_output_HPMQ.tsv
+		echo "Done."  > {output.out_log}
+		"""
+
+rule run_seqkit_stat:
+	input:  
+		fasta_dir = filtered_genome_dir,
+		chk_log = os.path.join(working_dir, logs, "checkm.log")
+	output: 
+		out_log = os.path.join(working_dir, logs, "seqkit_stat.log")
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		mkdir -p {working_dir}/seqkit
+		find {input.fasta_dir}/ -type f -name '*' > {working_dir}/seqkit/genome.lst
+		seqkit stat -a -T -o {working_dir}/seqkit/seqkit_stats.tsv --infile-list {working_dir}/seqkit/genome.lst
+		echo "Done."  > {output.out_log}
+		"""
+		
+rule run_qscore:
+	input:
+		checkm_log = os.path.join(working_dir, logs, "checkm.log"),
+		seqkt_log = os.path.join(working_dir, logs, "seqkit_stat.log")
+	output: 
+		out_log = os.path.join(working_dir, logs, "qscore.log"),
+		qscore_table = os.path.join(working_dir, "qscore/qscore_mqhp.tsv")
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		mkdir -p {working_dir}/qscore
+		python ./calc_qscore.py {working_dir} {comp} {cont} {qsmin}
+		echo "Done."  > {output.out_log}
+		"""
+
+rule subset_genomes:
+	input:
+		fasta_dir = filtered_genome_dir,
+		out_log = os.path.join(working_dir, logs, "qscore.log"),
+		qscore_table = os.path.join(working_dir, "qscore/qscore_mqhp.tsv")
+	output:
+		out_log = os.path.join(working_dir, logs, "subset_genomes.log")
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		mkdir -p {subset_genome_dir}
+		for g in $(tail -n +2 {input.qscore_table} | cut -f2); do cp {filtered_genome_dir}/$g.fasta {subset_genome_dir}/$g.fasta; done;
+		echo "Done."  > {output.out_log}
+		"""
+
+rule run_gtdbtk:
+	input:  
+		sub_log = os.path.join(working_dir, logs, "subset_genomes.log")
+	output: 
+		out_log = os.path.join(working_dir, logs, "gtdbtk.log")
+	params:
+		fasta_dir = subset_genome_dir
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		gtdbtk classify_wf --skip_ani_screen --genome_dir {params.fasta_dir} --out_dir {working_dir}/gtdbtk --cpus {threads} -x fasta
+		echo "Done."  > {output.out_log}
+		"""
+
+rule run_barrnap:
+	input:  
+		sub_log = os.path.join(working_dir, logs, "subset_genomes.log"),
+		gtdbtk_log = os.path.join(working_dir, logs, "gtdbtk.log")
+	output: 
+		out_log = os.path.join(working_dir, logs, "barrnap.log")
+	params: 
+		fasta_dir = subset_genome_dir,
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		mkdir -p {working_dir}/barrnap
+
+		# Bacteria step
+		if [ -f "{working_dir}/gtdbtk/classify/gtdbtk.bac120.summary.tsv" ]; then
+			for g in $(cut -f1 "{working_dir}/gtdbtk/classify/gtdbtk.bac120.summary.tsv" | grep -v 'user_genome'); do
+				echo "$g"
+				barrnap --kingdom bac \
+					--threads {threads} \
+					--outseq "{working_dir}/barrnap/${{g}}.rRNA.fasta" \
+					"{params.fasta_dir}/${{g}}.fasta" \
+					> "{working_dir}/barrnap/${{g}}.rRNA.gff"
+			done
+			echo "Bacteria Done." >> "{output.out_log}"
+		else
+			echo "No bacterial summary file found. Skipping bacteria step." >> "{output.out_log}"
+		fi
+
+		# Archaea step
+		if [ -f "{working_dir}/gtdbtk/classify/gtdbtk.ar53.summary.tsv" ]; then
+			for g in $(cut -f1 "{working_dir}/gtdbtk/classify/gtdbtk.ar53.summary.tsv" | grep -v 'user_genome'); do
+				echo "$g"
+				barrnap --kingdom arc \
+					--threads {threads} \
+					--outseq "{working_dir}/barrnap/${{g}}.rRNA.fasta" \
+					"{params.fasta_dir}/${{g}}.fasta" \
+					> "{working_dir}/barrnap/${{g}}.rRNA.gff"
+			done
+			echo "Archaea Done." >> "{output.out_log}"
+		else
+			echo "No archaeal summary file found. Skipping archaea step." >> "{output.out_log}"
+		fi
+		"""
+
+rule run_blast:
+	input:  
+		gtdbtk_log = os.path.join(working_dir, logs, "gtdbtk.log"),
+		barrnap_log = os.path.join(working_dir, logs, "barrnap.log")
+	output: 
+		out_log = os.path.join(working_dir, logs, "blast.log")
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		# BLAST rRNAs against themselves: Bacteria
+		if [ -f "{working_dir}/gtdbtk/classify/gtdbtk.bac120.summary.tsv" ]; then
+			for g in $(cut -f1 "{working_dir}/gtdbtk/classify/gtdbtk.bac120.summary.tsv" | grep -v 'user_genome'); do
+				echo "$g"
+				fasta="{working_dir}/barrnap/${{g}}*.rRNA.fasta"
+				if [ -s "$fasta" ]; then
+					makeblastdb -in "$fasta" -dbtype nucl -out "{working_dir}/barrnap/$g"
+					blastn \
+						-query "{working_dir}/barrnap/${{g}}.rRNA.fasta" \
+						-db "{working_dir}/barrnap/$g" \
+						-outfmt 6 \
+						-out "{working_dir}/barrnap/${{g}}.blastout" \
+						-max_target_seqs 10
+				else
+					echo "Skipping $g due to missing or empty FASTA file"
+				fi
+			done
+		else
+			echo "No bacterial summary file found. Skipping BLAST for bacteria."
+		fi
+
+		# BLAST rRNAs against themselves: Archaea
+		if [ -f "{working_dir}/gtdbtk/classify/gtdbtk.ar53.summary.tsv" ]; then
+			for g in $(cut -f1 "{working_dir}/gtdbtk/classify/gtdbtk.ar53.summary.tsv" | grep -v 'user_genome'); do
+				echo "$g"
+				fasta="{working_dir}/barrnap/${{g}}*.rRNA.fasta"
+				if [ -s "$fasta" ]; then
+					makeblastdb -in "$fasta" -dbtype nucl -out "{working_dir}/barrnap/$g"
+					blastn \
+						-query "{working_dir}/barrnap/${{g}}.rRNA.fasta" \
+						-db "{working_dir}/barrnap/$g" \
+						-outfmt 6 \
+						-out "{working_dir}/barrnap/${{g}}.blastout" \
+						-max_target_seqs 10
+				else
+					echo "Skipping $g due to missing or empty FASTA file"
+				fi
+			done
+		else
+			echo "No archaeal summary file found. Skipping BLAST for archaea."
+		fi
+
+		echo "Done." > "{output.out_log}"
+		"""
+
+rule compile_barblast:
+	input:  
+		barrnap_log = os.path.join(working_dir, logs, "barrnap.log"),
+		blast_log = os.path.join(working_dir, logs, "blast.log")
+	output: 
+		out_log = os.path.join(working_dir, logs, "barblast.log")
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		python ./compare_barrnap.py {working_dir}/barrnap/
+		echo "Done."  > {output.out_log}
+		"""
+
+rule run_dedupe:
+	input:
+		checkm_log = os.path.join(working_dir, logs, "barblast.log")
+	output: 
+		out_log = os.path.join(working_dir, logs, "dedupe.log"),
+		dedupe_table = os.path.join(working_dir, "dedupe/dedupe_mqhp.tsv")
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		mkdir -p {working_dir}/dedupe
+		python ./dedupe_genomes.py {working_dir} {comp} {cont} {qsmin}
+		echo "Done."  > {output.out_log}
+		"""
+
+rule run_cp_dedupe:
+	input:
+		dedupe_log = os.path.join(working_dir, logs, "dedupe.log"),
+		dedupe_table = os.path.join(working_dir, "dedupe/dedupe_mqhp.tsv")
+	output: 
+		out_log = os.path.join(working_dir, logs, "cp_dedupe.log")
+	params: 
+		fasta_dir = subset_genome_dir,
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		mkdir -p {working_dir}/dedupe/fasta
+		for g in $(cat {input.dedupe_table} | cut -f2 | grep -v 'Bin Id'); do echo $g; cp {params.fasta_dir}/$g.fasta {working_dir}/dedupe/fasta/$g.fasta; done;
+		echo "Done."  > {output.out_log}
+		"""
+
+rule run_trnscan:
+    input:
+        dedupe_log = os.path.join(working_dir, logs, "dedupe.log"),
+        dedupe_table = os.path.join(working_dir, "dedupe/dedupe_mqhp.tsv")
+    output:
+        out_log = os.path.join(working_dir, logs, "trnascan.log")
+    params:
+        fasta_dir = subset_genome_dir
+    threads:
+        nthreads
+    conda:
+        condaenv
+    shell:
+        r"""
+        mkdir -p {working_dir}/trnascan
+
+        # Bacteria
+        bac_cnt=$(grep -c 'Bacteria' {input.dedupe_table} || true)
+		echo "There are $bac_cnt Bacteria to process..." >> {output.out_log}
+		# Archaea        
+        arc_cnt=$(grep -c 'Archaea' {input.dedupe_table} || true)
+		echo "There are $arc_cnt Archaea to process..." >> {output.out_log}
+
+        # Bacteria
+        if [ "$bac_cnt" -eq 0 ]; then
+            echo "No Bacteria bins found, skipping." >> {output.out_log}
+        else
+	        bins_bact=$(grep 'Bacteria' {input.dedupe_table} \
+    	                | cut -f2 | grep -v 'Bin Id')
+            echo "$bins_bact" | parallel -j {threads} --linebuffer \
+                'echo "Running tRNAscan-SE on {{}}";
+                 tRNAscan-SE -q -Q -B \
+                   -o {working_dir}/trnascan/{{}}.output.txt \
+                   -m {working_dir}/trnascan/{{}}.stats.txt \
+                   -b {working_dir}/trnascan/{{}}.bed \
+                   -j {working_dir}/trnascan/{{}}.gff \
+                   -a {working_dir}/trnascan/{{}}.trna.fasta \
+                   -l {working_dir}/trnascan/{{}}.log \
+                   --thread 1 {params.fasta_dir}/{{}}.fasta'
+            echo "Bacteria Done." >> {output.out_log}
+        fi
+
+        # Archaea
+        if [ "$arc_cnt" -eq 0 ]; then
+            echo "No Archaea bins found, skipping." >> {output.out_log}
+        else
+	        bins_arc=$(grep 'Archaea' {input.dedupe_table} \
+    	              | cut -f2 | grep -v 'Bin Id')
+            echo "$bins_arc" | parallel -j {threads} --linebuffer \
+                'echo "Running tRNAscan-SE on {{}}";
+                 tRNAscan-SE -q -Q -A \
+                   -o {working_dir}/trnascan/{{}}.output.txt \
+                   -m {working_dir}/trnascan/{{}}.stats.txt \
+                   -b {working_dir}/trnascan/{{}}.bed \
+                   -j {working_dir}/trnascan/{{}}.gff \
+                   -a {working_dir}/trnascan/{{}}.trna.fasta \
+                   -l {working_dir}/trnascan/{{}}.log \
+                   --thread 1 {params.fasta_dir}/{{}}.fasta'
+            echo "Archaea Done." >> {output.out_log}
+        fi
+
+        # Final parse
+        python ./trnascan_parse.py {working_dir}/trnascan/
+        echo "Output Parsing Done." >> {output.out_log}
+        """
+
+		
+rule run_gunc:
+	input:
+		out_log = os.path.join(working_dir, logs, "cp_dedupe.log")
+	output: 
+		out_log = os.path.join(working_dir, logs, "gunc.log")
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		mkdir -p {working_dir}/gunc
+		gunc run -r {gunc_db} -d {working_dir}/dedupe/fasta -o {working_dir}/gunc -e .fasta -t {threads}
+		echo "Done."  > {output.out_log}
+		"""
+		
+rule run_merge_master:
+	input:
+		gunc_log = os.path.join(working_dir, logs, "gunc.log"),
+		trna_log = os.path.join(working_dir, logs, "trnascan.log"),
+		dedupe_log = os.path.join(working_dir, logs, "dedupe.log"),
+	output: 
+		out_log = os.path.join(working_dir, logs, "merge_master.log")
+	threads:
+		nthreads
+	conda:
+		condaenv
+	shell:
+		"""
+		python ./merge_master.py {working_dir}  
+		echo "Done."  > {output.out_log}
+		"""
+
