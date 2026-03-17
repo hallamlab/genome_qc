@@ -75,6 +75,20 @@ def checkmDataLooksValid(dataPath) {
     return children != null && children.length > 0
 }
 
+def normalizeToList(value) {
+    if (value == null) {
+        return []
+    }
+    if (value instanceof Collection) {
+        return value as List
+    }
+    return [value]
+}
+
+def shellQuote(value) {
+    return "'" + value.toString().replace("'", "'\"'\"'") + "'"
+}
+
 
 def genomeId(path) {
     def name
@@ -296,16 +310,11 @@ process GTDBTK {
     path("gtdbtk_${batch_id}"), emit: outdir
 
     script:
-    def fastaManifest = fastas.collect { it.toString() }.join('\n')
+    def fastaList = normalizeToList(fastas)
+    def copyCommands = fastaList.collect { f -> "cp ${shellQuote(f)} genomes/" }.join('\n')
     """
-    cat > fastas.list <<'EOF'
-    ${fastaManifest}
-    EOF
     mkdir -p genomes
-    while IFS= read -r f; do
-      [ -n "\$f" ] || continue
-      cp \$f genomes/
-    done < fastas.list
+    ${copyCommands}
     if [ -n "${gtdbtk_data_path}" ]; then
       export GTDBTK_DATA_PATH="${gtdbtk_data_path}"
     fi
@@ -325,11 +334,13 @@ process COMBINE_GTDBTK {
     path("gtdbtk_merged"), emit: outdir
 
     script:
-    def dirManifest = gtdbtk_dirs.collect { it.toString() }.join('\n')
+    def gtdbtkDirList = normalizeToList(gtdbtk_dirs)
+    def addDirCommands = gtdbtkDirList.collect { d ->
+        def quoted = shellQuote(d)
+        return """[ -f ${quoted}/classify/gtdbtk.bac120.summary.tsv ] && bac_files+=(${quoted}/classify/gtdbtk.bac120.summary.tsv)
+[ -f ${quoted}/classify/gtdbtk.ar53.summary.tsv ] && arc_files+=(${quoted}/classify/gtdbtk.ar53.summary.tsv)"""
+    }.join('\n')
     """
-    cat > gtdbtk_dirs.list <<'EOF'
-    ${dirManifest}
-    EOF
     mkdir -p gtdbtk_merged/classify
 
     write_merged_summary() {
@@ -349,11 +360,7 @@ process COMBINE_GTDBTK {
 
     bac_files=()
     arc_files=()
-    while IFS= read -r d; do
-      [ -n "\$d" ] || continue
-      [ -f "\$d/classify/gtdbtk.bac120.summary.tsv" ] && bac_files+=("\$d/classify/gtdbtk.bac120.summary.tsv")
-      [ -f "\$d/classify/gtdbtk.ar53.summary.tsv" ] && arc_files+=("\$d/classify/gtdbtk.ar53.summary.tsv")
-    done < gtdbtk_dirs.list
+    ${addDirCommands}
 
     if [ "\${#bac_files[@]}" -gt 0 ]; then
       write_merged_summary gtdbtk_merged/classify/gtdbtk.bac120.summary.tsv "\${bac_files[@]}"
@@ -623,24 +630,19 @@ process GUNC {
     path("gunc"), emit: outdir
 
     script:
-    def fastaManifest = dedupe_fasta.collect { it.toString() }.join('\n')
+    def dedupeFastaList = normalizeToList(dedupe_fasta)
+    def copyCommands = dedupeFastaList.collect { f -> "cp ${shellQuote(f)} dedupe_fasta/" }.join('\n')
     """
-    cat > dedupe_fastas.list <<'EOF'
-    ${fastaManifest}
-    EOF
     if [ -z "${gunc_db}" ]; then
       echo "params.gunc_db is required" >&2
       exit 1
     fi
     mkdir -p gunc dedupe_fasta
-    if [ ! -s dedupe_fastas.list ]; then
+    if [ "${dedupeFastaList.size()}" -eq 0 ]; then
       echo "No deduped FASTA files provided to GUNC; skipping."
       exit 0
     fi
-    while IFS= read -r f; do
-      [ -n "\$f" ] || continue
-      cp "\$f" dedupe_fasta/
-    done < dedupe_fastas.list
+    ${copyCommands}
     gunc run -r ${gunc_db} -d dedupe_fasta -o gunc -e .fasta -t ${task.cpus}
     """
 }
