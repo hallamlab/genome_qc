@@ -290,17 +290,22 @@ process GTDBTK {
     publishDir "${params.working_dir}/gtdbtk/individual", mode: 'copy', overwrite: true
 
     input:
-    tuple val(batch_id), path(fastas), val(gtdbtk_data_path)
+    tuple val(batch_id), val(fastas), val(gtdbtk_data_path)
 
     output:
     path("gtdbtk_${batch_id}"), emit: outdir
 
     script:
+    def fastaManifest = fastas.collect { it.toString() }.join('\n')
     """
+    cat > fastas.list <<'EOF'
+    ${fastaManifest}
+    EOF
     mkdir -p genomes
-    for f in ${fastas}; do
+    while IFS= read -r f; do
+      [ -n "\$f" ] || continue
       cp \$f genomes/
-    done
+    done < fastas.list
     if [ -n "${gtdbtk_data_path}" ]; then
       export GTDBTK_DATA_PATH="${gtdbtk_data_path}"
     fi
@@ -314,13 +319,17 @@ process COMBINE_GTDBTK {
     publishDir "${params.working_dir}/gtdbtk", mode: 'copy', overwrite: true
 
     input:
-    path(gtdbtk_dirs)
+    val(gtdbtk_dirs)
 
     output:
     path("gtdbtk_merged"), emit: outdir
 
     script:
+    def dirManifest = gtdbtk_dirs.collect { it.toString() }.join('\n')
     """
+    cat > gtdbtk_dirs.list <<'EOF'
+    ${dirManifest}
+    EOF
     mkdir -p gtdbtk_merged/classify
 
     write_merged_summary() {
@@ -340,10 +349,11 @@ process COMBINE_GTDBTK {
 
     bac_files=()
     arc_files=()
-    for d in ${gtdbtk_dirs}; do
+    while IFS= read -r d; do
+      [ -n "\$d" ] || continue
       [ -f "\$d/classify/gtdbtk.bac120.summary.tsv" ] && bac_files+=("\$d/classify/gtdbtk.bac120.summary.tsv")
       [ -f "\$d/classify/gtdbtk.ar53.summary.tsv" ] && arc_files+=("\$d/classify/gtdbtk.ar53.summary.tsv")
-    done
+    done < gtdbtk_dirs.list
 
     if [ "\${#bac_files[@]}" -gt 0 ]; then
       write_merged_summary gtdbtk_merged/classify/gtdbtk.bac120.summary.tsv "\${bac_files[@]}"
@@ -607,26 +617,30 @@ process GUNC {
     publishDir "${params.working_dir}/gunc", mode: 'copy', overwrite: true
 
     input:
-    tuple path(dedupe_fasta), val(gunc_db)
+    tuple val(dedupe_fasta), val(gunc_db)
 
     output:
     path("gunc"), emit: outdir
 
     script:
+    def fastaManifest = dedupe_fasta.collect { it.toString() }.join('\n')
     """
+    cat > dedupe_fastas.list <<'EOF'
+    ${fastaManifest}
+    EOF
     if [ -z "${gunc_db}" ]; then
       echo "params.gunc_db is required" >&2
       exit 1
     fi
     mkdir -p gunc dedupe_fasta
-    files=( ${dedupe_fasta} )
-    if [ "\${#files[@]}" -eq 0 ]; then
+    if [ ! -s dedupe_fastas.list ]; then
       echo "No deduped FASTA files provided to GUNC; skipping."
       exit 0
     fi
-    for f in "\${files[@]}"; do
+    while IFS= read -r f; do
+      [ -n "\$f" ] || continue
       cp "\$f" dedupe_fasta/
-    done
+    done < dedupe_fastas.list
     gunc run -r ${gunc_db} -d dedupe_fasta -o gunc -e .fasta -t ${task.cpus}
     """
 }
