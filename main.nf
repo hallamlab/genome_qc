@@ -266,7 +266,7 @@ process SUBSET_GENOMES {
     publishDir "${params.working_dir}/genomes_subset", mode: 'copy', overwrite: true
 
     input:
-    tuple val(id), val(size), path(fasta), path(qscore_mqhp)
+    tuple val(id), val(size), path(fasta, stageAs: 'input.fasta'), path(qscore_mqhp)
 
     output:
     path("${id}.${size}.fasta"), optional: true, emit: subset
