@@ -893,7 +893,7 @@ workflow {
             }
 
         checkm_input = checkm_ready ?
-            checkm_batches.combine(checkm_ready).map { left, ready -> tuple(left[0], left[1], left[2], resolvedCheckmData) } :
+            checkm_batches.combine(checkm_ready).map { size, batch_id, fastas, ready -> tuple(size, batch_id, fastas, resolvedCheckmData) } :
             checkm_batches.map { size, batch_id, fastas -> tuple(size, batch_id, fastas, resolvedCheckmData) }
 
         checkm = CHECKM_SINGLE(checkm_input).tsv
@@ -905,7 +905,7 @@ workflow {
 
         subset_input = filtered_for_subset
             .combine(qscore_for_subset)
-            .map { left, qscore_file -> tuple(left[0], left[1], left[2], qscore_file) }
+            .map { id, size, fasta, qscore_file -> tuple(id, size, fasta, qscore_file) }
 
         subset = SUBSET_GENOMES(subset_input).subset
         subset_for_gtdbtk = subset.map { it }
