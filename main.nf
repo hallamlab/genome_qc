@@ -14,6 +14,8 @@ params.checkm_max_forks = params.checkm_max_forks ?: 1
 params.trnascan_cpus    = params.trnascan_cpus    ?: 1
 params.trnascan_max_forks = params.trnascan_max_forks ?: 24
 params.gtdbtk_cpus      = params.gtdbtk_cpus      ?: 1
+params.gtdbtk_batch_size = params.gtdbtk_batch_size ?: 50
+params.gtdbtk_max_forks = params.gtdbtk_max_forks ?: 2
 params.gunc_cpus        = params.gunc_cpus        ?: 1
 params.max_forks        = params.max_forks        ?: 64
 params.ref_dir          = params.ref_dir          ?: ""
@@ -281,15 +283,17 @@ process SUBSET_GENOMES {
 }
 
 process GTDBTK {
+    tag "batch${batch_id}"
     cpus params.gtdbtk_cpus
+    maxForks params.gtdbtk_max_forks
     conda "${projectDir}/envs/gtdbtk.yaml"
-    publishDir "${params.working_dir}/gtdbtk", mode: 'copy', overwrite: true
+    publishDir "${params.working_dir}/gtdbtk/individual", mode: 'copy', overwrite: true
 
     input:
-    tuple path(fastas), val(gtdbtk_data_path)
+    tuple val(batch_id), path(fastas), val(gtdbtk_data_path)
 
     output:
-    path("gtdbtk"), emit: outdir
+    path("gtdbtk_${batch_id}"), emit: outdir
 
     script:
     """
@@ -300,7 +304,53 @@ process GTDBTK {
     if [ -n "${gtdbtk_data_path}" ]; then
       export GTDBTK_DATA_PATH="${gtdbtk_data_path}"
     fi
-    gtdbtk classify_wf --skip_ani_screen --genome_dir genomes --out_dir gtdbtk --cpus ${task.cpus} -x fasta
+    gtdbtk classify_wf --skip_ani_screen --genome_dir genomes --out_dir gtdbtk_${batch_id} --cpus ${task.cpus} -x fasta
+    """
+}
+
+process COMBINE_GTDBTK {
+    cpus 1
+    conda "${projectDir}/envs/utils.yaml"
+    publishDir "${params.working_dir}/gtdbtk", mode: 'copy', overwrite: true
+
+    input:
+    path(gtdbtk_dirs)
+
+    output:
+    path("gtdbtk_merged"), emit: outdir
+
+    script:
+    """
+    mkdir -p gtdbtk_merged/classify
+
+    write_merged_summary() {
+      target="\$1"
+      shift
+      wrote=0
+      for f in "\$@"; do
+        [ -s "\$f" ] || continue
+        if [ "\$wrote" -eq 0 ]; then
+          cat "\$f" > "\$target"
+          wrote=1
+        else
+          tail -n +2 "\$f" >> "\$target"
+        fi
+      done
+    }
+
+    bac_files=()
+    arc_files=()
+    for d in ${gtdbtk_dirs}; do
+      [ -f "\$d/classify/gtdbtk.bac120.summary.tsv" ] && bac_files+=("\$d/classify/gtdbtk.bac120.summary.tsv")
+      [ -f "\$d/classify/gtdbtk.ar53.summary.tsv" ] && arc_files+=("\$d/classify/gtdbtk.ar53.summary.tsv")
+    done
+
+    if [ "\${#bac_files[@]}" -gt 0 ]; then
+      write_merged_summary gtdbtk_merged/classify/gtdbtk.bac120.summary.tsv "\${bac_files[@]}"
+    fi
+    if [ "\${#arc_files[@]}" -gt 0 ]; then
+      write_merged_summary gtdbtk_merged/classify/gtdbtk.ar53.summary.tsv "\${arc_files[@]}"
+    fi
     """
 }
 
@@ -911,12 +961,36 @@ workflow {
         subset_for_gtdbtk = subset.map { it }
         subset_for_ids = subset.map { it }
         subset_for_dedupe = subset.map { it }
+        def gtdbtkBatchSize = Math.max(1, params.gtdbtk_batch_size as Integer)
+        gtdbtk_batches = subset_for_gtdbtk
+            .map { fasta -> tuple(fasta.baseName, fasta) }
+            .collect()
+            .flatMap { records ->
+                def out = []
+                def ordered = records.sort { a, b -> a[0].toString() <=> b[0].toString() }
+                def grouped = ordered.collate(gtdbtkBatchSize)
+                for (group in grouped) {
+                    def fastas = group.collect { it[1] }
+                    def batchSeed = group.collect { it[0].toString() }.join("|")
+                    def batchId = java.security.MessageDigest
+                        .getInstance("MD5")
+                        .digest(batchSeed.getBytes("UTF-8"))
+                        .encodeHex()
+                        .toString()
+                        .substring(0, 12)
+                    out << tuple(batchId, fastas)
+                }
+                return out
+            }
+
         gtdbtk_input = bootstrapReferences ?
             gtdb_ready
-                .combine(subset_for_gtdbtk.collect().map { fastas -> tuple(fastas) })
-                .map { ready, fastas -> tuple(fastas, resolvedGTDBTK) } :
-            subset_for_gtdbtk.collect().map { fastas -> tuple(fastas, resolvedGTDBTK) }
-        gtdbtk = GTDBTK(gtdbtk_input).outdir
+                .combine(gtdbtk_batches)
+                .map { ready, batch_id, fastas -> tuple(batch_id, fastas, resolvedGTDBTK) } :
+            gtdbtk_batches.map { batch_id, fastas -> tuple(batch_id, fastas, resolvedGTDBTK) }
+
+        gtdbtk_batches_out = GTDBTK(gtdbtk_input).outdir
+        gtdbtk = COMBINE_GTDBTK(gtdbtk_batches_out.collect()).outdir
         gtdbtk_map = PARSE_GTDBTK(gtdbtk).mapping
 
         subset_ids = subset_for_ids.map { f -> tuple(f.baseName, f) }

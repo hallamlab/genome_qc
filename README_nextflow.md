@@ -168,7 +168,11 @@ All parameters are passed as `--param value`.
 ### Performance settings
 
 - `--checkm_cpus`: CPUs per `CHECKM_SINGLE` task
+- `--checkm_batch_size`: genomes per `CHECKM_SINGLE` batch
+- `--checkm_max_forks`: concurrent `CHECKM_SINGLE` batch jobs
 - `--gtdbtk_cpus`: CPUs for GTDB-Tk task
+- `--gtdbtk_batch_size`: genomes per GTDB-Tk batch
+- `--gtdbtk_max_forks`: concurrent GTDB-Tk batch jobs
 - `--gunc_cpus`: CPUs for GUNC task
 - `--max_forks`: concurrency cap for per-genome processes
 
@@ -224,11 +228,13 @@ nextflow run main.nf -profile mamba,debug ... --debug true
   - `FILTER_FASTA`, `SEQKIT_STAT`, `PRUNE_FASTA`, `CHECKM_SINGLE`
   - `BARRNAP`, `BLAST_RRNA`, `TRNASCAN`
 - Single aggregation tasks:
-  - combine stats/checkm, qscore, dedupe, merge master
+  - combine stats/checkm/GTDB-Tk, qscore, dedupe, merge master
+- Batched directory-level tasks:
+  - `CHECKM_SINGLE`, `GTDBTK`
 - Directory-level tasks:
-  - `GTDBTK`, `GUNC`
+  - `GUNC`
 
-CPU settings are active and respected for CheckM/GTDB-Tk/GUNC via `--checkm_cpus`, `--gtdbtk_cpus`, `--gunc_cpus`.
+CPU settings are active and respected for CheckM/GTDB-Tk/GUNC via `--checkm_cpus`, `--gtdbtk_cpus`, `--gunc_cpus`. CheckM and GTDB-Tk batching can be tuned independently with `--checkm_batch_size`, `--checkm_max_forks`, `--gtdbtk_batch_size`, and `--gtdbtk_max_forks`.
 
 ---
 
