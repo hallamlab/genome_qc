@@ -203,8 +203,10 @@ process CHECKM_SINGLE {
     for f in ${fastas}; do
       cp "\$f" bins/
     done
+    export MPLCONFIGDIR="\$PWD/.mplconfig"
+    mkdir -p "\$MPLCONFIGDIR"
     if [ -n "${checkm_data_path}" ]; then
-      checkm data setRoot "${checkm_data_path}"
+      export CHECKM_DATA_PATH="${checkm_data_path}"
     fi
     checkm lineage_wf bins out -f ${size}.batch${batch_id}.checkm.tsv --tab_table -x fasta -t ${task.cpus} --pplacer_threads ${task.cpus}
     """
@@ -694,17 +696,18 @@ process SETUP_CHECKM_DB {
     if [ -n "${ref_dir}" ]; then
       mkdir -p "${ref_dir}"
     fi
+    export MPLCONFIGDIR="\$PWD/.mplconfig"
+    mkdir -p "\$MPLCONFIGDIR"
+    export CHECKM_DATA_PATH="${checkm_data_path}"
     if [ ! -d "${checkm_data_path}" ] || [ -z "\$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 \\( -type d -o -type f \\) 2>/dev/null | head -n 1)" ]; then
       if [ "${allow_bootstrap}" = "true" ]; then
         mkdir -p "${checkm_data_path}"
-        checkm data setRoot "${checkm_data_path}"
         checkm data download -p "${checkm_data_path}"
       else
         echo "CheckM data path is missing or empty: ${checkm_data_path}" >&2
         exit 1
       fi
     fi
-    checkm data setRoot "${checkm_data_path}"
     if [ -z "\$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 \\( -type d -o -type f \\) 2>/dev/null | head -n 1)" ]; then
       echo "CheckM data were not installed correctly under ${checkm_data_path}" >&2
       exit 1

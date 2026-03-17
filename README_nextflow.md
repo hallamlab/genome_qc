@@ -182,6 +182,8 @@ All parameters are passed as `--param value`.
 
 If you point to prebuilt references instead of `--ref_dir`, the workflow now runs validation-only checks before the analysis starts and fails early if the supplied CheckM, GTDB-Tk, or GUNC paths are missing or incomplete.
 
+For CheckM, the workflow uses `CHECKM_DATA_PATH` during task execution rather than rewriting CheckM's packaged `DATA_CONFIG`. This is more robust on HPC systems where conda envs are not writable on compute nodes.
+
 ### Slurm settings
 
 - `--slurm_account`: Slurm account to charge
