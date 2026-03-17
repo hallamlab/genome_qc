@@ -804,16 +804,16 @@ workflow {
         if (resolvedCheckmData) {
             def checkmRefDir = resolvedRefDir ?: new File(resolvedCheckmData).getParent()
             checkm_ready = SETUP_CHECKM_DB(
-                Channel.value(tuple(checkmRefDir, resolvedCheckmData, bootstrapReferences))
+                Channel.of([checkmRefDir, resolvedCheckmData, bootstrapReferences])
             ).ready
         }
         def gtdbRefDir = resolvedRefDir ?: new File(resolvedGTDBTK).getParent()
         def guncRefDir = resolvedRefDir ?: new File(resolvedGuncDb).getParent()
         def gtdb_ready = SETUP_GTDBTK_DB(
-            Channel.value(tuple(gtdbRefDir, resolvedGTDBTK, params.gtdbtk_package_url.toString(), bootstrapReferences))
+            Channel.of([gtdbRefDir, resolvedGTDBTK, params.gtdbtk_package_url.toString(), bootstrapReferences])
         ).ready
         def gunc_ready = SETUP_GUNC_DB(
-            Channel.value(tuple(guncRefDir, resolvedGuncDb, bootstrapReferences))
+            Channel.of([guncRefDir, resolvedGuncDb, bootstrapReferences])
         ).ready
 
         filtered = FILTER_FASTA(raw_genomes).fasta
