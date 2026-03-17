@@ -90,6 +90,7 @@ nextflow run main.nf \
 Optional Slurm params:
 
 - `--slurm_account`
+- `--slurm_nodes`
 - `--slurm_partition`
 - `--slurm_medium_partition`
 - `--slurm_large_partition`
@@ -184,6 +185,7 @@ If you point to prebuilt references instead of `--ref_dir`, the workflow now run
 ### Slurm settings
 
 - `--slurm_account`: Slurm account to charge
+- `--slurm_nodes`: node count per submitted job; default `1`
 - `--slurm_partition`: Slurm partition/queue
 - `--slurm_medium_partition`: optional separate partition for moderate jobs
 - `--slurm_large_partition`: optional separate partition for heavy jobs
