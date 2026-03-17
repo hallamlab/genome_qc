@@ -574,7 +574,7 @@ process SETUP_GTDBTK_DB {
     if [ ! -s "${gtdbtk_data_path}/mrca_red/gtdbtk_r220_bac120.tsv" ] && [ ! -s "${gtdbtk_data_path}/VERSION_CONFIG" ] && [ ! -s "${gtdbtk_data_path}/metadata/metadata.txt" ]; then
       if [ "${allow_bootstrap}" = "true" ]; then
         archive="${ref_dir}/gtdbtk_package.tar.gz"
-        tmpdir=$(mktemp -d)
+        tmpdir=\$(mktemp -d)
         if command -v wget >/dev/null 2>&1; then
           wget --no-check-certificate -O "${archive}" "${gtdbtk_package_url}"
         else
@@ -626,8 +626,8 @@ process SETUP_GUNC_DB {
     fi
     if [ ! -s "${gunc_db}" ]; then
       if [ "${allow_bootstrap}" = "true" ]; then
-        mkdir -p "$(dirname "${gunc_db}")"
-        gunc download_db "$(dirname "${gunc_db}")"
+        mkdir -p "\$(dirname "${gunc_db}")"
+        gunc download_db "\$(dirname "${gunc_db}")"
       else
         echo "GUNC database file is missing or empty: ${gunc_db}" >&2
         exit 1
@@ -660,7 +660,7 @@ process SETUP_CHECKM_DB {
     if [ -n "${ref_dir}" ]; then
       mkdir -p "${ref_dir}"
     fi
-    if [ ! -d "${checkm_data_path}" ] || [ -z "$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 \\( -type d -o -type f \\) 2>/dev/null | head -n 1)" ]; then
+    if [ ! -d "${checkm_data_path}" ] || [ -z "\$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 \\( -type d -o -type f \\) 2>/dev/null | head -n 1)" ]; then
       if [ "${allow_bootstrap}" = "true" ]; then
         mkdir -p "${checkm_data_path}"
         checkm data setRoot "${checkm_data_path}"
@@ -671,7 +671,7 @@ process SETUP_CHECKM_DB {
       fi
     fi
     checkm data setRoot "${checkm_data_path}"
-    if [ -z "$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 \\( -type d -o -type f \\) 2>/dev/null | head -n 1)" ]; then
+    if [ -z "\$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 \\( -type d -o -type f \\) 2>/dev/null | head -n 1)" ]; then
       echo "CheckM data were not installed correctly under ${checkm_data_path}" >&2
       exit 1
     fi
