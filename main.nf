@@ -259,34 +259,24 @@ process QSCORE {
 }
 
 process SUBSET_GENOMES {
+    tag "${id}.${size}"
     cpus 1
+    maxForks params.max_forks
     conda "${projectDir}/envs/utils.yaml"
     publishDir "${params.working_dir}/genomes_subset", mode: 'copy', overwrite: true
 
     input:
-    path(qscore_mqhp)
-    path(filtered_fastas)
+    tuple val(id), val(size), path(fasta), path(qscore_mqhp)
 
     output:
-    path("subset/*.fasta"), optional: true, emit: subset
+    path("${id}.${size}.fasta"), optional: true, emit: subset
 
     script:
     """
-    mkdir -p subset
-    while read -r g; do
-      [ -z "\$g" ] && continue
-      found=""
-      for f in ${filtered_fastas}; do
-        base=\$(basename "\$f" .fasta)
-        if [ "\$base" = "\$g" ]; then
-          found="\$f"
-          break
-        fi
-      done
-      if [ -n "\$found" ]; then
-        cp "\$found" subset/\${g}.fasta
-      fi
-    done < <(tail -n +2 ${qscore_mqhp} | cut -f2)
+    target="${id}.${size}"
+    if awk -F '\t' -v target="\$target" 'NR > 1 && \$2 == target { found=1; exit } END { exit(found ? 0 : 1) }' ${qscore_mqhp}; then
+      cp ${fasta} ${id}.${size}.fasta
+    fi
     """
 }
 
@@ -913,13 +903,15 @@ workflow {
         qscore_for_subset = qscore.mqhp.map { it }
         qscore_for_dedupe = qscore.mqhp.map { it }
 
-        subset = SUBSET_GENOMES(qscore_for_subset, filtered_fastas.collect()).subset
-        subset_files = subset.flatten()
-        subset_for_gtdbtk = subset_files.map { it }
-        subset_for_ids = subset_files.map { it }
-        subset_for_dedupe = subset_files.map { it }
-        subset_fastas = subset_for_gtdbtk
-        gtdbtk_input = subset_fastas.collect().combine(gtdb_ready).map { fastas, ready -> tuple(fastas, resolvedGTDBTK) }
+        subset_input = filtered_for_subset
+            .combine(qscore_for_subset)
+            .map { left, qscore_file -> tuple(left[0], left[1], left[2], qscore_file) }
+
+        subset = SUBSET_GENOMES(subset_input).subset
+        subset_for_gtdbtk = subset.map { it }
+        subset_for_ids = subset.map { it }
+        subset_for_dedupe = subset.map { it }
+        gtdbtk_input = subset_for_gtdbtk.collect().combine(gtdb_ready).map { fastas, ready -> tuple(fastas, resolvedGTDBTK) }
         gtdbtk = GTDBTK(gtdbtk_input).outdir
         gtdbtk_map = PARSE_GTDBTK(gtdbtk).mapping
 
