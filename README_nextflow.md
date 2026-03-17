@@ -179,6 +179,8 @@ All parameters are passed as `--param value`.
 - `--gunc_db`: explicit GUNC database file; defaults to `<ref_dir>/gunc_db/gunc_db_progenomes2.1.dmnd` when `--ref_dir` is used
 - `--gtdbtk_package_url`: GTDB-Tk package URL used during bootstrap
 
+If you point to prebuilt references instead of `--ref_dir`, the workflow now runs validation-only checks before the analysis starts and fails early if the supplied CheckM, GTDB-Tk, or GUNC paths are missing or incomplete.
+
 ### Slurm settings
 
 - `--slurm_account`: Slurm account to charge

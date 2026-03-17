@@ -561,33 +561,40 @@ process SETUP_GTDBTK_DB {
     publishDir "${params.working_dir}/references", mode: 'copy', overwrite: true
 
     input:
-    tuple val(ref_dir), val(gtdbtk_data_path), val(gtdbtk_package_url)
+    tuple val(ref_dir), val(gtdbtk_data_path), val(gtdbtk_package_url), val(allow_bootstrap)
 
     output:
     path("gtdbtk_reference_ready.tsv"), emit: ready
 
     script:
     """
-    mkdir -p "${ref_dir}" "${gtdbtk_data_path}"
+    if [ -n "${ref_dir}" ]; then
+      mkdir -p "${ref_dir}"
+    fi
     if [ ! -s "${gtdbtk_data_path}/mrca_red/gtdbtk_r220_bac120.tsv" ] && [ ! -s "${gtdbtk_data_path}/VERSION_CONFIG" ] && [ ! -s "${gtdbtk_data_path}/metadata/metadata.txt" ]; then
-      archive="${ref_dir}/gtdbtk_package.tar.gz"
-      tmpdir=$(mktemp -d)
-      if command -v wget >/dev/null 2>&1; then
-        wget --no-check-certificate -O "${archive}" "${gtdbtk_package_url}"
+      if [ "${allow_bootstrap}" = "true" ]; then
+        archive="${ref_dir}/gtdbtk_package.tar.gz"
+        tmpdir=$(mktemp -d)
+        if command -v wget >/dev/null 2>&1; then
+          wget --no-check-certificate -O "${archive}" "${gtdbtk_package_url}"
+        else
+          curl -L -o "${archive}" "${gtdbtk_package_url}"
+        fi
+        tar -xzf "${archive}" -C "${tmpdir}"
+        if [ -f "${tmpdir}/release220/VERSION_CONFIG" ]; then
+          rm -rf "${gtdbtk_data_path}"
+          mkdir -p "${gtdbtk_data_path}"
+          cp -r "${tmpdir}/release220/." "${gtdbtk_data_path}/"
+        else
+          rm -rf "${gtdbtk_data_path}"
+          mkdir -p "${gtdbtk_data_path}"
+          tar -xzf "${archive}" -C "${gtdbtk_data_path}" --strip-components 1
+        fi
+        rm -rf "${tmpdir}"
       else
-        curl -L -o "${archive}" "${gtdbtk_package_url}"
+        echo "GTDB-Tk data path is missing or incomplete: ${gtdbtk_data_path}" >&2
+        exit 1
       fi
-      tar -xzf "${archive}" -C "${tmpdir}"
-      if [ -f "${tmpdir}/release220/VERSION_CONFIG" ]; then
-        rm -rf "${gtdbtk_data_path}"
-        mkdir -p "${gtdbtk_data_path}"
-        cp -r "${tmpdir}/release220/." "${gtdbtk_data_path}/"
-      else
-        rm -rf "${gtdbtk_data_path}"
-        mkdir -p "${gtdbtk_data_path}"
-        tar -xzf "${archive}" -C "${gtdbtk_data_path}" --strip-components 1
-      fi
-      rm -rf "${tmpdir}"
     fi
     if [ ! -f "${gtdbtk_data_path}/VERSION_CONFIG" ] && [ ! -f "${gtdbtk_data_path}/metadata/metadata.txt" ] && [ ! -f "${gtdbtk_data_path}/mrca_red/gtdbtk_r220_bac120.tsv" ]; then
       echo "GTDB-Tk data were not installed correctly under ${gtdbtk_data_path}" >&2
@@ -607,16 +614,24 @@ process SETUP_GUNC_DB {
     publishDir "${params.working_dir}/references", mode: 'copy', overwrite: true
 
     input:
-    tuple val(ref_dir), val(gunc_db)
+    tuple val(ref_dir), val(gunc_db), val(allow_bootstrap)
 
     output:
     path("gunc_reference_ready.tsv"), emit: ready
 
     script:
     """
-    mkdir -p "${ref_dir}" "$(dirname "${gunc_db}")"
+    if [ -n "${ref_dir}" ]; then
+      mkdir -p "${ref_dir}"
+    fi
     if [ ! -s "${gunc_db}" ]; then
-      gunc download_db "$(dirname "${gunc_db}")"
+      if [ "${allow_bootstrap}" = "true" ]; then
+        mkdir -p "$(dirname "${gunc_db}")"
+        gunc download_db "$(dirname "${gunc_db}")"
+      else
+        echo "GUNC database file is missing or empty: ${gunc_db}" >&2
+        exit 1
+      fi
     fi
     if [ ! -s "${gunc_db}" ]; then
       echo "GUNC database was not installed correctly at ${gunc_db}" >&2
@@ -635,20 +650,28 @@ process SETUP_CHECKM_DB {
     publishDir "${params.working_dir}/references", mode: 'copy', overwrite: true
 
     input:
-    tuple val(ref_dir), val(checkm_data_path)
+    tuple val(ref_dir), val(checkm_data_path), val(allow_bootstrap)
 
     output:
     path("checkm_reference_ready.tsv"), emit: ready
 
     script:
     """
-    mkdir -p "${ref_dir}" "${checkm_data_path}"
-    checkm data setRoot "${checkm_data_path}"
-    if [ -z "$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1)" ]; then
-      checkm data download -p "${checkm_data_path}"
-      checkm data setRoot "${checkm_data_path}"
+    if [ -n "${ref_dir}" ]; then
+      mkdir -p "${ref_dir}"
     fi
-    if [ -z "$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1)" ]; then
+    if [ ! -d "${checkm_data_path}" ] || [ -z "$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 \\( -type d -o -type f \\) 2>/dev/null | head -n 1)" ]; then
+      if [ "${allow_bootstrap}" = "true" ]; then
+        mkdir -p "${checkm_data_path}"
+        checkm data setRoot "${checkm_data_path}"
+        checkm data download -p "${checkm_data_path}"
+      else
+        echo "CheckM data path is missing or empty: ${checkm_data_path}" >&2
+        exit 1
+      fi
+    fi
+    checkm data setRoot "${checkm_data_path}"
+    if [ -z "$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 \\( -type d -o -type f \\) 2>/dev/null | head -n 1)" ]; then
       echo "CheckM data were not installed correctly under ${checkm_data_path}" >&2
       exit 1
     fi
@@ -701,6 +724,7 @@ workflow {
         def resolvedCheckmData = resolveAbsolutePath(params.checkm_data_path)
         def resolvedGTDBTK = resolveAbsolutePath(params.gtdbtk_data_path)
         def resolvedGuncDb = resolveAbsolutePath(params.gunc_db)
+        def bootstrapReferences = resolvedRefDir ? true : false
 
         if (resolvedRefDir) {
             if (!resolvedCheckmData) {
@@ -726,6 +750,7 @@ workflow {
             println "[DEBUG] resolved checkm_data_path=${resolvedCheckmData}"
             println "[DEBUG] resolved gtdbtk_data_path=${resolvedGTDBTK}"
             println "[DEBUG] resolved gunc_db=${resolvedGuncDb}"
+            println "[DEBUG] bootstrap_references=${bootstrapReferences}"
         }
 
         def fastaDir = new File(params.fasta_dir.toString())
@@ -776,13 +801,20 @@ workflow {
         }
 
         def checkm_ready = null
-        def gtdb_ready = null
-        def gunc_ready = null
-        if (resolvedRefDir) {
-            checkm_ready = SETUP_CHECKM_DB(Channel.value(tuple(resolvedRefDir, resolvedCheckmData))).ready
-            gtdb_ready = SETUP_GTDBTK_DB(Channel.value(tuple(resolvedRefDir, resolvedGTDBTK, params.gtdbtk_package_url.toString()))).ready
-            gunc_ready = SETUP_GUNC_DB(Channel.value(tuple(resolvedRefDir, resolvedGuncDb))).ready
+        if (resolvedCheckmData) {
+            def checkmRefDir = resolvedRefDir ?: new File(resolvedCheckmData).getParent()
+            checkm_ready = SETUP_CHECKM_DB(
+                Channel.value(tuple(checkmRefDir, resolvedCheckmData, bootstrapReferences))
+            ).ready
         }
+        def gtdbRefDir = resolvedRefDir ?: new File(resolvedGTDBTK).getParent()
+        def guncRefDir = resolvedRefDir ?: new File(resolvedGuncDb).getParent()
+        def gtdb_ready = SETUP_GTDBTK_DB(
+            Channel.value(tuple(gtdbRefDir, resolvedGTDBTK, params.gtdbtk_package_url.toString(), bootstrapReferences))
+        ).ready
+        def gunc_ready = SETUP_GUNC_DB(
+            Channel.value(tuple(guncRefDir, resolvedGuncDb, bootstrapReferences))
+        ).ready
 
         filtered = FILTER_FASTA(raw_genomes).fasta
         filtered_for_stats = filtered.map { it }
@@ -820,7 +852,7 @@ workflow {
                 return out
             }
 
-        checkm_input = resolvedRefDir ?
+        checkm_input = checkm_ready ?
             checkm_batches.combine(checkm_ready).map { left, ready -> tuple(left[0], left[1], left[2], resolvedCheckmData) } :
             checkm_batches.map { size, batch_id, fastas -> tuple(size, batch_id, fastas, resolvedCheckmData) }
 
@@ -837,9 +869,7 @@ workflow {
         subset_for_ids = subset_files.map { it }
         subset_for_dedupe = subset_files.map { it }
         subset_fastas = subset_for_gtdbtk
-        gtdbtk_input = resolvedRefDir ?
-            subset_fastas.collect().combine(gtdb_ready).map { fastas, ready -> tuple(fastas, resolvedGTDBTK) } :
-            subset_fastas.collect().map { fastas -> tuple(fastas, resolvedGTDBTK) }
+        gtdbtk_input = subset_fastas.collect().combine(gtdb_ready).map { fastas, ready -> tuple(fastas, resolvedGTDBTK) }
         gtdbtk = GTDBTK(gtdbtk_input).outdir
         gtdbtk_map = PARSE_GTDBTK(gtdbtk).mapping
 
@@ -885,9 +915,7 @@ workflow {
 
         trna_counts = TRNASCAN_PARSE(trna_gffs.collect())
 
-        gunc_input = resolvedRefDir ?
-            dedupe_fasta.collect().combine(gunc_ready).map { fastas, ready -> tuple(fastas, resolvedGuncDb) } :
-            dedupe_fasta.collect().map { fastas -> tuple(fastas, resolvedGuncDb) }
+        gunc_input = dedupe_fasta.collect().combine(gunc_ready).map { fastas, ready -> tuple(fastas, resolvedGuncDb) }
         gunc = GUNC(gunc_input).outdir
 
         master = MERGE_MASTER(dedupe_for_merge, barblast.subunits, trna_counts.counts)
