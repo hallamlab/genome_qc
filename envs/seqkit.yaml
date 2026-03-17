@@ -1,0 +1,7 @@
+name: genome_qc_seqkit
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - seqkit

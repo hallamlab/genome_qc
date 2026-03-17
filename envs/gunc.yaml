@@ -1,0 +1,7 @@
+name: genome_qc_gunc
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - gunc

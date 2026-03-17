@@ -20,10 +20,13 @@ qsmin = config["qscore_min"]
 condaenv = config["condaenv"]
 gunc_db = config["gunc_db"]
 ######################
+# Normalize fasta_dir to an absolute path; keep a stable name for output dirs.
+genome_dir_abs = genome_dir if os.path.isabs(genome_dir) else os.path.join(working_dir, genome_dir)
+genome_dir_name = os.path.basename(genome_dir.rstrip("/"))
 # Create filtered dir for genomes
-filtered_genome_dir = os.path.join(working_dir, genome_dir + "_filtered")
+filtered_genome_dir = os.path.join(working_dir, genome_dir_name + "_filtered")
 # Only proceed with genomes of sufficient quality via CheckM
-subset_genome_dir = os.path.join(working_dir, genome_dir + "_subset")
+subset_genome_dir = os.path.join(working_dir, genome_dir_name + "_subset")
 logs = os.path.join(working_dir, logs)
 check_dirs = [logs, subset_genome_dir, filtered_genome_dir]
 for d in check_dirs:
@@ -47,8 +50,8 @@ rule all:
 		expand(os.path.join(working_dir, logs, "{id}.log"), id=workflow_modules)
 
 rule run_seqkit_seq:
-	input:  
-		fasta_dir = os.path.join(working_dir, genome_dir)
+	input:
+		fasta_dir = genome_dir_abs
 	output: 
 		out_log = os.path.join(working_dir, logs, "seqkit_seq.log")
 	threads:
@@ -60,14 +63,14 @@ rule run_seqkit_seq:
 		f_size="{filter_size}"
 		if [ -z "$f_size" ];
 		then
-			for g in $(ls {working_dir}/{genome_dir}/*.{{fa,fna,fasta,fna.gz}}); do base=$(basename $g | rev | cut -d'.' -f2- | rev); echo full $base; seqkit seq -g -m 0 -o {filtered_genome_dir}/$base.full.fasta $g; done;
+			for g in $(ls {input.fasta_dir}/*.{{fa,fna,fasta,fna.gz}}); do base=$(basename $g | rev | cut -d'.' -f2- | rev); echo full $base; seqkit seq -g -m 0 -o {filtered_genome_dir}/$base.full.fasta $g; done;
 		else
 			pattern=" "
 			if [[ $f_size =~ $pattern ]]
 			then
-				for size in $f_size; do for g in $(ls {working_dir}/{genome_dir}/*.{{fa,fna,fasta,fna.gz}}); do base=$(basename $g | rev | cut -d'.' -f2- | rev); echo $size $base; seqkit seq -g -m $size -o {filtered_genome_dir}/$base.$size.fasta $g; done; done;
+				for size in $f_size; do for g in $(ls {input.fasta_dir}/*.{{fa,fna,fasta,fna.gz}}); do base=$(basename $g | rev | cut -d'.' -f2- | rev); echo $size $base; seqkit seq -g -m $size -o {filtered_genome_dir}/$base.$size.fasta $g; done; done;
 			else
-				for g in $(ls {working_dir}/{genome_dir}/*.{{fa,fna,fasta,fna.gz}}); do base=$(basename $g | rev | cut -d'.' -f2- | rev); echo $f_size $base; seqkit seq -g -m $f_size -o {filtered_genome_dir}/$base.$f_size.fasta $g; done;
+				for g in $(ls {input.fasta_dir}/*.{{fa,fna,fasta,fna.gz}}); do base=$(basename $g | rev | cut -d'.' -f2- | rev); echo $f_size $base; seqkit seq -g -m $f_size -o {filtered_genome_dir}/$base.$f_size.fasta $g; done;
 			fi
 		fi
 		echo "Done."  > {output.out_log}
@@ -436,4 +439,3 @@ rule run_merge_master:
 		python ./merge_master.py {working_dir}  
 		echo "Done."  > {output.out_log}
 		"""
-

@@ -7,7 +7,45 @@ dist
 *.sif
 
 .snakemake
-config.yaml
+/config.yaml
 test/*
 !test/fasta/
 !test/fasta/**
+
+# SPARK workflow generated artifacts (keep source/config tracked)
+SPARK/.snakemake/
+SPARK/.nextflow/
+SPARK/work/
+SPARK/reports/
+SPARK/results/
+SPARK/output/
+SPARK/logs/
+SPARK/tmp/
+SPARK/cache/
+SPARK/.Rhistory
+SPARK/.RData
+SPARK/.Rproj.user/
+SPARK/.DS_Store
+
+# Nextflow run metadata often produced in SPARK runs
+SPARK/.nextflow.log*
+SPARK/timeline.html
+SPARK/report.html
+SPARK/trace.txt
+SPARK/dag.*
+
+# genome_qc Nextflow / local runtime artifacts
+.nextflow/
+.nextflow-conda/
+.nextflow.log*
+work/
+timeline.html
+report.html
+trace.txt
+dag.*
+
+# local editor state
+.vscode/
+
+# generated reference payloads built on demand
+reference_mappings/

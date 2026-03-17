@@ -1,0 +1,9 @@
+name: genome_qc_dedupe
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.10
+  - pandas
+  - numpy

@@ -1,0 +1,122 @@
+family_id	mode_id	marker_id	marker_label	is_core	alias
+carbon_c1	carbon_fixation	rbcL	RuBisCO large subunit	1	rbcl
+carbon_c1	carbon_fixation	rbcL	RuBisCO large subunit	1	rubisco large subunit
+carbon_c1	carbon_fixation	rbcS	RuBisCO small subunit	0	rbcs
+carbon_c1	carbon_fixation	rbcS	RuBisCO small subunit	0	rubisco small subunit
+carbon_c1	carbon_fixation	prk	Phosphoribulokinase	1	prk
+carbon_c1	carbon_fixation	prk	Phosphoribulokinase	1	phosphoribulokinase
+carbon_c1	carbon_fixation	cdh	CO dehydrogenase/ACS	1	carbon monoxide dehydrogenase
+carbon_c1	carbon_fixation	cdh	CO dehydrogenase/ACS	1	acetyl-coa synthase
+carbon_c1	carbon_fixation	acl	ATP citrate lyase	1	atp citrate lyase
+carbon_c1	carbon_fixation	acl	ATP citrate lyase	1	acla
+carbon_c1	carbon_fixation	acl	ATP citrate lyase	1	aclb
+carbon_c1	methylotrophy_methane	pmoA	Particulate methane monooxygenase A	1	pmoa
+carbon_c1	methylotrophy_methane	pmoA	Particulate methane monooxygenase A	1	methane monooxygenase
+carbon_c1	methylotrophy_methane	mmoX	Soluble methane monooxygenase	1	mmox
+carbon_c1	methylotrophy_methane	mxaF	Methanol dehydrogenase large subunit	1	mxaf
+carbon_c1	methylotrophy_methane	mxaF	Methanol dehydrogenase large subunit	1	methanol dehydrogenase
+carbon_c1	methylotrophy_methane	xoxF	Lanthanide methanol dehydrogenase	0	xoxf
+carbon_c1	methylotrophy_methane	mdh	Methylamine dehydrogenase	0	methylamine dehydrogenase
+carbon_c1	co_formate	cutM	Carbon monoxide dehydrogenase	1	carbon monoxide dehydrogenase
+carbon_c1	co_formate	cutM	Carbon monoxide dehydrogenase	1	co dehydrogenase
+carbon_c1	co_formate	fdh	Formate dehydrogenase	1	formate dehydrogenase
+nitrogen	nitrogen_fixation	nifH	Nitrogenase iron protein	1	nifh
+nitrogen	nitrogen_fixation	nifD	Nitrogenase molybdenum-iron protein alpha	1	nifd
+nitrogen	nitrogen_fixation	nifK	Nitrogenase molybdenum-iron protein beta	1	nifk
+nitrogen	nitrogen_fixation	nifHDK	Nitrogenase complex	1	nitrogenase
+nitrogen	nitrification	amoA	Ammonia monooxygenase subunit A	1	amoa
+nitrogen	nitrification	amoB	Ammonia monooxygenase subunit B	1	amob
+nitrogen	nitrification	amoC	Ammonia monooxygenase subunit C	1	amoc
+nitrogen	nitrification	hao	Hydroxylamine oxidoreductase	1	hao
+nitrogen	nitrification	nxrA	Nitrite oxidoreductase subunit A	1	nxra
+nitrogen	nitrification	nxrB	Nitrite oxidoreductase subunit B	1	nxrb
+nitrogen	nitrate_reduction	narG	Membrane nitrate reductase alpha	1	narg
+nitrogen	nitrate_reduction	narH	Membrane nitrate reductase beta	0	narh
+nitrogen	nitrate_reduction	napA	Periplasmic nitrate reductase	1	napa
+nitrogen	nitrate_reduction	nar	Membrane nitrate reductase	1	nitrate reductase
+nitrogen	nitrite_reduction	nirK	Copper nitrite reductase	1	nirk
+nitrogen	nitrite_reduction	nirS	Cytochrome cd1 nitrite reductase	1	nirs
+nitrogen	nitrite_reduction	nrfA	Cytochrome c nitrite reductase	1	nrfa
+nitrogen	nitrite_reduction	nirB	Ferredoxin-nitrite reductase	0	nirb
+nitrogen	nitrite_reduction	nir	Nitrite reductase	1	nitrite reductase
+nitrogen	denitrification	norB	Nitric oxide reductase subunit B	1	norb
+nitrogen	denitrification	norC	Nitric oxide reductase subunit C	0	norc
+nitrogen	denitrification	nosZ	Nitrous oxide reductase	1	nosz
+nitrogen	denitrification	nor	Nitric oxide reductase	1	nitric oxide reductase
+nitrogen	denitrification	nos	Nitrous oxide reductase	1	nitrous oxide reductase
+nitrogen	dnra	nrfA	Cytochrome c nitrite reductase	1	nrfa
+nitrogen	dnra	nirB	Ferredoxin-nitrite reductase	1	nirb
+nitrogen	dnra	dnra	DNRA pathway	1	dissimilatory nitrate reduction to ammonium
+nitrogen	urea_cyanate	ureC	Urease alpha subunit	1	urec
+nitrogen	urea_cyanate	urease	Urease	1	urease
+nitrogen	urea_cyanate	cynS	Cyanase	1	cyns
+nitrogen	urea_cyanate	cyanase	Cyanase	1	cyanase
+sulfur	sulfate_reduction	sat	Sulfate adenylyltransferase	1	sat
+sulfur	sulfate_reduction	sat	Sulfate adenylyltransferase	1	sulfate adenylyltransferase
+sulfur	sulfate_reduction	aprA	Adenylylsulfate reductase alpha	1	apra
+sulfur	sulfate_reduction	aprB	Adenylylsulfate reductase beta	1	aprb
+sulfur	sulfate_reduction	dsrA	Dissimilatory sulfite reductase alpha	1	dsra
+sulfur	sulfate_reduction	dsrB	Dissimilatory sulfite reductase beta	1	dsrb
+sulfur	sulfate_reduction	dsr	Dissimilatory sulfite reductase	1	dissimilatory sulfite reductase
+sulfur	sulfur_oxidation	sqr	Sulfide:quinone oxidoreductase	1	sqr
+sulfur	sulfur_oxidation	sqr	Sulfide:quinone oxidoreductase	1	sulfide:quinone oxidoreductase
+sulfur	sulfur_oxidation	soeA	Sulfite dehydrogenase alpha	0	sulfite dehydrogenase
+sulfur	sulfur_oxidation	soeB	Sulfite dehydrogenase beta	0	sulfite oxidase
+sulfur	thiosulfate_tetrathionate	soxA	SoxA	0	soxa
+sulfur	thiosulfate_tetrathionate	soxB	SoxB	1	soxb
+sulfur	thiosulfate_tetrathionate	soxC	SoxC	1	soxc
+sulfur	thiosulfate_tetrathionate	soxD	SoxD	0	soxd
+sulfur	thiosulfate_tetrathionate	soxY	SoxY	1	soxy
+sulfur	thiosulfate_tetrathionate	soxZ	SoxZ	1	soxz
+sulfur	thiosulfate_tetrathionate	tsdA	Thiosulfate dehydrogenase	0	tsd
+sulfur	thiosulfate_tetrathionate	thiosulfate	Thiosulfate metabolism	1	thiosulfate
+sulfur	organosulfur	ssuD	Alkanesulfonate monooxygenase	1	ssud
+sulfur	organosulfur	tauD	Taurine dioxygenase	1	taud
+sulfur	organosulfur	dmdA	DMSP demethylase	0	dmsp
+sulfur	organosulfur	sulfoquinovosidase	Sulfoquinovose degradation	0	sulfoquinovose
+sulfur	dmsp_dms	dmdA	DMSP demethylase	0	dmda
+sulfur	dmsp_dms	dmdA	DMSP demethylase	0	dmsp demethylase
+sulfur	dmsp_dms	dddD	DMSP CoA-transferase/lyase DddD	0	dddd
+sulfur	dmsp_dms	dddD	DMSP CoA-transferase/lyase DddD	0	dmsp coenzyme a transferase/lyase
+sulfur	dmsp_dms	dddP	DMSP lyase DddP	0	dddp
+sulfur	dmsp_dms	dddQ	DMSP lyase DddQ	0	dddq
+sulfur	dmsp_dms	dddL	DMSP lyase DddL	0	dddl
+sulfur	dmsp_dms	dddW	DMSP lyase DddW	0	dddw
+sulfur	dmsp_dms	dddY	DMSP lyase DddY	0	dddy
+sulfur	dmsp_dms	dsyB	DMSP synthase DsyB	0	dsyb
+sulfur	dmsp_dms	mddA	Methanethiol S-methyltransferase	0	mdda
+sulfur	dmsp_dms	mddA	Methanethiol S-methyltransferase	0	methanethiol s-methyltransferase
+sulfur	dmsp_dms	dmsp	DMSP metabolism	0	dmsp
+sulfur	dmsp_dms	dms	Dimethyl sulfide metabolism	0	dimethyl sulfide
+phosphorus	phosphate_scavenging	pstS	Phosphate transport substrate-binding protein	1	psts
+phosphorus	phosphate_scavenging	phoA	Alkaline phosphatase	1	phoa
+phosphorus	phosphate_scavenging	phoD	Alkaline phosphatase D	1	phod
+phosphorus	phosphate_scavenging	phoX	Alkaline phosphatase X	1	phox
+phosphorus	phosphate_scavenging	phosphate	Phosphate uptake/scavenging	1	phosphate transport
+phosphorus	phosphonate_phosphite	phnD	Phosphonate transport substrate-binding protein	1	phnd
+phosphorus	phosphonate_phosphite	phnJ	C-P lyase PhnJ	1	phnj
+phosphorus	phosphonate_phosphite	ptxD	Phosphite dehydrogenase	1	ptxd
+phosphorus	phosphonate_phosphite	phosphonate	Phosphonate metabolism	1	phosphonate
+hydrogen	hydrogen_metabolism	hydA	[FeFe] hydrogenase catalytic subunit	1	hyda
+hydrogen	hydrogen_metabolism	hydB	[FeFe] hydrogenase subunit B	0	hydb
+hydrogen	hydrogen_metabolism	hyaA	[NiFe] hydrogenase subunit A	1	hyaa
+hydrogen	hydrogen_metabolism	hybA	[NiFe] hydrogenase subunit A	1	hyba
+hydrogen	hydrogen_metabolism	hoxH	Bidirectional hydrogenase large subunit	1	hoxh
+hydrogen	hydrogen_metabolism	hydrogenase	Hydrogenase	1	hydrogenase
+iron	iron_redox	cyc2	Outer-membrane cytochrome Cyc2	1	cyc2
+iron	iron_redox	mtrA	Decaheme cytochrome MtrA	1	mtra
+iron	iron_redox	mtrB	Outer membrane porin MtrB	1	mtrb
+iron	iron_redox	mtrC	Outer membrane cytochrome MtrC	1	mtrc
+iron	iron_redox	ferric_reductase	Ferric reductase	1	ferric reductase
+iron	iron_acquisition	fecA	Ferric citrate outer membrane receptor	1	feca
+iron	iron_acquisition	fecT	Ferric uptake regulator	0	fec
+iron	iron_acquisition	tonB	TonB-dependent iron receptor	1	tonb-dependent iron
+iron	iron_acquisition	siderophore	Siderophore transport/synthesis	1	siderophore
+iron	iron_acquisition	heme	Heme uptake	1	heme uptake
+arsenic	arsenic_detox_redox	arsC	Arsenate reductase	1	arsc
+arsenic	arsenic_detox_redox	arsB	Arsenite efflux pump	1	arsb
+arsenic	arsenic_detox_redox	arsA	Arsenite transport ATPase	0	arsa
+arsenic	arsenic_detox_redox	aioA	Arsenite oxidase subunit A	1	aioa
+arsenic	arsenic_detox_redox	aioB	Arsenite oxidase subunit B	0	aiob
+arsenic	arsenic_detox_redox	arrA	Respiratory arsenate reductase	1	arra
+arsenic	arsenic_detox_redox	arsenic	Arsenic metabolism	1	arsenate reductase

@@ -31,7 +31,14 @@ checkm_file = os.path.join(working_dir, "checkm/checkm_output_HPMQ.tsv")  # chec
 seqkit_file = os.path.join(working_dir, "seqkit/seqkit_stats.tsv")  # seqkit output tsv
 checkm_df = pd.read_csv(checkm_file, header=0, sep='\t')
 seqkit_df = pd.read_csv(seqkit_file, header=0, sep='\t')
-seqkit_df['Bin Id'] = [x.rsplit('/', 1)[1].rsplit('.', 1)[0] for x in seqkit_df['file']]
+
+def safe_bin_id(val):
+	if pd.isna(val):
+		return ""
+	base = os.path.basename(str(val))
+	return base.rsplit('.', 1)[0] if '.' in base else base
+
+seqkit_df['Bin Id'] = [safe_bin_id(x) for x in seqkit_df['file']]
 merge_list = ['Bin Id']
 qscore_df = checkm_df.merge(seqkit_df, on=merge_list, how="left")
 print(qscore_df.head())
@@ -53,6 +60,5 @@ keep_cols = ['Genome_Id', 'Bin Id', 'Completeness', 'Contamination', 'Strain het
 #print(set(sorted_df['pass_GUNC']))
 sorted_df['Genome_Id'] = [x.rsplit('.', 1)[0] for x in sorted_df['Bin Id']]
 #sorted_df['Genome_Id'] = [x.split('.', 1)[0] + '.' + x.split('.')[4] for x in sorted_df['Bin Id']]
-print(sorted_df.head())
 mq_df = sorted_df[keep_cols].query("Completeness >= @comp & Contamination <= @cont & qscore >= @qscr").drop_duplicates('Genome_Id')
 mq_df.to_csv(os.path.join(working_dir, 'qscore/qscore_mqhp.tsv'), index=False, sep='\t')

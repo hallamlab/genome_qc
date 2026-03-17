@@ -83,7 +83,7 @@ def create_Contamination_Completeness_plot(mag_data, output_path):
     leg = plt.legend(title='Quality', bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0., frameon=False)
 
     # Manually set edge colors for the legend markers
-    for handle in leg.legendHandles:
+    for handle in leg.legend_handles:
         handle.set_color('black')
         handle.set_linewidth(0.5)
 
@@ -152,7 +152,7 @@ def create_Contamination_Completeness_plot(mag_data, output_path):
     leg = plt.legend(title='DataType', bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0., frameon=False)
 
     # Manually set edge colors for the legend markers
-    for handle in leg.legendHandles:
+    for handle in leg.legend_handles:
         handle.set_color('black')
         handle.set_linewidth(0.5)
 
@@ -216,7 +216,7 @@ def create_Contamination_Completeness_plot(mag_data, output_path):
     leg = plt.legend(title='16S Present', bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0., frameon=False)
 
     # Manually set edge colors for the legend markers
-    for handle in leg.legendHandles:
+    for handle in leg.legend_handles:
         handle.set_color('black')
         handle.set_linewidth(0.5)
 
@@ -281,7 +281,7 @@ def create_Contamination_Completeness_plot(mag_data, output_path):
     leg = plt.legend(title='DataType', bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0., frameon=False)
 
     # Manually set edge colors for the legend markers
-    for handle in leg.legendHandles:
+    for handle in leg.legend_handles:
         handle.set_color('black')
         handle.set_linewidth(0.5)
 
@@ -343,7 +343,7 @@ def create_Contamination_Completeness_plot(mag_data, output_path):
     leg = plt.legend(title='Phylum', bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0., frameon=False)
 
     # Manually set edge colors for the legend markers
-    for handle in leg.legendHandles:
+    for handle in leg.legend_handles:
         handle.set_color('black')
         handle.set_linewidth(0.5)
 

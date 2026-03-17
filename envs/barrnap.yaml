@@ -1,0 +1,7 @@
+name: genome_qc_barrnap
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - barrnap

@@ -1,0 +1,7 @@
+name: genome_qc_trnascan
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - trnascan-se

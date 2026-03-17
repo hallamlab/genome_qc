@@ -1,0 +1,12 @@
+source_id	resource_type	enabled_default	downloadable	url	local_name	parser	description	docs_url
+go_basic_obo	ontology	1	1	https://current.geneontology.org/ontology/go-basic.obo	go-basic.obo	go_obo	Gene Ontology basic OBO for GO term names and namespaces	https://current.geneontology.org/ontology/go-basic.obo
+ec2go	external2go	1	1	https://current.geneontology.org/ontology/external2go/ec2go	ec2go	external2go	Enzyme Commission to GO cross-references	https://www.ebi.ac.uk/GOA/EC2GO
+interpro2go	external2go	1	1	https://current.geneontology.org/ontology/external2go/interpro2go	interpro2go	external2go	InterPro to GO cross-references	https://www.ebi.ac.uk/GOA/ElectronicAnnotationMethods
+metacyc2go	external2go	1	1	https://current.geneontology.org/ontology/external2go/metacyc2go	metacyc2go	external2go	MetaCyc to GO cross-references	https://geneontology.org/docs/download-mappings/
+rhea2go	external2go	1	1	https://current.geneontology.org/ontology/external2go/rhea2go	rhea2go	external2go	Rhea reaction to GO cross-references	https://geneontology.org/docs/download-mappings/
+uniprotkb_kw2go	external2go	1	1	https://current.geneontology.org/ontology/external2go/uniprotkb_kw2go	uniprotkb_kw2go	external2go	UniProt keyword to GO cross-references	https://www.ebi.ac.uk/GOA/Keyword2GO
+unipathway2go	external2go	1	1	https://ftp.ebi.ac.uk/pub/databases/GO/goa/external2go/unipathway2go	unipathway2go	external2go	UniPathway to GO cross-references	https://www.ebi.ac.uk/GOA/UniPathway2GO
+reactome2go	external2go	0	1	https://current.geneontology.org/ontology/external2go/reactome2go	reactome2go	external2go	Reactome to GO cross-references	https://geneontology.org/docs/download-mappings/
+goa_uniprot_all_gaf	goa_annotation	0	1	https://ftp.ebi.ac.uk/pub/databases/GO/goa/UNIPROT/goa_uniprot_all.gaf.gz	goa_uniprot_all.gaf.gz	gaf	UniProtKB GOA upstream GAF for accession-level GO annotations	https://archive.geneontology.org/docs/faq/
+uniprot_sparql_endpoint	api	0	0	https://sparql.uniprot.org/sparql			UniProt SPARQL endpoint for query-time accession and UniRef membership resolution	https://sparql.uniprot.org/
+uniref_graph	api	0	0	https://sparql.uniprot.org/uniref			UniRef named graph for cluster membership and identity relationships	https://sparql.uniprot.org/uniref

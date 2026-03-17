@@ -1,0 +1,7 @@
+name: genome_qc_gtdbtk
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - gtdbtk
