@@ -979,7 +979,7 @@ workflow {
         subset_for_dedupe = subset.map { it }
         def gtdbtkBatchSize = Math.max(1, params.gtdbtk_batch_size as Integer)
         gtdbtk_batches = subset_for_gtdbtk
-            .map { fasta -> tuple(fasta.baseName, fasta) }
+            .map { fasta -> tuple(fasta.baseName, fasta.toString()) }
             .collect()
             .flatMap { records ->
                 def out = []
@@ -1006,7 +1006,7 @@ workflow {
             gtdbtk_batches.map { batch_id, fastas -> tuple(batch_id, fastas, resolvedGTDBTK) }
 
         gtdbtk_batches_out = GTDBTK(gtdbtk_input).outdir
-        gtdbtk = COMBINE_GTDBTK(gtdbtk_batches_out.collect()).outdir
+        gtdbtk = COMBINE_GTDBTK(gtdbtk_batches_out.map { it.toString() }.collect()).outdir
         gtdbtk_map = PARSE_GTDBTK(gtdbtk).mapping
 
         subset_ids = subset_for_ids.map { f -> tuple(f.baseName, f) }
@@ -1053,9 +1053,9 @@ workflow {
 
         gunc_input = bootstrapReferences ?
             gunc_ready
-                .combine(dedupe_fasta.collect().map { fastas -> tuple(fastas) })
+                .combine(dedupe_fasta.map { it.toString() }.collect().map { fastas -> tuple(fastas) })
                 .map { ready, fastas -> tuple(fastas, resolvedGuncDb) } :
-            dedupe_fasta.collect().map { fastas -> tuple(fastas, resolvedGuncDb) }
+            dedupe_fasta.map { it.toString() }.collect().map { fastas -> tuple(fastas, resolvedGuncDb) }
         gunc = GUNC(gunc_input).outdir
 
         master = MERGE_MASTER(dedupe_for_merge, barblast.subunits, trna_counts.counts)
