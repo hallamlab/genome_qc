@@ -39,6 +39,40 @@ def resolveAbsolutePath(pathString) {
     return asFile.getAbsolutePath()
 }
 
+def gtdbtkDbLooksValid(dbPath) {
+    if (!dbPath) {
+        return false
+    }
+    def root = new File(dbPath)
+    if (!root.exists() || !root.isDirectory()) {
+        return false
+    }
+    return new File(root, "VERSION_CONFIG").exists() ||
+           new File(root, "metadata/metadata.txt").exists() ||
+           new File(root, "mrca_red/gtdbtk_r220_bac120.tsv").exists() ||
+           new File(root, "mrca_red/gtdbtk_r226_bac120.tsv").exists()
+}
+
+def guncDbLooksValid(dbPath) {
+    if (!dbPath) {
+        return false
+    }
+    def fileObj = new File(dbPath)
+    return fileObj.exists() && fileObj.isFile() && fileObj.length() > 0
+}
+
+def checkmDataLooksValid(dataPath) {
+    if (!dataPath) {
+        return false
+    }
+    def root = new File(dataPath)
+    if (!root.exists() || !root.isDirectory()) {
+        return false
+    }
+    def children = root.listFiles()
+    return children != null && children.length > 0
+}
+
 
 def genomeId(path) {
     def name
@@ -744,6 +778,17 @@ workflow {
         if (!resolvedGuncDb) {
             throw new IllegalArgumentException("GUNC database path is required. Provide --ref_dir or --gunc_db.")
         }
+        if (!bootstrapReferences) {
+            if (resolvedCheckmData && !checkmDataLooksValid(resolvedCheckmData)) {
+                throw new IllegalArgumentException("CheckM data path is missing or empty: ${resolvedCheckmData}")
+            }
+            if (!gtdbtkDbLooksValid(resolvedGTDBTK)) {
+                throw new IllegalArgumentException("GTDB-Tk data path is missing or incomplete: ${resolvedGTDBTK}")
+            }
+            if (!guncDbLooksValid(resolvedGuncDb)) {
+                throw new IllegalArgumentException("GUNC database file is missing or empty: ${resolvedGuncDb}")
+            }
+        }
 
         if (params.debug) {
             println "[DEBUG] resolved ref_dir=${resolvedRefDir}"
@@ -801,20 +846,22 @@ workflow {
         }
 
         def checkm_ready = null
-        if (resolvedCheckmData) {
+        if (bootstrapReferences && resolvedCheckmData) {
             def checkmRefDir = resolvedRefDir ?: new File(resolvedCheckmData).getParent()
             checkm_ready = SETUP_CHECKM_DB(
                 Channel.of([checkmRefDir, resolvedCheckmData, bootstrapReferences])
             ).ready
         }
-        def gtdbRefDir = resolvedRefDir ?: new File(resolvedGTDBTK).getParent()
-        def guncRefDir = resolvedRefDir ?: new File(resolvedGuncDb).getParent()
-        def gtdb_ready = SETUP_GTDBTK_DB(
-            Channel.of([gtdbRefDir, resolvedGTDBTK, params.gtdbtk_package_url.toString(), bootstrapReferences])
-        ).ready
-        def gunc_ready = SETUP_GUNC_DB(
-            Channel.of([guncRefDir, resolvedGuncDb, bootstrapReferences])
-        ).ready
+        def gtdb_ready = bootstrapReferences ?
+            SETUP_GTDBTK_DB(
+                Channel.of([resolvedRefDir ?: new File(resolvedGTDBTK).getParent(), resolvedGTDBTK, params.gtdbtk_package_url.toString(), bootstrapReferences])
+            ).ready :
+            Channel.of("validated")
+        def gunc_ready = bootstrapReferences ?
+            SETUP_GUNC_DB(
+                Channel.of([resolvedRefDir ?: new File(resolvedGuncDb).getParent(), resolvedGuncDb, bootstrapReferences])
+            ).ready :
+            Channel.of("validated")
 
         filtered = FILTER_FASTA(raw_genomes).fasta
         filtered_for_stats = filtered.map { it }
