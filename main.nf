@@ -911,7 +911,11 @@ workflow {
         subset_for_gtdbtk = subset.map { it }
         subset_for_ids = subset.map { it }
         subset_for_dedupe = subset.map { it }
-        gtdbtk_input = subset_for_gtdbtk.collect().combine(gtdb_ready).map { fastas, ready -> tuple(fastas, resolvedGTDBTK) }
+        gtdbtk_input = bootstrapReferences ?
+            gtdb_ready
+                .combine(subset_for_gtdbtk.collect().map { fastas -> tuple(fastas) })
+                .map { ready, fastas -> tuple(fastas, resolvedGTDBTK) } :
+            subset_for_gtdbtk.collect().map { fastas -> tuple(fastas, resolvedGTDBTK) }
         gtdbtk = GTDBTK(gtdbtk_input).outdir
         gtdbtk_map = PARSE_GTDBTK(gtdbtk).mapping
 
@@ -957,7 +961,11 @@ workflow {
 
         trna_counts = TRNASCAN_PARSE(trna_gffs.collect())
 
-        gunc_input = dedupe_fasta.collect().combine(gunc_ready).map { fastas, ready -> tuple(fastas, resolvedGuncDb) }
+        gunc_input = bootstrapReferences ?
+            gunc_ready
+                .combine(dedupe_fasta.collect().map { fastas -> tuple(fastas) })
+                .map { ready, fastas -> tuple(fastas, resolvedGuncDb) } :
+            dedupe_fasta.collect().map { fastas -> tuple(fastas, resolvedGuncDb) }
         gunc = GUNC(gunc_input).outdir
 
         master = MERGE_MASTER(dedupe_for_merge, barblast.subunits, trna_counts.counts)
