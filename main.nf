@@ -291,23 +291,34 @@ process SUBSET_GENOMES {
     """
 }
 
-process WRITE_GTDBTK_BATCH_MANIFEST {
-    tag "batch${batch_id}"
+process PREP_GTDBTK_BATCHES {
     cpus 1
-    maxForks params.gtdbtk_max_forks
     conda "${projectDir}/envs/utils.yaml"
+    publishDir "${params.working_dir}/manifests", mode: 'copy', overwrite: true
 
     input:
-    tuple val(batch_id), path(fastas)
+    tuple val(subset_dir), val(batch_size)
 
     output:
-    tuple val(batch_id), path("gtdbtk_batch_${batch_id}.list"), emit: manifest
+    path("gtdbtk_batch_*.list"), emit: manifests
 
     script:
     """
-    for f in ${fastas}; do
-      printf "%s\n" "\$f"
-    done > gtdbtk_batch_${batch_id}.list
+    mapfile -t files < <(find "${subset_dir}" -maxdepth 1 -type f -name '*.fasta' | sort)
+    if [ "\${#files[@]}" -eq 0 ]; then
+      echo "No subset FASTA files found in ${subset_dir}" >&2
+      exit 1
+    fi
+
+    idx=0
+    while [ "\$idx" -lt "\${#files[@]}" ]; do
+      batch=( "\${files[@]:idx:${batch_size}}" )
+      seed=\$(for f in "\${batch[@]}"; do basename "\$f" .fasta; done | paste -sd'|' -)
+      batch_id=\$(printf "%s" "\$seed" | md5sum | awk '{print substr(\$1,1,12)}')
+      manifest="gtdbtk_batch_\${batch_id}.list"
+      printf "%s\n" "\${batch[@]}" > "\$manifest"
+      idx=\$((idx + ${batch_size}))
+    done
     """
 }
 
@@ -338,31 +349,13 @@ process GTDBTK {
     """
 }
 
-process WRITE_GTDBTK_DIR_MANIFEST {
-    cpus 1
-    conda "${projectDir}/envs/utils.yaml"
-
-    input:
-    path(gtdbtk_dirs)
-
-    output:
-    path("gtdbtk_merged_dirs.list"), emit: manifest
-
-    script:
-    """
-    for d in ${gtdbtk_dirs}; do
-      printf "%s\n" "\$d"
-    done > gtdbtk_merged_dirs.list
-    """
-}
-
 process COMBINE_GTDBTK {
     cpus 1
     conda "${projectDir}/envs/utils.yaml"
     publishDir "${params.working_dir}/gtdbtk", mode: 'copy', overwrite: true
 
     input:
-    path(gtdbtk_dir_manifest)
+    path(gtdbtk_dirs)
 
     output:
     path("gtdbtk_merged"), emit: outdir
@@ -388,11 +381,10 @@ process COMBINE_GTDBTK {
 
     bac_files=()
     arc_files=()
-    while IFS= read -r d; do
-      [ -n "\$d" ] || continue
+    for d in ${gtdbtk_dirs}; do
       [ -f "\$d/classify/gtdbtk.bac120.summary.tsv" ] && bac_files+=("\$d/classify/gtdbtk.bac120.summary.tsv")
       [ -f "\$d/classify/gtdbtk.ar53.summary.tsv" ] && arc_files+=("\$d/classify/gtdbtk.ar53.summary.tsv")
-    done < ${gtdbtk_dir_manifest}
+    done
 
     if [ "\${#bac_files[@]}" -gt 0 ]; then
       write_merged_summary gtdbtk_merged/classify/gtdbtk.bac120.summary.tsv "\${bac_files[@]}"
@@ -1029,37 +1021,26 @@ workflow {
         subset_for_ids = subset.map { it }
         subset_for_dedupe = subset.map { it }
         def gtdbtkBatchSize = Math.max(1, params.gtdbtk_batch_size as Integer)
-        gtdbtk_batches = subset_for_gtdbtk
-            .map { fasta -> tuple(fasta.baseName, fasta) }
+        subset_dir = new File(params.working_dir.toString(), "genomes_subset").getAbsolutePath()
+        gtdbtk_manifest_input = subset_for_gtdbtk
             .collect()
-            .flatMap { records ->
-                def out = []
-                def ordered = records.sort { a, b -> a[0].toString() <=> b[0].toString() }
-                def grouped = ordered.collate(gtdbtkBatchSize)
-                for (group in grouped) {
-                    def fastas = group.collect { it[1] }
-                    def batchSeed = group.collect { it[0].toString() }.join("|")
-                    def batchId = java.security.MessageDigest
-                        .getInstance("MD5")
-                        .digest(batchSeed.getBytes("UTF-8"))
-                        .encodeHex()
-                        .toString()
-                        .substring(0, 12)
-                    out << tuple(batchId, fastas)
-                }
-                return out
-            }
-        gtdbtk_manifest = WRITE_GTDBTK_BATCH_MANIFEST(gtdbtk_batches).manifest
+            .map { _ -> tuple(subset_dir, gtdbtkBatchSize) }
+        gtdbtk_manifests = PREP_GTDBTK_BATCHES(gtdbtk_manifest_input).manifests
 
         gtdbtk_input = bootstrapReferences ?
             gtdb_ready
-                .combine(gtdbtk_manifest)
-                .map { ready, batch_id, fasta_manifest -> tuple(batch_id, fasta_manifest, resolvedGTDBTK) } :
-            gtdbtk_manifest.map { batch_id, fasta_manifest -> tuple(batch_id, fasta_manifest, resolvedGTDBTK) }
+                .combine(gtdbtk_manifests)
+                .map { ready, fasta_manifest ->
+                    def batchId = fasta_manifest.baseName.replaceFirst(/^gtdbtk_batch_/, "")
+                    tuple(batchId, fasta_manifest, resolvedGTDBTK)
+                } :
+            gtdbtk_manifests.map { fasta_manifest ->
+                def batchId = fasta_manifest.baseName.replaceFirst(/^gtdbtk_batch_/, "")
+                tuple(batchId, fasta_manifest, resolvedGTDBTK)
+            }
 
         gtdbtk_batches_out = GTDBTK(gtdbtk_input).outdir
-        gtdbtk_dir_manifest = WRITE_GTDBTK_DIR_MANIFEST(gtdbtk_batches_out.collect()).manifest
-        gtdbtk = COMBINE_GTDBTK(gtdbtk_dir_manifest).outdir
+        gtdbtk = COMBINE_GTDBTK(gtdbtk_batches_out.collect()).outdir
         gtdbtk_map = PARSE_GTDBTK(gtdbtk).mapping
 
         subset_ids = subset_for_ids.map { f -> tuple(f.baseName, f) }
