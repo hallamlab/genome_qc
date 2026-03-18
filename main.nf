@@ -1019,6 +1019,7 @@ workflow {
             .collect()
             .map { _ -> tuple(subset_dir, gtdbtkBatchSize) }
         gtdbtk_manifests = PREP_GTDBTK_BATCHES(gtdbtk_manifest_input).manifests
+            .flatMap { manifests -> normalizeToList(manifests) }
 
         gtdbtk_input = bootstrapReferences ?
             gtdb_ready
