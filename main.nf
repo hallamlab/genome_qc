@@ -659,7 +659,7 @@ process GUNC {
     publishDir "${params.working_dir}/gunc", mode: 'copy', overwrite: true
 
     input:
-    tuple path(dedupe_fasta_manifest), val(gunc_db)
+    tuple val(dedupe_fasta_dir), val(gunc_db)
 
     output:
     path("gunc"), emit: outdir
@@ -671,33 +671,15 @@ process GUNC {
       exit 1
     fi
     mkdir -p gunc dedupe_fasta
-    if [ ! -s ${dedupe_fasta_manifest} ]; then
-      echo "No deduped FASTA files provided to GUNC; skipping."
+    mapfile -t fastas < <(find "${dedupe_fasta_dir}" -maxdepth 1 -type f -name '*.fasta' | sort)
+    if [ "\${#fastas[@]}" -eq 0 ]; then
+      echo "No deduped FASTA files found under ${dedupe_fasta_dir}; skipping."
       exit 0
     fi
-    while IFS= read -r f; do
-      [ -n "\$f" ] || continue
+    for f in "\${fastas[@]}"; do
       cp "\$f" dedupe_fasta/
-    done < ${dedupe_fasta_manifest}
+    done
     gunc run -r ${gunc_db} -d dedupe_fasta -o gunc -e .fasta -t ${task.cpus}
-    """
-}
-
-process WRITE_GUNC_FASTA_MANIFEST {
-    cpus 1
-    conda "${projectDir}/envs/utils.yaml"
-
-    input:
-    path(dedupe_fastas)
-
-    output:
-    path("gunc_dedupe_fastas.list"), emit: manifest
-
-    script:
-    """
-    for f in ${dedupe_fastas}; do
-      printf "%s\n" "\$f"
-    done > gunc_dedupe_fastas.list
     """
 }
 
@@ -1097,12 +1079,13 @@ workflow {
 
         trna_counts = TRNASCAN_PARSE(trna_gffs.collect())
 
+        dedupe_fasta_dir = new File(params.working_dir.toString(), "dedupe/fasta").getAbsolutePath()
         gunc_input = bootstrapReferences ?
             gunc_ready
-                .combine(WRITE_GUNC_FASTA_MANIFEST(dedupe_fasta.collect()).manifest)
-                .map { ready, fastas_manifest -> tuple(fastas_manifest, resolvedGuncDb) } :
-            WRITE_GUNC_FASTA_MANIFEST(dedupe_fasta.collect()).manifest.map { fastas_manifest ->
-                tuple(fastas_manifest, resolvedGuncDb)
+                .combine(dedupe_fasta.collect().map { _ -> tuple(dedupe_fasta_dir) })
+                .map { ready, fasta_dir -> tuple(fasta_dir, resolvedGuncDb) } :
+            dedupe_fasta.collect().map { _ ->
+                tuple(dedupe_fasta_dir, resolvedGuncDb)
             }
         gunc = GUNC(gunc_input).outdir
 
