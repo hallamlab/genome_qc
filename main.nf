@@ -89,6 +89,14 @@ def shellQuote(value) {
     return "'" + value.toString().replace("'", "'\"'\"'") + "'"
 }
 
+def writeManifestFile(pathString, values) {
+    def outFile = new File(pathString)
+    outFile.parentFile?.mkdirs()
+    def lines = normalizeToList(values).collect { it.toString() }
+    outFile.text = lines ? (lines.join(System.lineSeparator()) + System.lineSeparator()) : ""
+    return file(outFile.getAbsolutePath())
+}
+
 
 def genomeId(path) {
     def name
@@ -304,17 +312,18 @@ process GTDBTK {
     publishDir "${params.working_dir}/gtdbtk/individual", mode: 'copy', overwrite: true
 
     input:
-    tuple val(batch_id), val(fastas), val(gtdbtk_data_path)
+    tuple val(batch_id), path(fasta_manifest), val(gtdbtk_data_path)
 
     output:
     path("gtdbtk_${batch_id}"), emit: outdir
 
     script:
-    def fastaList = normalizeToList(fastas)
-    def copyCommands = fastaList.collect { f -> "cp ${shellQuote(f)} genomes/" }.join('\n')
     """
     mkdir -p genomes
-    ${copyCommands}
+    while IFS= read -r f; do
+      [ -n "\$f" ] || continue
+      cp "\$f" genomes/
+    done < ${fasta_manifest}
     if [ -n "${gtdbtk_data_path}" ]; then
       export GTDBTK_DATA_PATH="${gtdbtk_data_path}"
     fi
@@ -328,18 +337,12 @@ process COMBINE_GTDBTK {
     publishDir "${params.working_dir}/gtdbtk", mode: 'copy', overwrite: true
 
     input:
-    val(gtdbtk_dirs)
+    path(gtdbtk_dir_manifest)
 
     output:
     path("gtdbtk_merged"), emit: outdir
 
     script:
-    def gtdbtkDirList = normalizeToList(gtdbtk_dirs)
-    def addDirCommands = gtdbtkDirList.collect { d ->
-        def quoted = shellQuote(d)
-        return """[ -f ${quoted}/classify/gtdbtk.bac120.summary.tsv ] && bac_files+=(${quoted}/classify/gtdbtk.bac120.summary.tsv)
-[ -f ${quoted}/classify/gtdbtk.ar53.summary.tsv ] && arc_files+=(${quoted}/classify/gtdbtk.ar53.summary.tsv)"""
-    }.join('\n')
     """
     mkdir -p gtdbtk_merged/classify
 
@@ -360,7 +363,11 @@ process COMBINE_GTDBTK {
 
     bac_files=()
     arc_files=()
-    ${addDirCommands}
+    while IFS= read -r d; do
+      [ -n "\$d" ] || continue
+      [ -f "\$d/classify/gtdbtk.bac120.summary.tsv" ] && bac_files+=("\$d/classify/gtdbtk.bac120.summary.tsv")
+      [ -f "\$d/classify/gtdbtk.ar53.summary.tsv" ] && arc_files+=("\$d/classify/gtdbtk.ar53.summary.tsv")
+    done < ${gtdbtk_dir_manifest}
 
     if [ "\${#bac_files[@]}" -gt 0 ]; then
       write_merged_summary gtdbtk_merged/classify/gtdbtk.bac120.summary.tsv "\${bac_files[@]}"
@@ -624,25 +631,26 @@ process GUNC {
     publishDir "${params.working_dir}/gunc", mode: 'copy', overwrite: true
 
     input:
-    tuple val(dedupe_fasta), val(gunc_db)
+    tuple path(dedupe_fasta_manifest), val(gunc_db)
 
     output:
     path("gunc"), emit: outdir
 
     script:
-    def dedupeFastaList = normalizeToList(dedupe_fasta)
-    def copyCommands = dedupeFastaList.collect { f -> "cp ${shellQuote(f)} dedupe_fasta/" }.join('\n')
     """
     if [ -z "${gunc_db}" ]; then
       echo "params.gunc_db is required" >&2
       exit 1
     fi
     mkdir -p gunc dedupe_fasta
-    if [ "${dedupeFastaList.size()}" -eq 0 ]; then
+    if [ ! -s ${dedupe_fasta_manifest} ]; then
       echo "No deduped FASTA files provided to GUNC; skipping."
       exit 0
     fi
-    ${copyCommands}
+    while IFS= read -r f; do
+      [ -n "\$f" ] || continue
+      cp "\$f" dedupe_fasta/
+    done < ${dedupe_fasta_manifest}
     gunc run -r ${gunc_db} -d dedupe_fasta -o gunc -e .fasta -t ${task.cpus}
     """
 }
@@ -994,7 +1002,8 @@ workflow {
                         .encodeHex()
                         .toString()
                         .substring(0, 12)
-                    out << tuple(batchId, fastas)
+                    def manifestPath = new File(params.working_dir.toString(), "manifests/gtdbtk_batch_${batchId}.list").getAbsolutePath()
+                    out << tuple(batchId, writeManifestFile(manifestPath, fastas))
                 }
                 return out
             }
@@ -1002,11 +1011,18 @@ workflow {
         gtdbtk_input = bootstrapReferences ?
             gtdb_ready
                 .combine(gtdbtk_batches)
-                .map { ready, batch_id, fastas -> tuple(batch_id, fastas, resolvedGTDBTK) } :
-            gtdbtk_batches.map { batch_id, fastas -> tuple(batch_id, fastas, resolvedGTDBTK) }
+                .map { ready, batch_id, fasta_manifest -> tuple(batch_id, fasta_manifest, resolvedGTDBTK) } :
+            gtdbtk_batches.map { batch_id, fasta_manifest -> tuple(batch_id, fasta_manifest, resolvedGTDBTK) }
 
         gtdbtk_batches_out = GTDBTK(gtdbtk_input).outdir
-        gtdbtk = COMBINE_GTDBTK(gtdbtk_batches_out.map { it.toString() }.collect()).outdir
+        gtdbtk_dir_manifest = gtdbtk_batches_out
+            .map { it.toString() }
+            .collect()
+            .map { dirs ->
+                def manifestPath = new File(params.working_dir.toString(), "manifests/gtdbtk_merged_dirs.list").getAbsolutePath()
+                writeManifestFile(manifestPath, dirs)
+            }
+        gtdbtk = COMBINE_GTDBTK(gtdbtk_dir_manifest).outdir
         gtdbtk_map = PARSE_GTDBTK(gtdbtk).mapping
 
         subset_ids = subset_for_ids.map { f -> tuple(f.baseName, f) }
@@ -1053,9 +1069,15 @@ workflow {
 
         gunc_input = bootstrapReferences ?
             gunc_ready
-                .combine(dedupe_fasta.map { it.toString() }.collect().map { fastas -> tuple(fastas) })
-                .map { ready, fastas -> tuple(fastas, resolvedGuncDb) } :
-            dedupe_fasta.map { it.toString() }.collect().map { fastas -> tuple(fastas, resolvedGuncDb) }
+                .combine(dedupe_fasta.map { it.toString() }.collect().map { fastas ->
+                    def manifestPath = new File(params.working_dir.toString(), "manifests/gunc_dedupe_fastas.list").getAbsolutePath()
+                    tuple(writeManifestFile(manifestPath, fastas))
+                })
+                .map { ready, fastas_manifest -> tuple(fastas_manifest, resolvedGuncDb) } :
+            dedupe_fasta.map { it.toString() }.collect().map { fastas ->
+                def manifestPath = new File(params.working_dir.toString(), "manifests/gunc_dedupe_fastas.list").getAbsolutePath()
+                tuple(writeManifestFile(manifestPath, fastas), resolvedGuncDb)
+            }
         gunc = GUNC(gunc_input).outdir
 
         master = MERGE_MASTER(dedupe_for_merge, barblast.subunits, trna_counts.counts)
