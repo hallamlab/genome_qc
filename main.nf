@@ -548,30 +548,41 @@ process CP_DEDUPE {
 
     input:
     path(dedupe_mqhp)
-    path(subset_fastas)
+    val(subset_dir)
 
     output:
     path("*.fasta"), optional: true, emit: fasta
+    path("cp_dedupe_audit.tsv"), emit: audit
 
     script:
     """
+    printf "requested_id\\tmatched_fasta\\tstatus\\n" > cp_dedupe_audit.tsv
+    requested=0
+    copied=0
     while read -r g; do
       [ -z "\$g" ] && continue
+      requested=\$((requested + 1))
       found=""
       dest="\${g}.fasta"
-      for f in ${subset_fastas}; do
+      while IFS= read -r f; do
         base=\$(basename "\$f" .fasta)
         if [ "\$base" = "\$g" ]; then
           found="\$f"
           break
         fi
-      done
+      done < <(find "${subset_dir}" -maxdepth 1 -type f -name '*.fasta' | sort)
       if [ -n "\$found" ]; then
-        if [ "\$(readlink -f "\$found")" != "\$(readlink -f "\$dest")" ]; then
-          cp "\$found" "\$dest"
-        fi
+        cp "\$found" "\$dest"
+        copied=\$((copied + 1))
+        printf "%s\\t%s\\tcopied\\n" "\$g" "\$found" >> cp_dedupe_audit.tsv
+      else
+        printf "%s\\t\\tmissing\\n" "\$g" >> cp_dedupe_audit.tsv
       fi
     done < <(tail -n +2 ${dedupe_mqhp} | cut -f2)
+    if [ "\$requested" -gt 0 ] && [ "\$copied" -eq 0 ]; then
+      echo "CP_DEDUPE found zero matching FASTA files under ${subset_dir}" >&2
+      exit 1
+    fi
     """
 }
 
@@ -1061,7 +1072,8 @@ workflow {
         dedupe_for_parse = dedupe.mqhp.map { it }
         dedupe_for_merge = dedupe.mqhp.map { it }
 
-        dedupe_fasta = CP_DEDUPE(dedupe_for_cp, subset_for_dedupe.collect()).fasta
+        subset_dir_for_dedupe = new File(params.working_dir.toString(), "genomes_subset").getAbsolutePath()
+        dedupe_fasta = CP_DEDUPE(dedupe_for_cp, subset_dir_for_dedupe).fasta
 
         dedupe_map = PARSE_DEDUPE_KINGDOM(dedupe_for_parse).mapping
         dedupe_kingdom = dedupe_map.map { f ->
