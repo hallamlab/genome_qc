@@ -559,18 +559,17 @@ process CP_DEDUPE {
     printf "requested_id\\tmatched_fasta\\tstatus\\n" > cp_dedupe_audit.tsv
     requested=0
     copied=0
+    declare -A subset_map
+    while IFS= read -r f; do
+      [ -n "\$f" ] || continue
+      base=\$(basename "\$f" .fasta)
+      subset_map["\$base"]="\$f"
+    done < <(find "${subset_dir}" -maxdepth 1 -type f -name '*.fasta' | sort)
     while read -r g; do
       [ -z "\$g" ] && continue
       requested=\$((requested + 1))
-      found=""
+      found="\${subset_map[\$g]}"
       dest="\${g}.fasta"
-      while IFS= read -r f; do
-        base=\$(basename "\$f" .fasta)
-        if [ "\$base" = "\$g" ]; then
-          found="\$f"
-          break
-        fi
-      done < <(find "${subset_dir}" -maxdepth 1 -type f -name '*.fasta' | sort)
       if [ -n "\$found" ]; then
         cp "\$found" "\$dest"
         copied=\$((copied + 1))
