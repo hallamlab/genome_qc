@@ -384,6 +384,186 @@ def preferred_method_rank(label):
     return 999
 
 
+def classify_method_label(label):
+    text = str(label).strip()
+    lowered = text.lower()
+    family = "other"
+    if "sag" in lowered and "mag" not in lowered:
+        family = "SAG"
+    elif "mag" in lowered and "sag" not in lowered:
+        family = "MAG"
+    variant_status = "variant" if "xpg" in lowered else "base"
+    return {
+        "method_label": text,
+        "method_family": family,
+        "variant_status": variant_status,
+    }
+
+
+def classify_method_pair(group_a, group_b):
+    left = classify_method_label(group_a)
+    right = classify_method_label(group_b)
+    same_family = left["method_family"] == right["method_family"]
+    same_variant_status = left["variant_status"] == right["variant_status"]
+    if same_family and not same_variant_status and left["method_family"] in {"MAG", "SAG"}:
+        comparison_class = "variant_vs_base"
+    elif left["method_family"] != right["method_family"]:
+        comparison_class = "cross_family"
+    elif same_family and same_variant_status:
+        comparison_class = f"within_{left['method_family'].lower()}_{left['variant_status']}"
+    else:
+        comparison_class = "other"
+    return {
+        "group_a_family": left["method_family"],
+        "group_b_family": right["method_family"],
+        "group_a_variant_status": left["variant_status"],
+        "group_b_variant_status": right["variant_status"],
+        "same_family": same_family,
+        "same_variant_status": same_variant_status,
+        "comparison_class": comparison_class,
+    }
+
+
+def annotate_pairwise_comparisons(results_df):
+    if results_df is None or results_df.empty:
+        return results_df
+    annotated = results_df.copy()
+    if "group_a" not in annotated.columns or "group_b" not in annotated.columns:
+        return annotated
+    annotations = [classify_method_pair(a, b) for a, b in zip(annotated["group_a"], annotated["group_b"])]
+    annotation_df = pd.DataFrame(annotations, index=annotated.index)
+    for column in annotation_df.columns:
+        annotated[column] = annotation_df[column]
+    return annotated
+
+
+def assign_exact_match_key(frame):
+    working = frame.copy()
+    if "pre_ani_bin_key" in working.columns:
+        working["exact_match_key"] = working["pre_ani_bin_key"].fillna("").astype(str).str.strip()
+    else:
+        working["exact_match_key"] = ""
+    fallback_mask = working["exact_match_key"].eq("")
+    if fallback_mask.any():
+        working.loc[fallback_mask, "exact_match_key"] = working.loc[fallback_mask].apply(best_set_key, axis=1)
+    return working
+
+
+def filter_variants_to_base_exact_matches(frame, compare_column, sample_column=None):
+    if frame is None or frame.empty or compare_column not in frame.columns:
+        return frame
+
+    categories = ordered_unique_categories(frame[compare_column].astype(str).tolist())
+    labels = {category: classify_method_label(category) for category in categories}
+    families = {info["method_family"] for info in labels.values() if info["method_family"] in {"MAG", "SAG"}}
+    if len(families) != 1:
+        return frame
+    family = next(iter(families))
+    base_categories = [category for category, info in labels.items() if info["method_family"] == family and info["variant_status"] == "base"]
+    variant_categories = [category for category, info in labels.items() if info["method_family"] == family and info["variant_status"] == "variant"]
+    if not base_categories or not variant_categories:
+        return frame
+
+    working = assign_exact_match_key(frame)
+    working = working.loc[working[compare_column].astype(str).str.strip().ne("")].copy()
+    working = working.loc[working["exact_match_key"].astype(str).ne("")].copy()
+    if working.empty:
+        return working
+
+    selected_sample = choose_sample_column(working, sample_column)
+    if selected_sample and selected_sample in working.columns:
+        working[selected_sample] = working[selected_sample].fillna("").astype(str).str.strip()
+        working = working.loc[working[selected_sample].ne("")].copy()
+        if working.empty:
+            return working
+        base_keys = set(
+            working.loc[working[compare_column].astype(str).isin(base_categories), [selected_sample, "exact_match_key"]]
+            .drop_duplicates()
+            .itertuples(index=False, name=None)
+        )
+        keep_mask = ~working[compare_column].astype(str).isin(variant_categories)
+        keep_mask |= [
+            (str(sample_value), str(key_value)) in base_keys
+            for sample_value, key_value in zip(working[selected_sample], working["exact_match_key"])
+        ]
+        return working.loc[keep_mask].copy()
+
+    base_keys = set(
+        working.loc[working[compare_column].astype(str).isin(base_categories), "exact_match_key"]
+        .astype(str)
+        .drop_duplicates()
+        .tolist()
+    )
+    keep_mask = ~working[compare_column].astype(str).isin(variant_categories)
+    keep_mask |= working["exact_match_key"].astype(str).isin(base_keys)
+    return working.loc[keep_mask].copy()
+
+
+def summarize_variant_filter_audit(frame, compare_column, sample_column=None):
+    if frame is None or frame.empty or compare_column not in frame.columns:
+        return None
+
+    categories = ordered_unique_categories(frame[compare_column].astype(str).tolist())
+    labels = {category: classify_method_label(category) for category in categories}
+    families = {info["method_family"] for info in labels.values() if info["method_family"] in {"MAG", "SAG"}}
+    if len(families) != 1:
+        return None
+    family = next(iter(families))
+    base_categories = [category for category, info in labels.items() if info["method_family"] == family and info["variant_status"] == "base"]
+    variant_categories = [category for category, info in labels.items() if info["method_family"] == family and info["variant_status"] == "variant"]
+    if not base_categories or not variant_categories:
+        return None
+
+    working = assign_exact_match_key(frame)
+    working = working.loc[working[compare_column].astype(str).str.strip().ne("")].copy()
+    working = working.loc[working["exact_match_key"].astype(str).ne("")].copy()
+    if working.empty:
+        return None
+
+    selected_sample = choose_sample_column(working, sample_column)
+    sample_values = ["all_samples"]
+    if selected_sample and selected_sample in working.columns:
+        working[selected_sample] = working[selected_sample].fillna("").astype(str).str.strip()
+        working = working.loc[working[selected_sample].ne("")].copy()
+        if working.empty:
+            return None
+        sample_values = sorted(working[selected_sample].astype(str).drop_duplicates().tolist())
+
+    rows = []
+    for sample_value in sample_values:
+        subset = working.copy() if sample_value == "all_samples" else working.loc[working[selected_sample].astype(str).eq(str(sample_value))].copy()
+        if subset.empty:
+            continue
+        base_keys = set(
+            subset.loc[subset[compare_column].astype(str).isin(base_categories), "exact_match_key"]
+            .astype(str)
+            .drop_duplicates()
+            .tolist()
+        )
+        variant_keys_before = set(
+            subset.loc[subset[compare_column].astype(str).isin(variant_categories), "exact_match_key"]
+            .astype(str)
+            .drop_duplicates()
+            .tolist()
+        )
+        variant_keys_after = variant_keys_before & base_keys
+        removed_keys = sorted(variant_keys_before - base_keys)
+        rows.append(
+            {
+                "family": family,
+                "base_categories": ";".join(base_categories),
+                "variant_categories": ";".join(variant_categories),
+                "sample": str(sample_value),
+                "base_exact_key_count": int(len(base_keys)),
+                "variant_exact_key_count_before_filter": int(len(variant_keys_before)),
+                "variant_exact_key_count_after_filter": int(len(variant_keys_after)),
+                "removed_orphan_exact_key_count": int(len(removed_keys)),
+                "removed_orphan_exact_keys": ";".join(removed_keys),
+            }
+        )
+    return pd.DataFrame(rows) if rows else None
+
+
 def ordered_unique_categories(values):
     unique_values = sorted(
         {
@@ -656,7 +836,7 @@ def connected_components(nodes, edges):
 
 
 def summarize_fastani_matches(frame, pair_df, compare_column, ani_threshold, af_threshold):
-    compare_df = prepare_compare_frame(frame, compare_column)
+    compare_df = filter_variants_to_base_exact_matches(prepare_compare_frame(frame, compare_column), compare_column, sample_column="sample")
     record_to_category = dict(
         zip(compare_df["ani_record_id"].astype(str), compare_df[compare_column].astype(str))
     )
@@ -830,6 +1010,53 @@ def component_map_from_pairs(compare_df, pair_summary):
     for index, nodes in enumerate(components, start=1):
         component_id = f"component_{index:04d}"
         for node in nodes:
+            component_map[node] = component_id
+    return component_map
+
+
+def strict_component_map_from_pairs(compare_df, pair_summary, order_by=None, ascending=None):
+    if compare_df.empty or "ani_record_id" not in compare_df.columns:
+        return {}
+
+    working = compare_df.copy()
+    working["ani_record_id"] = working["ani_record_id"].astype(str)
+    if order_by:
+        order_columns = [column for column in order_by if column in working.columns]
+        order_ascending = [asc for column, asc in zip(order_by, ascending or []) if column in working.columns]
+        if order_columns:
+            working = working.sort_values(by=order_columns, ascending=order_ascending, kind="mergesort")
+        ordered_nodes = working["ani_record_id"].tolist()
+    else:
+        ordered_nodes = sorted(working["ani_record_id"].tolist())
+
+    node_set = set(ordered_nodes)
+    adjacency = {node: set() for node in ordered_nodes}
+    if not pair_summary.empty:
+        filtered_edges = pair_summary.loc[pair_summary["passes_threshold"], ["record_a", "record_b"]]
+        for record_a, record_b in filtered_edges.itertuples(index=False, name=None):
+            if record_a in node_set and record_b in node_set and record_a != record_b:
+                adjacency[record_a].add(record_b)
+                adjacency[record_b].add(record_a)
+
+    remaining = set(ordered_nodes)
+    component_map = {}
+    component_index = 1
+    for seed in ordered_nodes:
+        if seed not in remaining:
+            continue
+        clique = [seed]
+        remaining.remove(seed)
+        for candidate in ordered_nodes:
+            if candidate not in remaining:
+                continue
+            if candidate not in adjacency[seed]:
+                continue
+            if all(candidate in adjacency[member] for member in clique):
+                clique.append(candidate)
+                remaining.remove(candidate)
+        component_id = f"strict_component_{component_index:04d}"
+        component_index += 1
+        for node in clique:
             component_map[node] = component_id
     return component_map
 
@@ -1442,8 +1669,12 @@ def plot_compare_qscore(ax, frame, compare_column):
     style_long_ticklabels(ax, axis="x", rotation=90, size=8)
 
 
-def plot_compare_hallmarks(ax, frame, compare_column):
+def plot_compare_hallmarks(ax, frame, compare_column, title=None, show_legend=True):
     compare_df = prepare_compare_frame(frame, compare_column)
+    if compare_df.empty:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "No genomes available", ha="center", va="center")
+        return
     order = category_order(compare_df, compare_column)
     feature_df = (
         compare_df.groupby(compare_column)[
@@ -1475,9 +1706,12 @@ def plot_compare_hallmarks(ax, frame, compare_column):
     ax.set_ylim(0, 1)
     ax.set_xlabel(compare_column)
     ax.set_ylabel("Mean contribution")
-    ax.set_title(f"Hallmark contributions by {compare_column}")
+    ax.set_title(title or f"Hallmark contributions by {compare_column}")
     style_long_ticklabels(ax, axis="x", rotation=90, size=8)
-    place_axis_legend_right(ax, title="Feature")
+    if show_legend:
+        place_axis_legend_right(ax, title="Feature")
+    elif ax.get_legend() is not None:
+        ax.get_legend().remove()
 
 
 def plot_compare_recovery_patterns(ax, frame, compare_column):
@@ -1824,15 +2058,31 @@ def build_best_sample_method_set_from_ani(
         ).copy()
         pair_summary = pair_summary.loc[
             pair_summary["sample_a"].astype(str).eq(pair_summary["sample_b"].astype(str))
-            & pair_summary["category_a"].astype(str).eq(pair_summary["category_b"].astype(str))
         ].copy()
         pair_summary["passes_threshold"] = (
             pd.to_numeric(pair_summary["ani_mean"], errors="coerce").ge(ani_threshold)
             & pd.to_numeric(pair_summary["af_min"], errors="coerce").ge(ani_af_threshold)
         )
 
+    tier_rank = {"high": 0, "medium": 1, "low": 2}
+    working["__mimag_rank"] = (
+        working["mimag_tier"].astype(str).str.lower().map(tier_rank).fillna(3).astype(int)
+    )
+    cluster_sort_specs = [
+        ("__mimag_rank", True),
+        ("integrity_score", False),
+        ("recoverability_score", False),
+        ("qscore", False),
+        ("Completeness", False),
+        ("Contamination", True),
+        ("Genome_Id", True),
+        ("Bin Id", True),
+    ]
+    cluster_sort_columns = [column for column, _ in cluster_sort_specs if column in working.columns]
+    cluster_sort_ascending = [ascending for column, ascending in cluster_sort_specs if column in working.columns]
+
     record_to_component = {}
-    for (sample_value, method_value), group in working.groupby([selected_sample, compare_column], sort=False):
+    for sample_value, group in working.groupby(selected_sample, sort=False):
         subset = group.copy()
         subset_records = set(subset["ani_record_id"].astype(str).tolist())
         if pair_summary.empty:
@@ -1842,13 +2092,15 @@ def build_best_sample_method_set_from_ani(
                 pair_summary["record_a"].astype(str).isin(subset_records)
                 & pair_summary["record_b"].astype(str).isin(subset_records)
                 & pair_summary["sample_a"].astype(str).eq(str(sample_value))
-                & pair_summary["category_a"].astype(str).eq(str(method_value))
             ].copy()
-        local_component_map = component_map_from_pairs(subset, subset_pairs)
+        local_component_map = strict_component_map_from_pairs(
+            subset,
+            subset_pairs,
+            order_by=cluster_sort_columns,
+            ascending=cluster_sort_ascending,
+        )
         for record_id, local_component in local_component_map.items():
-            record_to_component[str(record_id)] = (
-                f"{sample_value}|{method_value}|{local_component}"
-            )
+            record_to_component[str(record_id)] = f"{sample_value}|{local_component}"
 
     working["ani_component_id"] = working["ani_record_id"].astype(str).map(record_to_component)
     missing_component = working["ani_component_id"].isna()
@@ -1861,10 +2113,6 @@ def build_best_sample_method_set_from_ani(
             + working.loc[missing_component, "ani_record_id"].astype(str)
         )
 
-    tier_rank = {"high": 0, "medium": 1, "low": 2}
-    working["__mimag_rank"] = (
-        working["mimag_tier"].astype(str).str.lower().map(tier_rank).fillna(3).astype(int)
-    )
     sort_specs = [
         (selected_sample, True),
         (compare_column, True),
@@ -1884,13 +2132,13 @@ def build_best_sample_method_set_from_ani(
         working = working.sort_values(by=sort_columns, ascending=sort_ascending, kind="mergesort")
 
     selected = (
-        working.groupby([selected_sample, compare_column, "ani_component_id"], as_index=False, sort=False)
+        working.groupby([selected_sample, "ani_component_id"], as_index=False, sort=False)
         .head(1)
         .copy()
     )
     selected["best_set_key"] = selected["ani_component_id"].astype(str)
-    selected["best_set_strategy"] = "ani_component"
-    selected["best_selection_metric"] = "ani_component>mimag_tier>integrity>recoverability>qscore"
+    selected["best_set_strategy"] = "ani_strict_component"
+    selected["best_selection_metric"] = "ani_strict_component>mimag_tier>integrity>recoverability>qscore"
     selected = selected.drop(columns=["__mimag_rank"], errors="ignore")
     return selected, selected_sample
 
@@ -1936,7 +2184,6 @@ def build_best_sample_method_set(compare_df, compare_column, sample_column=None,
     )
     sort_specs = [
         (selected_sample, True),
-        (compare_column, True),
         ("best_set_key", True),
         ("__mimag_rank", True),
         ("integrity_score", False),
@@ -1953,7 +2200,7 @@ def build_best_sample_method_set(compare_df, compare_column, sample_column=None,
         working = working.sort_values(by=sort_columns, ascending=sort_ascending, kind="mergesort")
 
     selected = (
-        working.groupby([selected_sample, compare_column, "best_set_key"], as_index=False, sort=False)
+        working.groupby([selected_sample, "best_set_key"], as_index=False, sort=False)
         .head(1)
         .copy()
     )
@@ -1961,6 +2208,152 @@ def build_best_sample_method_set(compare_df, compare_column, sample_column=None,
     selected["best_selection_metric"] = "mimag_tier>integrity>recoverability>qscore"
     selected = selected.drop(columns=["__mimag_rank"], errors="ignore")
     return selected, selected_sample
+
+
+def build_exact_match_presence_table(compare_df, compare_column, sample_column=None):
+    if compare_df is None or compare_df.empty:
+        return pd.DataFrame()
+
+    working = compare_df.copy()
+    selected_sample = choose_sample_column(working, sample_column)
+    if selected_sample and selected_sample in working.columns:
+        working[selected_sample] = working[selected_sample].fillna("").astype(str).str.strip()
+    working[compare_column] = working[compare_column].fillna("").astype(str).str.strip()
+    working = working.loc[working[compare_column].ne("")].copy()
+    if selected_sample and selected_sample in working.columns:
+        working = working.loc[working[selected_sample].ne("")].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    if "pre_ani_bin_key" in working.columns:
+        working["exact_match_key"] = working["pre_ani_bin_key"].fillna("").astype(str).str.strip()
+    else:
+        working["exact_match_key"] = ""
+    fallback_mask = working["exact_match_key"].eq("")
+    if fallback_mask.any():
+        working.loc[fallback_mask, "exact_match_key"] = working.loc[fallback_mask].apply(best_set_key, axis=1)
+    working = working.loc[working["exact_match_key"].astype(str).ne("")].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    group_cols = [compare_column, 'exact_match_key']
+    if selected_sample and selected_sample in working.columns:
+        group_cols.insert(0, selected_sample)
+    categories = ordered_unique_categories(working[compare_column].astype(str).tolist())
+    presence = (
+        working.groupby(group_cols)
+        .size()
+        .rename('n_rows')
+        .reset_index()
+    )
+    index_cols = [c for c in [selected_sample, 'exact_match_key'] if c and c in presence.columns]
+    pivot = (
+        presence.assign(present=1)
+        .pivot_table(index=index_cols, columns=compare_column, values='present', aggfunc='max', fill_value=0)
+        .reindex(columns=categories, fill_value=0)
+        .reset_index()
+    )
+    category_cols = [c for c in pivot.columns if c not in index_cols]
+    if category_cols:
+        pivot['category_count'] = pivot[category_cols].sum(axis=1).astype(int)
+        pivot['categories_present'] = pivot[category_cols].apply(
+            lambda row: ';'.join([str(col) for col, val in row.items() if int(val) > 0]), axis=1
+        )
+        pivot['categories_missing'] = pivot[category_cols].apply(
+            lambda row: ';'.join([str(col) for col, val in row.items() if int(val) == 0]), axis=1
+        )
+    return pivot
+
+
+def build_exact_match_genome_table(compare_df, compare_column, sample_column=None):
+    if compare_df is None or compare_df.empty:
+        return pd.DataFrame()
+
+    working = compare_df.copy()
+    selected_sample = choose_sample_column(working, sample_column)
+    if selected_sample and selected_sample in working.columns:
+        working[selected_sample] = working[selected_sample].fillna("").astype(str).str.strip()
+    working[compare_column] = working[compare_column].fillna("").astype(str).str.strip()
+    working = working.loc[working[compare_column].ne("")].copy()
+    if selected_sample and selected_sample in working.columns:
+        working = working.loc[working[selected_sample].ne("")].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    if "pre_ani_bin_key" in working.columns:
+        working["exact_match_key"] = working["pre_ani_bin_key"].fillna("").astype(str).str.strip()
+    else:
+        working["exact_match_key"] = ""
+    fallback_mask = working["exact_match_key"].eq("")
+    if fallback_mask.any():
+        working.loc[fallback_mask, "exact_match_key"] = working.loc[fallback_mask].apply(best_set_key, axis=1)
+    working = working.loc[working["exact_match_key"].astype(str).ne("")].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    if selected_sample and selected_sample in working.columns:
+        working["component_id"] = (
+            working[selected_sample].astype(str) + "|" + working["exact_match_key"].astype(str)
+        )
+    else:
+        working["component_id"] = working["exact_match_key"].astype(str)
+
+    component_n_categories = (
+        working.groupby("component_id")[compare_column]
+        .nunique()
+        .rename("component_n_categories")
+    )
+    shared_component_ids = component_n_categories.loc[component_n_categories > 1].index
+    working = working.loc[working["component_id"].isin(shared_component_ids)].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    component_categories = (
+        working.groupby("component_id")[compare_column]
+        .apply(lambda values: ";".join(sorted(set(values.astype(str)))))
+        .rename("component_categories")
+    )
+    component_member_count = working.groupby("component_id").size().rename("component_member_count")
+    category_member_count = (
+        working.groupby(["component_id", compare_column])
+        .size()
+        .rename("category_member_count_in_component")
+    )
+    total_categories = working[compare_column].astype(str).nunique()
+
+    sort_specs = [
+        (SCORE_COLUMN, False),
+        ("N50", False),
+        ("sum_len", False),
+        ("Completeness", False),
+        ("Contamination", True),
+        ("Genome_Id", True),
+        ("Bin Id", True),
+    ]
+    sort_columns = [column for column, _ in sort_specs if column in working.columns]
+    sort_ascending = [ascending for column, ascending in sort_specs if column in working.columns]
+    if sort_columns:
+        working = working.sort_values(by=sort_columns, ascending=sort_ascending, kind="mergesort")
+
+    best_df = (
+        working.groupby(["component_id", compare_column], as_index=False, sort=False)
+        .head(1)
+        .copy()
+    )
+    best_df["component_categories"] = best_df["component_id"].map(component_categories)
+    best_df["component_n_categories"] = best_df["component_id"].map(component_n_categories)
+    best_df["component_member_count"] = best_df["component_id"].map(component_member_count)
+    best_df["category_member_count_in_component"] = (
+        best_df.set_index(["component_id", compare_column]).index.map(category_member_count)
+    )
+    best_df["shared_scope"] = np.where(
+        best_df["component_n_categories"].eq(total_categories),
+        "complete",
+        "partial",
+    )
+    best_df["pairing_strategy"] = "exact_unique_id"
+    best_df["best_selection_metric"] = "exact_unique_id>qscore>N50>sum_len"
+    return best_df
 
 
 def summarize_sample_method_counts(compare_df, compare_column, sample_column=None):
@@ -2072,7 +2465,7 @@ def run_sample_count_tests(sample_counts, compare_column, sample_column):
                 "pvalue": pvalue,
             }
         )
-    return pd.DataFrame(results) if results else None
+    return annotate_pairwise_comparisons(pd.DataFrame(results)) if results else None
 
 
 def benjamini_hochberg_adjust(series):
@@ -2236,6 +2629,7 @@ def run_method_significance_tests(compare_df, compare_column, sample_counts=None
         return None
 
     results = pd.DataFrame(rows)
+    results = annotate_pairwise_comparisons(results)
     if "pvalue" in results.columns:
         results["qvalue_bh"] = benjamini_hochberg_adjust(results["pvalue"])
         results["significant_p05"] = pd.to_numeric(results["pvalue"], errors="coerce").lt(0.05)
@@ -2839,8 +3233,17 @@ def plot_compare_quality_tiers(ax, compare_df, compare_column):
     place_axis_legend_right(ax, title="Quality tier")
 
 
-def save_grouped_atlas(frame, output_base, compare_column="category", group_column=None, top_n_groups=12):
+def save_compare_hallmarks(frame, compare_column, output_base):
     compare_df = prepare_compare_frame(frame, compare_column)
+    fig, ax = plt.subplots(figsize=(max(14, len(category_order(compare_df, compare_column)) * 1.6), 6.5))
+    plot_compare_hallmarks(ax, compare_df, compare_column)
+    fig.suptitle(f"Hallmark contributions by {compare_column}", fontsize=16, y=0.99)
+    apply_tight_layout(fig, rect=[0, 0, RIGHT_MARGIN, 0.95])
+    save_figure(fig, output_base + "_hallmarks")
+
+
+def save_grouped_atlas(frame, output_base, compare_column="category", group_column=None, top_n_groups=12):
+    compare_df = filter_variants_to_base_exact_matches(prepare_compare_frame(frame, compare_column), compare_column, sample_column="sample")
     fig, axes = plt.subplots(2, 3, figsize=(24, 13))
 
     plot_compare_qscore(axes[0, 0], compare_df, compare_column)
@@ -2876,7 +3279,9 @@ def save_compare_outputs(
     ani_settings=None,
 ):
     ensure_plotting()
-    compare_df = prepare_compare_frame(frame, compare_column)
+    compare_input_df = prepare_compare_frame(frame, compare_column)
+    variant_filter_audit_df = summarize_variant_filter_audit(compare_input_df, compare_column, sample_column=sample_column)
+    compare_df = filter_variants_to_base_exact_matches(compare_input_df, compare_column, sample_column=sample_column)
     if matched_samples_only:
         selected_sample = choose_sample_column(compare_df, sample_column)
         if not selected_sample:
@@ -2898,6 +3303,8 @@ def save_compare_outputs(
     compare_base = output_base + f"_compare_{safe_name}"
 
     compare_summary.to_csv(compare_base + "_summary.tsv", sep="\t", index=False)
+    if variant_filter_audit_df is not None and not variant_filter_audit_df.empty:
+        variant_filter_audit_df.to_csv(compare_base + "_variant_filter_audit.tsv", sep="\t", index=False)
     taxonomy_quality_summary, _ = summarize_taxonomy_quality(compare_df, compare_column, group_column)
     taxonomy_quality_summary.to_csv(
         compare_base + "_taxonomy_quality_summary.tsv",
@@ -2980,10 +3387,7 @@ def save_compare_outputs(
     apply_tight_layout(fig)
     save_figure(fig, compare_base + "_qscore")
 
-    fig, ax = plt.subplots(figsize=(max(8, len(category_order(compare_df, compare_column)) * 0.9), 6.5))
-    plot_compare_hallmarks(ax, compare_df, compare_column)
-    apply_tight_layout(fig, rect=[0, 0, RIGHT_MARGIN, 1])
-    save_figure(fig, compare_base + "_hallmarks")
+    save_compare_hallmarks(compare_df, compare_column, compare_base)
 
     fig, ax = plt.subplots(figsize=(max(8, len(category_order(compare_df, compare_column)) * 0.9), 6.5))
     plot_compare_recovery_patterns(ax, compare_df, compare_column)
@@ -3057,12 +3461,15 @@ def save_compare_outputs(
         compare_base + "_taxonomy_heatmap.png",
         compare_base + "_taxonomy_heatmap.pdf",
     ]
+    if variant_filter_audit_df is not None and not variant_filter_audit_df.empty:
+        wrote_files.append(compare_base + "_variant_filter_audit.tsv")
     if stats_df is not None:
         wrote_files.append(compare_base + "_stats.tsv")
     if sample_count_stats is not None:
         wrote_files.append(compare_base + "_sample_count_stats.tsv")
     if method_significance is not None:
         wrote_files.append(compare_base + "_method_significance.tsv")
+        wrote_files.extend(export_comparison_class_tables(method_significance, compare_base, "method_significance"))
     if best_set_df is not None and not best_set_df.empty:
         wrote_files.append(compare_base + "_best_sample_method_selected.tsv")
     if best_set_significance is not None:
@@ -3114,6 +3521,172 @@ def save_compare_outputs(
         ]
     return wrote_files
 
+
+def export_comparison_class_tables(results_df, output_base, stem):
+    wrote = []
+    if results_df is None or results_df.empty or "comparison_class" not in results_df.columns:
+        return wrote
+    variant_vs_base = results_df.loc[results_df["comparison_class"].astype(str) == "variant_vs_base"].copy()
+    cross_family = results_df.loc[results_df["comparison_class"].astype(str) == "cross_family"].copy()
+    if not variant_vs_base.empty:
+        path = output_base + f"_{stem}_variant_vs_base.tsv"
+        variant_vs_base.to_csv(path, sep="	", index=False)
+        wrote.append(path)
+    if not cross_family.empty:
+        path = output_base + f"_{stem}_cross_family.tsv"
+        cross_family.to_csv(path, sep="	", index=False)
+        wrote.append(path)
+    return wrote
+
+
+def save_paired_only_outputs(paired_source_df, compare_column, compare_base, group_column=None, sample_column=None, presence_df=None):
+    if paired_source_df is None or paired_source_df.empty:
+        return []
+    paired_dir = compare_base + "_paired_only"
+    os.makedirs(paired_dir, exist_ok=True)
+    paired_base = os.path.join(paired_dir, "paired_only")
+    paired_source_df.to_csv(paired_base + "_exact_matches.tsv", sep="	", index=False)
+    discrepancy_path = None
+    presence_summary_path = None
+    if presence_df is not None and not presence_df.empty:
+        presence_df.to_csv(paired_base + "_exact_match_presence.tsv", sep="	", index=False)
+        category_cols = [
+            column for column in presence_df.columns
+            if column not in {"sample", "exact_match_key", "category_count", "categories_present", "categories_missing"}
+        ]
+        discrepancy_df = presence_df.loc[presence_df["category_count"].astype(int) < len(category_cols)].copy() if category_cols else pd.DataFrame()
+        if not discrepancy_df.empty:
+            discrepancy_path = paired_base + "_exact_match_discrepancies.tsv"
+            discrepancy_df.to_csv(discrepancy_path, sep="	", index=False)
+        summary_group_cols = [column for column in ["sample"] if column in presence_df.columns]
+        if summary_group_cols:
+            presence_summary = (
+                presence_df.groupby(summary_group_cols)
+                .agg(
+                    n_exact_match_keys=("exact_match_key", "nunique"),
+                    n_fully_paired=("category_count", lambda values: int((pd.Series(values) == len(category_cols)).sum())),
+                    n_incomplete=("category_count", lambda values: int((pd.Series(values) < len(category_cols)).sum())),
+                )
+                .reset_index()
+            )
+        else:
+            presence_summary = pd.DataFrame([
+                {
+                    "n_exact_match_keys": int(presence_df["exact_match_key"].nunique()),
+                    "n_fully_paired": int((presence_df["category_count"] == len(category_cols)).sum()),
+                    "n_incomplete": int((presence_df["category_count"] < len(category_cols)).sum()),
+                }
+            ])
+        presence_summary_path = paired_base + "_exact_match_presence_summary.tsv"
+        presence_summary.to_csv(presence_summary_path, sep="	", index=False)
+    paired_exact_stats = None
+    if "component_id" in paired_source_df.columns:
+        paired_exact_stats = run_shared_best_quality_tests(paired_source_df, compare_column)
+    if paired_exact_stats is not None:
+        paired_exact_stats.to_csv(paired_base + "_exact_match_stats.tsv", sep="	", index=False)
+
+    paired_compare_df, paired_summary = summarize_compare(paired_source_df, compare_column)
+    paired_summary.to_csv(paired_base + "_summary.tsv", sep="	", index=False)
+    paired_taxonomy_summary, _ = summarize_taxonomy_quality(
+        paired_compare_df,
+        compare_column,
+        taxonomy_column=group_column,
+    )
+    paired_taxonomy_summary.to_csv(paired_base + "_taxonomy_quality_summary.tsv", sep="	", index=False)
+    paired_sample_counts, paired_sample_column = summarize_sample_method_counts(
+        paired_compare_df,
+        compare_column,
+        sample_column=sample_column,
+    )
+    if paired_sample_counts is not None:
+        paired_sample_counts.to_csv(paired_base + "_sample_count_summary.tsv", sep="	", index=False)
+    paired_sample_count_stats = run_sample_count_tests(
+        paired_sample_counts,
+        compare_column,
+        paired_sample_column,
+    )
+    if paired_sample_count_stats is not None:
+        paired_sample_count_stats.to_csv(paired_base + "_sample_count_stats.tsv", sep="	", index=False)
+    paired_method_significance = run_method_significance_tests(
+        paired_compare_df,
+        compare_column,
+        sample_counts=paired_sample_counts,
+        sample_count_stats=paired_sample_count_stats,
+        sample_column=sample_column,
+    )
+    if paired_method_significance is not None:
+        paired_method_significance.to_csv(paired_base + "_method_significance.tsv", sep="	", index=False)
+
+    fig, ax = plt.subplots(figsize=(max(7, len(category_order(paired_compare_df, compare_column)) * 0.8), 6.5))
+    plot_compare_qscore(ax, paired_compare_df, compare_column)
+    apply_tight_layout(fig)
+    save_figure(fig, paired_base + "_qscore")
+
+    save_compare_hallmarks(paired_compare_df, compare_column, paired_base)
+
+    fig, ax = plt.subplots(figsize=(max(8, len(category_order(paired_compare_df, compare_column)) * 0.9), 6.5))
+    plot_compare_recovery_patterns(ax, paired_compare_df, compare_column)
+    apply_tight_layout(fig, rect=[0, 0, 0.80, 1])
+    save_figure(fig, paired_base + "_recovery_patterns")
+
+    plot_compare_metric_panels(paired_compare_df, compare_column, paired_base)
+
+    fig, axes = plt.subplots(2, 1, figsize=(max(14, len(category_order(paired_compare_df, compare_column)) * 1.5), 11.5))
+    plot_compare_taxonomy_quality_summary(
+        axes[0],
+        axes[1],
+        paired_compare_df,
+        compare_column,
+        taxonomy_column=group_column,
+    )
+    fig.suptitle(f"Paired-only taxonomy and quality tradeoffs by {compare_column}", fontsize=16, y=0.99)
+    apply_tight_layout(fig, rect=[0, 0, 0.74, 0.95])
+    save_figure(fig, paired_base + "_taxonomy_quality_summary")
+
+    wrote_sample_plot = plot_sample_method_counts(
+        paired_sample_counts,
+        compare_column,
+        paired_sample_column,
+        paired_base,
+    )
+
+    wrote = [
+        paired_base + "_exact_matches.tsv",
+        paired_base + "_summary.tsv",
+        paired_base + "_taxonomy_quality_summary.tsv",
+        paired_base + "_qscore.png",
+        paired_base + "_qscore.pdf",
+        paired_base + "_hallmarks.png",
+        paired_base + "_hallmarks.pdf",
+        paired_base + "_recovery_patterns.png",
+        paired_base + "_recovery_patterns.pdf",
+        paired_base + "_metric_panels.png",
+        paired_base + "_metric_panels.pdf",
+        paired_base + "_taxonomy_quality_summary.png",
+        paired_base + "_taxonomy_quality_summary.pdf",
+    ]
+    if presence_df is not None and not presence_df.empty:
+        wrote.append(paired_base + "_exact_match_presence.tsv")
+    if presence_summary_path is not None:
+        wrote.append(presence_summary_path)
+    if discrepancy_path is not None:
+        wrote.append(discrepancy_path)
+    if paired_exact_stats is not None:
+        wrote.append(paired_base + "_exact_match_stats.tsv")
+        wrote.extend(export_comparison_class_tables(paired_exact_stats, paired_base, "exact_match_stats"))
+    if paired_sample_counts is not None:
+        wrote.append(paired_base + "_sample_count_summary.tsv")
+    if paired_sample_count_stats is not None:
+        wrote.append(paired_base + "_sample_count_stats.tsv")
+    if paired_method_significance is not None:
+        wrote.append(paired_base + "_method_significance.tsv")
+        wrote.extend(export_comparison_class_tables(paired_method_significance, paired_base, "method_significance"))
+    if wrote_sample_plot:
+        wrote.extend([
+            paired_base + "_sample_count_summary.png",
+            paired_base + "_sample_count_summary.pdf",
+        ])
+    return wrote
 
 def plot_fastani_scatter(ax, pair_summary, ani_threshold, af_threshold):
     if pair_summary.empty:
@@ -3431,7 +4004,7 @@ def run_shared_best_quality_tests(shared_best_df, compare_column):
 
     if not rows:
         return None
-    return pd.DataFrame(rows)
+    return annotate_pairwise_comparisons(pd.DataFrame(rows))
 
 
 def build_shared_best_difference_table(shared_best_df, compare_column):
@@ -3930,6 +4503,8 @@ def save_fastani_outputs(
     else:
         selected_sample = choose_sample_column(fastani_frame, args.sample_column)
 
+    fastani_frame = filter_variants_to_base_exact_matches(fastani_frame, compare_column, sample_column=selected_sample)
+
     fastani_frame = resolve_fasta_paths(
         fastani_frame,
         fasta_column=args.ani_fasta_column,
@@ -3988,6 +4563,25 @@ def save_fastani_outputs(
         compare_base + "_compact_unique_taxa_genomes.tsv",
         sep="\t",
         index=False,
+    )
+
+    paired_presence_df = build_exact_match_presence_table(
+        fastani_frame,
+        compare_column,
+        sample_column=selected_sample,
+    )
+    paired_match_df = build_exact_match_genome_table(
+        fastani_frame,
+        compare_column,
+        sample_column=selected_sample,
+    )
+    paired_only_files = save_paired_only_outputs(
+        paired_match_df,
+        compare_column,
+        compare_base,
+        group_column=args.group_column,
+        sample_column=selected_sample,
+        presence_df=paired_presence_df,
     )
 
     fig, ax = plt.subplots(figsize=(7.5, 6))
@@ -4064,6 +4658,8 @@ def save_fastani_outputs(
         )
     if shared_best_stats_df is not None:
         wrote_files.append(compare_base + "_shared_best_stats.tsv")
+        wrote_files.extend(export_comparison_class_tables(shared_best_stats_df, compare_base, "shared_best_stats"))
+    wrote_files.extend(paired_only_files)
     if wrote_shared_best:
         wrote_files.extend(
             [

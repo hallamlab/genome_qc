@@ -385,54 +385,22 @@ def extract_period_token(value, token_index):
     return parts[token_index - 1].strip() or None
 
 
-def compute_pre_ani_quality_proxy(frame):
+def compute_pre_ani_quality_proxy(frame, atlas_module):
     working = frame.copy()
     numeric_defaults = {
-        "Completeness": 0.0,
-        "Contamination": math.inf,
         "qscore": float("-inf"),
-        "sum_len": 0.0,
-        "16S_rRNA": 0.0,
-        "23S_rRNA": 0.0,
-        "5S_rRNA": 0.0,
-        "trna_unique": 0.0,
+        "N50": float("-inf"),
+        "sum_len": float("-inf"),
     }
     for column, default in numeric_defaults.items():
         if column in working.columns:
             working[column] = pd.to_numeric(working[column], errors="coerce").fillna(default)
         else:
             working[column] = default
-
-    working["pre_rrna_16S_score"] = working["16S_rRNA"].clip(lower=0, upper=1)
-    working["pre_rrna_23S_score"] = working["23S_rRNA"].clip(lower=0, upper=1)
-    working["pre_rrna_5S_score"] = working["5S_rRNA"].clip(lower=0, upper=1)
-    working["pre_trna_ge_18"] = (working["trna_unique"] >= 18).astype(int)
-    working["pre_mC"] = ((working["Completeness"] - 50.0) / 40.0).clip(lower=0, upper=1)
-    working["pre_mK"] = ((10.0 - working["Contamination"]) / 5.0).clip(lower=0, upper=1)
-    working["pre_integrity_score"] = working[["pre_mC", "pre_mK"]].min(axis=1)
-    working["pre_recoverability_score"] = working[
-        ["pre_rrna_16S_score", "pre_rrna_23S_score", "pre_rrna_5S_score", "pre_trna_ge_18"]
-    ].mean(axis=1)
-    working["pre_mimag_proxy"] = (working["pre_integrity_score"] * working["pre_recoverability_score"]).pow(0.5)
-    working["pre_feature_count"] = working[
-        ["pre_rrna_16S_score", "pre_rrna_23S_score", "pre_rrna_5S_score", "pre_trna_ge_18"]
-    ].sum(axis=1)
-    working["pre_mimag_tier_rank"] = 2
-    medium_mask = (working["Completeness"] >= 50.0) & (working["Contamination"] < 10.0)
-    high_mask = (
-        (working["Completeness"] > 90.0)
-        & (working["Contamination"] < 5.0)
-        & (working["pre_rrna_16S_score"] >= 1.0)
-        & (working["pre_rrna_23S_score"] >= 1.0)
-        & (working["pre_rrna_5S_score"] >= 1.0)
-        & (working["pre_trna_ge_18"] >= 1)
-    )
-    working.loc[medium_mask, "pre_mimag_tier_rank"] = 1
-    working.loc[high_mask, "pre_mimag_tier_rank"] = 0
     return working
 
 
-def pre_deduplicate_master(master, token_index):
+def pre_deduplicate_master(master, token_index, atlas_module=None):
     if token_index is None or pd.isna(token_index):
         return master.copy(), {
             "enabled": False,
@@ -461,14 +429,12 @@ def pre_deduplicate_master(master, token_index):
             f"Examples: {examples}"
         )
 
-    working = compute_pre_ani_quality_proxy(working)
+    if atlas_module is None:
+        atlas_module = load_atlas_module()
+    working = compute_pre_ani_quality_proxy(working, atlas_module)
     sort_specs = [
-        ("pre_mimag_tier_rank", True),
-        ("pre_mimag_proxy", False),
         ("qscore", False),
-        ("Completeness", False),
-        ("Contamination", True),
-        ("pre_feature_count", False),
+        ("N50", False),
         ("sum_len", False),
         ("Genome_Id", True),
         ("Bin Id", True),
@@ -482,21 +448,9 @@ def pre_deduplicate_master(master, token_index):
     selected["pre_ani_duplicate_count"] = selected["pre_ani_bin_key"].map(duplicate_counts).astype(int)
     selected["pre_ani_token_source_column"] = source_column
     selected["pre_ani_token_index"] = int(token_index)
-    selected["pre_ani_best_selection_metric"] = "mimag_proxy>qscore>completeness>contamination"
+    selected["pre_ani_best_selection_metric"] = "qscore>N50>sum_len"
 
-    drop_columns = [
-        "pre_rrna_16S_score",
-        "pre_rrna_23S_score",
-        "pre_rrna_5S_score",
-        "pre_trna_ge_18",
-        "pre_mC",
-        "pre_mK",
-        "pre_integrity_score",
-        "pre_recoverability_score",
-        "pre_mimag_proxy",
-        "pre_feature_count",
-        "pre_mimag_tier_rank",
-    ]
+    drop_columns = []
     selected = selected.drop(columns=drop_columns, errors="ignore")
     return selected, {
         "enabled": True,
@@ -559,7 +513,7 @@ def find_embedded_representative(candidate, representative_stems):
     return None
 
 
-def augment_master(master_path, run_dir, sample, sample_column, category, category_column, bin_id_token_index=None):
+def augment_master(master_path, run_dir, sample, sample_column, category, category_column, bin_id_token_index=None, atlas_module=None):
     ensure_pandas()
     master = pd.read_csv(master_path, sep="\t")
     master, dedup_summary = pre_deduplicate_master(master, bin_id_token_index)
@@ -599,6 +553,36 @@ def augment_master(master_path, run_dir, sample, sample_column, category, catego
     augmented["source_dir"] = os.path.abspath(run_dir)
     augmented["fasta_path"] = fasta_paths
     return augmented, dedup_summary
+
+
+def export_pre_ani_representative_fastas(frame, output_dir):
+    ensure_pandas()
+    if "pre_ani_bin_key" not in frame.columns or "fasta_path" not in frame.columns:
+        return []
+
+    reps = frame.loc[
+        frame["pre_ani_bin_key"].notna()
+        & frame["fasta_path"].notna()
+        & frame["pre_ani_bin_key"].astype(str).str.strip().ne("")
+        & frame["fasta_path"].astype(str).str.strip().ne("")
+    ].copy()
+    if reps.empty:
+        return []
+
+    rep_fastas_dir = os.path.join(output_dir, "rep_fastas")
+    os.makedirs(rep_fastas_dir, exist_ok=True)
+
+    written = []
+    for row in reps.itertuples(index=False):
+        rep_key = str(row.pre_ani_bin_key).strip()
+        source_path = os.path.abspath(os.path.expanduser(str(row.fasta_path).strip()))
+        target_path = os.path.join(rep_fastas_dir, f"{rep_key}.fasta")
+        if not os.path.exists(source_path):
+            raise FileNotFoundError(f"Representative FASTA source was not found: {source_path}")
+        shutil.copy2(source_path, target_path)
+        written.append(target_path)
+
+    return sorted(written)
 
 
 def find_master_path(run_dir):
@@ -731,6 +715,91 @@ def run_global_atlas(
     run_command(cmd, f"global atlas: {master_path}")
 
 
+
+
+def classify_category_family(value):
+    text = str(value).strip().lower()
+    if "mag" in text and "sag" not in text:
+        return "mag_family"
+    if "sag" in text and "mag" not in text:
+        return "sag_family"
+    return None
+
+
+def run_family_comparison_atlases(
+    combined,
+    output_dir,
+    combined_master_name,
+    python_exe,
+    atlas_script,
+    prefix,
+    group_column,
+    sample_column,
+    top_n_groups,
+    category_column,
+    ani_threshold,
+    ani_af_threshold,
+    ani_threads,
+    ani_top_overlaps,
+    ani_results=None,
+    matched_samples_only=False,
+):
+    ensure_pandas()
+    written_paths = []
+    organize_roots = []
+    family_labels = {
+        "mag_family": "MAG-family",
+        "sag_family": "SAG-family",
+    }
+
+    for family_key, family_label in family_labels.items():
+        subset = combined.loc[
+            combined[category_column].map(classify_category_family) == family_key
+        ].copy()
+        if subset.empty:
+            log_step(f"[info] skipping {family_label} comparison: no rows found")
+            continue
+
+        n_categories = subset[category_column].astype(str).nunique()
+        if n_categories < 2:
+            log_step(
+                f"[info] skipping {family_label} comparison: only {n_categories} category present"
+            )
+            continue
+
+        family_output_dir = os.path.join(output_dir, family_key)
+        os.makedirs(family_output_dir, exist_ok=True)
+        family_master_path = os.path.join(family_output_dir, combined_master_name)
+        subset.to_csv(family_master_path, sep="	", index=False)
+        written_paths.append(family_master_path)
+        organize_roots.append(os.path.abspath(family_output_dir))
+        log_step(
+            f"[start] {family_label} atlas: {family_master_path} "
+            f"({len(subset)} genomes; {n_categories} categories)"
+        )
+        run_global_atlas(
+            python_exe=python_exe,
+            atlas_script=atlas_script,
+            master_path=family_master_path,
+            output_dir=family_output_dir,
+            prefix=prefix,
+            group_column=group_column,
+            sample_column=sample_column,
+            top_n_groups=top_n_groups,
+            category_column=category_column,
+            ani_threshold=ani_threshold,
+            ani_af_threshold=ani_af_threshold,
+            ani_threads=ani_threads,
+            ani_top_overlaps=ani_top_overlaps,
+            ani_results=ani_results,
+            matched_samples_only=matched_samples_only,
+        )
+        written_paths.append(family_output_dir)
+        log_step(f"[done] {family_label} outputs in: {family_output_dir}")
+
+    return written_paths, organize_roots
+
+
 def resolve_fastani_raw_path(output_dir, global_prefix, category_column, ani_results=None):
     if ani_results:
         candidate = os.path.abspath(os.path.expanduser(ani_results))
@@ -808,23 +877,6 @@ def filter_pair_df_to_frame_records(pair_df, frame):
 def select_best_per_component(frame, pair_summary, atlas_module, category_column, sample_column):
     working = frame.copy()
     working["ani_record_id"] = working["ani_record_id"].astype(str)
-    component_map = atlas_module.component_map_from_pairs(working, pair_summary)
-    working["component_id"] = working["ani_record_id"].map(component_map)
-    working = working.dropna(subset=["component_id"]).copy()
-    if working.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-    component_categories = (
-        working.groupby("component_id")[category_column]
-        .apply(lambda values: ";".join(sorted(set(values.astype(str)))))
-        .rename("component_categories")
-    )
-    component_samples = (
-        working.groupby("component_id")[sample_column]
-        .apply(lambda values: ";".join(sorted(set(values.astype(str)))))
-        .rename("component_samples")
-    )
-    component_member_count = working.groupby("component_id").size().rename("component_member_count")
     tier_rank = {"high": 0, "medium": 1, "low": 2}
     working["__mimag_rank"] = (
         working["mimag_tier"]
@@ -846,6 +898,31 @@ def select_best_per_component(frame, pair_summary, atlas_module, category_column
     ]
     sort_columns = [column for column, _ in sort_specs if column in working.columns]
     sort_ascending = [ascending for column, ascending in sort_specs if column in working.columns]
+    if hasattr(atlas_module, "strict_component_map_from_pairs"):
+        component_map = atlas_module.strict_component_map_from_pairs(
+            working,
+            pair_summary,
+            order_by=sort_columns,
+            ascending=sort_ascending,
+        )
+    else:
+        component_map = atlas_module.component_map_from_pairs(working, pair_summary)
+    working["component_id"] = working["ani_record_id"].map(component_map)
+    working = working.dropna(subset=["component_id"]).copy()
+    if working.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    component_categories = (
+        working.groupby("component_id")[category_column]
+        .apply(lambda values: ";".join(sorted(set(values.astype(str)))))
+        .rename("component_categories")
+    )
+    component_samples = (
+        working.groupby("component_id")[sample_column]
+        .apply(lambda values: ";".join(sorted(set(values.astype(str)))))
+        .rename("component_samples")
+    )
+    component_member_count = working.groupby("component_id").size().rename("component_member_count")
     if sort_columns:
         working = working.sort_values(by=sort_columns, ascending=sort_ascending, kind="mergesort")
 
@@ -857,16 +934,65 @@ def select_best_per_component(frame, pair_summary, atlas_module, category_column
     selected["component_member_count"] = selected["component_id"].map(component_member_count)
     selected["component_categories"] = selected["component_id"].map(component_categories)
     selected["component_samples"] = selected["component_id"].map(component_samples)
-    selected["best_selection_metric"] = "mimag_tier>integrity>recoverability>qscore"
+    selected["best_selection_metric"] = "ani_strict_component>mimag_tier>integrity>recoverability>qscore"
 
-    member_table = working.copy()
     selected_records = set(selected["ani_record_id"].astype(str).tolist())
+    member_table = working.copy()
     member_table["component_member_count"] = member_table["component_id"].map(component_member_count)
     member_table["component_categories"] = member_table["component_id"].map(component_categories)
     member_table["component_samples"] = member_table["component_id"].map(component_samples)
     member_table["is_selected"] = member_table["ani_record_id"].astype(str).isin(selected_records)
-    member_table = member_table.drop(columns=["__mimag_rank"], errors="ignore")
-    selected = selected.drop(columns=["__mimag_rank"], errors="ignore")
+
+    winner_columns = [
+        "component_id",
+        "ani_record_id",
+        category_column,
+        sample_column,
+        "Genome_Id",
+        "Bin Id",
+        "mimag_tier",
+        "integrity_score",
+        "recoverability_score",
+        "qscore",
+        "Completeness",
+        "Contamination",
+        "component_member_count",
+        "component_categories",
+        "component_samples",
+    ]
+    winner_columns = [column for column in winner_columns if column in selected.columns]
+    winner_table = selected.loc[:, winner_columns].rename(
+        columns={
+            "ani_record_id": "winner_ani_record_id",
+            category_column: "winner_category",
+            sample_column: "winner_sample",
+            "Genome_Id": "winner_Genome_Id",
+            "Bin Id": "winner_Bin_Id",
+            "mimag_tier": "winner_mimag_tier",
+            "integrity_score": "winner_integrity_score",
+            "recoverability_score": "winner_recoverability_score",
+            "qscore": "winner_qscore",
+            "Completeness": "winner_Completeness",
+            "Contamination": "winner_Contamination",
+            "component_member_count": "winner_component_member_count",
+            "component_categories": "winner_component_categories",
+            "component_samples": "winner_component_samples",
+        }
+    )
+    member_table = member_table.merge(winner_table, on="component_id", how="left")
+    member_table["winner_same_category"] = member_table[category_column].astype(str) == member_table["winner_category"].astype(str)
+    member_table["winner_same_sample"] = member_table[sample_column].astype(str) == member_table["winner_sample"].astype(str)
+    if "winner_qscore" in member_table.columns and "qscore" in member_table.columns:
+        member_table["winner_qscore_delta"] = member_table["winner_qscore"] - member_table["qscore"]
+
+    tier_counts = (
+        working.assign(__tier=working["mimag_tier"].astype(str).str.lower())
+        .groupby(["component_id", "__tier"])
+        .size()
+        .unstack(fill_value=0)
+        .rename(columns={"high": "n_hq_members", "medium": "n_mq_members", "low": "n_lq_members"})
+        .reset_index()
+    )
 
     component_summary = (
         working.groupby("component_id")
@@ -883,6 +1009,11 @@ def select_best_per_component(frame, pair_summary, atlas_module, category_column
         )
         .reset_index()
     )
+    component_summary = component_summary.merge(tier_counts, on="component_id", how="left")
+    component_summary = component_summary.merge(winner_table, on="component_id", how="left")
+
+    member_table = member_table.drop(columns=["__mimag_rank"], errors="ignore")
+    selected = selected.drop(columns=["__mimag_rank"], errors="ignore")
     return selected, member_table, component_summary
 
 
@@ -921,6 +1052,257 @@ def summarize_selected_set(selected, source_frame, sample_column, category_colum
             "lq_genomes": int((selected["mimag_tier"].astype(str) == "low").sum()),
         }]
     )
+
+
+def summarize_best_set_category_contributions(source_frame, selected, member_table, category_column):
+    categories = sorted(source_frame[category_column].astype(str).dropna().unique().tolist())
+    contribution = pd.DataFrame({category_column: categories})
+    if contribution.empty:
+        return contribution
+
+    tier_map = {"high": "hq", "medium": "mq", "low": "lq"}
+
+    input_counts = source_frame.groupby(category_column).size().rename("n_input_genomes")
+    contribution = contribution.merge(input_counts, on=category_column, how="left")
+    for tier_value, tier_label in tier_map.items():
+        tier_counts = (
+            source_frame.loc[source_frame["mimag_tier"].astype(str).str.lower() == tier_value]
+            .groupby(category_column)
+            .size()
+            .rename(f"n_input_{tier_label}")
+        )
+        contribution = contribution.merge(tier_counts, on=category_column, how="left")
+
+    selected_counts = selected.groupby(category_column).size().rename("n_selected_genomes") if not selected.empty else pd.Series(dtype=int)
+    contribution = contribution.merge(selected_counts, on=category_column, how="left")
+    for tier_value, tier_label in tier_map.items():
+        tier_counts = (
+            selected.loc[selected["mimag_tier"].astype(str).str.lower() == tier_value]
+            .groupby(category_column)
+            .size()
+            .rename(f"n_selected_{tier_label}")
+            if not selected.empty else pd.Series(dtype=int)
+        )
+        contribution = contribution.merge(tier_counts, on=category_column, how="left")
+
+    component_presence = (
+        member_table.groupby(category_column)["component_id"].nunique().rename("n_components_with_category_present")
+        if not member_table.empty else pd.Series(dtype=int)
+    )
+    contribution = contribution.merge(component_presence, on=category_column, how="left")
+    component_wins = (
+        selected.groupby(category_column)["component_id"].nunique().rename("n_components_won")
+        if not selected.empty else pd.Series(dtype=int)
+    )
+    contribution = contribution.merge(component_wins, on=category_column, how="left")
+
+    numeric_columns = [column for column in contribution.columns if column != category_column]
+    for column in numeric_columns:
+        contribution[column] = contribution[column].fillna(0)
+        if column.startswith("n_"):
+            contribution[column] = contribution[column].astype(int)
+
+    contribution["selected_fraction_of_input"] = contribution["n_selected_genomes"] / contribution["n_input_genomes"].replace(0, pd.NA)
+    contribution["win_fraction_when_present"] = contribution["n_components_won"] / contribution["n_components_with_category_present"].replace(0, pd.NA)
+    contribution["selected_share_of_best_set"] = contribution["n_selected_genomes"] / max(int(len(selected)), 1)
+    return contribution
+
+
+def summarize_best_set_sample_category_contributions(source_frame, selected, member_table, category_column, sample_column):
+    base = (
+        source_frame[[sample_column, category_column]]
+        .dropna()
+        .astype(str)
+        .drop_duplicates()
+        .sort_values([sample_column, category_column])
+        .reset_index(drop=True)
+    )
+    if base.empty:
+        return base
+
+    input_counts = (
+        source_frame.groupby([sample_column, category_column])
+        .size()
+        .rename("n_input_genomes")
+        .reset_index()
+    )
+    selected_counts = (
+        selected.groupby([sample_column, category_column])
+        .size()
+        .rename("n_selected_genomes")
+        .reset_index()
+        if not selected.empty else pd.DataFrame(columns=[sample_column, category_column, "n_selected_genomes"])
+    )
+    component_presence = (
+        member_table.groupby([sample_column, category_column])["component_id"]
+        .nunique()
+        .rename("n_components_present")
+        .reset_index()
+        if not member_table.empty else pd.DataFrame(columns=[sample_column, category_column, "n_components_present"])
+    )
+    component_wins = (
+        selected.groupby([sample_column, category_column])["component_id"]
+        .nunique()
+        .rename("n_components_won")
+        .reset_index()
+        if not selected.empty else pd.DataFrame(columns=[sample_column, category_column, "n_components_won"])
+    )
+
+    summary = base.merge(input_counts, on=[sample_column, category_column], how="left")
+    summary = summary.merge(selected_counts, on=[sample_column, category_column], how="left")
+    summary = summary.merge(component_presence, on=[sample_column, category_column], how="left")
+    summary = summary.merge(component_wins, on=[sample_column, category_column], how="left")
+    for column in ["n_input_genomes", "n_selected_genomes", "n_components_present", "n_components_won"]:
+        summary[column] = summary[column].fillna(0).astype(int)
+    summary["selected_fraction_of_input"] = summary["n_selected_genomes"] / summary["n_input_genomes"].replace(0, pd.NA)
+    summary["win_fraction_when_present"] = summary["n_components_won"] / summary["n_components_present"].replace(0, pd.NA)
+    return summary
+
+
+def build_best_set_excluded_hqmq_table(source_frame, member_table, category_column, sample_column):
+    columns = [
+        sample_column,
+        category_column,
+        "component_id",
+        "component_member_count",
+        "component_categories",
+        "component_samples",
+        "Genome_Id",
+        "Bin Id",
+        "mimag_tier",
+        "qscore",
+        "integrity_score",
+        "recoverability_score",
+        "Completeness",
+        "Contamination",
+        "winner_category",
+        "winner_sample",
+        "winner_Genome_Id",
+        "winner_Bin_Id",
+        "winner_mimag_tier",
+        "winner_qscore",
+        "winner_integrity_score",
+        "winner_recoverability_score",
+        "winner_Completeness",
+        "winner_Contamination",
+        "winner_same_category",
+        "winner_same_sample",
+        "winner_qscore_delta",
+    ]
+    base_columns = [column for column in columns if column in member_table.columns or column in {sample_column, category_column}]
+    excluded = member_table.loc[~member_table["is_selected"].fillna(False)].copy()
+    if excluded.empty:
+        return pd.DataFrame(columns=base_columns)
+
+    excluded = excluded.loc[
+        excluded["mimag_tier"].astype(str).str.lower().isin(["medium", "high"])
+    ].copy()
+    if excluded.empty:
+        return pd.DataFrame(columns=base_columns)
+
+    available_columns = [column for column in columns if column in excluded.columns]
+    excluded = excluded.loc[:, available_columns].copy()
+    return excluded.sort_values(
+        by=[sample_column, "component_id", category_column, "qscore"],
+        ascending=[True, True, True, False],
+        kind="mergesort",
+    )
+
+
+def plot_best_set_category_contributions(category_df, sample_df, destination_dir, label, category_column, sample_column, atlas_module):
+    if category_df is None or category_df.empty:
+        return []
+
+    plt, sns = atlas_module.ensure_plotting()
+    order = category_df.sort_values(["n_selected_genomes", "n_input_genomes"], ascending=[False, False])[category_column].tolist()
+    fig, axes = plt.subplots(2, 2, figsize=(16, 11))
+    axes = axes.ravel()
+
+    count_df = category_df.loc[:, [category_column, "n_input_genomes", "n_selected_genomes"]].melt(
+        id_vars=category_column,
+        var_name="metric",
+        value_name="count",
+    )
+    sns.barplot(
+        data=count_df,
+        x=category_column,
+        y="count",
+        hue="metric",
+        order=order,
+        palette=["#bdbdbd", "#1a1a1a"],
+        ax=axes[0],
+    )
+    axes[0].set_title("Input vs selected genomes")
+    axes[0].set_xlabel(category_column)
+    axes[0].set_ylabel("Genome count")
+    axes[0].tick_params(axis="x", rotation=90)
+
+    component_df = category_df.loc[:, [category_column, "n_components_with_category_present", "n_components_won"]].melt(
+        id_vars=category_column,
+        var_name="metric",
+        value_name="count",
+    )
+    sns.barplot(
+        data=component_df,
+        x=category_column,
+        y="count",
+        hue="metric",
+        order=order,
+        palette=["#bdbdbd", "#1a1a1a"],
+        ax=axes[1],
+    )
+    axes[1].set_title("Components present vs won")
+    axes[1].set_xlabel(category_column)
+    axes[1].set_ylabel("Component count")
+    axes[1].tick_params(axis="x", rotation=90)
+
+    rate_df = category_df.loc[:, [category_column, "selected_fraction_of_input", "win_fraction_when_present"]].melt(
+        id_vars=category_column,
+        var_name="metric",
+        value_name="fraction",
+    )
+    sns.barplot(
+        data=rate_df,
+        x=category_column,
+        y="fraction",
+        hue="metric",
+        order=order,
+        palette=["#7f7f7f", "#1a1a1a"],
+        ax=axes[2],
+    )
+    axes[2].set_ylim(0, 1)
+    axes[2].set_title("Retention and win rates")
+    axes[2].set_xlabel(category_column)
+    axes[2].set_ylabel("Fraction")
+    axes[2].tick_params(axis="x", rotation=90)
+
+    if sample_df is not None and not sample_df.empty:
+        heat_df = sample_df.pivot(index=sample_column, columns=category_column, values="n_components_won").fillna(0)
+        heat_df = heat_df.reindex(columns=order)
+        sns.heatmap(
+            heat_df,
+            cmap="Greys",
+            cbar_kws={"label": "Components won"},
+            linewidths=0.5,
+            ax=axes[3],
+        )
+        axes[3].set_title("Component wins by sample and category")
+        axes[3].set_xlabel(category_column)
+        axes[3].set_ylabel(sample_column)
+    else:
+        axes[3].axis("off")
+        axes[3].text(0.5, 0.5, "No sample/category contribution data", ha="center", va="center")
+
+    fig.suptitle(f"{label.replace('_', ' ')} category contributions", fontsize=16, y=0.98)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+    written = []
+    for extension in ("png", "pdf"):
+        out_path = os.path.join(destination_dir, f"{label}.category_contributions.{extension}")
+        fig.savefig(out_path, dpi=300 if extension == "png" else None, bbox_inches="tight")
+        written.append(out_path)
+    plt.close(fig)
+    return written
 
 
 def copy_selected_fastas(selected, destination_dir, include_sample=False):
@@ -970,6 +1352,12 @@ def export_deduplicated_set(
     include_sample_in_fasta_name=False,
 ):
     os.makedirs(destination_dir, exist_ok=True)
+    audit_dir = os.path.join(destination_dir, "audit")
+    plots_dir = os.path.join(destination_dir, "plots")
+    selected_dir = os.path.join(destination_dir, "selected_set")
+    for directory in (audit_dir, plots_dir, selected_dir):
+        os.makedirs(directory, exist_ok=True)
+
     compare_df, pair_summary, _, _ = atlas_module.summarize_fastani_matches(
         set_frame,
         pair_df,
@@ -985,23 +1373,57 @@ def export_deduplicated_set(
         sample_column,
     )
     summary = summarize_selected_set(selected, compare_df, sample_column, category_column)
+    category_contrib = summarize_best_set_category_contributions(compare_df, selected, member_table, category_column)
+    sample_category_contrib = summarize_best_set_sample_category_contributions(
+        compare_df,
+        selected,
+        member_table,
+        category_column,
+        sample_column,
+    )
+    excluded_hqmq = build_best_set_excluded_hqmq_table(compare_df, member_table, category_column, sample_column)
+
     copied_fasta_df = copy_selected_fastas(
         selected,
-        destination_dir,
+        selected_dir,
         include_sample=include_sample_in_fasta_name,
     )
     if not copied_fasta_df.empty:
         selected = selected.merge(copied_fasta_df, on="ani_record_id", how="left")
         member_table = member_table.merge(copied_fasta_df, on="ani_record_id", how="left")
 
-    selected_master_path = os.path.join(destination_dir, f"{label}.selected_genomes.tsv")
-    selected.to_csv(selected_master_path, sep="\t", index=False)
-    member_table.to_csv(os.path.join(destination_dir, f"{label}.component_members.tsv"), sep="\t", index=False)
-    component_summary.to_csv(os.path.join(destination_dir, f"{label}.components.tsv"), sep="\t", index=False)
-    pair_summary.to_csv(os.path.join(destination_dir, f"{label}.pair_summary.tsv"), sep="\t", index=False)
-    summary.to_csv(os.path.join(destination_dir, f"{label}.summary.tsv"), sep="\t", index=False)
+    input_candidates_path = os.path.join(audit_dir, "input_candidates.tsv")
+    selected_audit_path = os.path.join(audit_dir, "selected_genomes.tsv")
+    member_path = os.path.join(audit_dir, "component_members.tsv")
+    components_path = os.path.join(audit_dir, "components.tsv")
+    pair_summary_path = os.path.join(audit_dir, "pair_summary.tsv")
+    summary_path = os.path.join(audit_dir, "set_summary.tsv")
+    category_contrib_path = os.path.join(audit_dir, "category_contributions.tsv")
+    sample_contrib_path = os.path.join(audit_dir, "sample_category_contributions.tsv")
+    excluded_hqmq_path = os.path.join(audit_dir, "excluded_hqmq.tsv")
+    selected_master_path = os.path.join(selected_dir, "master.tsv")
 
-    atlas_output_dir = os.path.join(destination_dir, "genome_atlas")
+    compare_df.to_csv(input_candidates_path, sep="	", index=False)
+    selected.to_csv(selected_audit_path, sep="	", index=False)
+    selected.to_csv(selected_master_path, sep="	", index=False)
+    member_table.to_csv(member_path, sep="	", index=False)
+    component_summary.to_csv(components_path, sep="	", index=False)
+    pair_summary.to_csv(pair_summary_path, sep="	", index=False)
+    summary.to_csv(summary_path, sep="	", index=False)
+    category_contrib.to_csv(category_contrib_path, sep="	", index=False)
+    sample_category_contrib.to_csv(sample_contrib_path, sep="	", index=False)
+    excluded_hqmq.to_csv(excluded_hqmq_path, sep="	", index=False)
+    contribution_plots = plot_best_set_category_contributions(
+        category_contrib,
+        sample_category_contrib,
+        plots_dir,
+        "candidate_vs_selected_summary",
+        category_column,
+        sample_column,
+        atlas_module,
+    )
+
+    atlas_output_dir = os.path.join(selected_dir, "genome_atlas")
     os.makedirs(atlas_output_dir, exist_ok=True)
     run_selected_set_atlas(
         python_exe=python_exe,
@@ -1016,11 +1438,20 @@ def export_deduplicated_set(
     )
     return [
         destination_dir,
+        audit_dir,
+        plots_dir,
+        selected_dir,
+        input_candidates_path,
+        selected_audit_path,
+        member_path,
+        components_path,
+        pair_summary_path,
+        summary_path,
+        category_contrib_path,
+        sample_contrib_path,
+        excluded_hqmq_path,
         selected_master_path,
-        os.path.join(destination_dir, f"{label}.component_members.tsv"),
-        os.path.join(destination_dir, f"{label}.components.tsv"),
-        os.path.join(destination_dir, f"{label}.pair_summary.tsv"),
-        os.path.join(destination_dir, f"{label}.summary.tsv"),
+        *contribution_plots,
         atlas_output_dir,
     ]
 
@@ -1030,39 +1461,98 @@ def write_best_set_review_tables(review_entries, output_dir):
     if not review_entries:
         return []
 
+    input_frames = []
     selected_frames = []
     members_frames = []
+    components_frames = []
     summary_frames = []
+    category_contrib_frames = []
+    sample_contrib_frames = []
+    excluded_frames = []
     for entry in review_entries:
-        selected_df = pd.read_csv(entry["selected_path"], sep="\t")
+        input_df = pd.read_csv(entry["input_candidates_path"], sep="	")
+        input_df["best_set_scope"] = entry["best_set_scope"]
+        input_df["best_set_name"] = entry["best_set_name"]
+        input_df["best_set_dir"] = entry["best_set_dir"]
+        input_frames.append(input_df)
+
+        selected_df = pd.read_csv(entry["selected_path"], sep="	")
         selected_df["best_set_scope"] = entry["best_set_scope"]
         selected_df["best_set_name"] = entry["best_set_name"]
         selected_df["best_set_dir"] = entry["best_set_dir"]
         selected_frames.append(selected_df)
 
-        members_df = pd.read_csv(entry["members_path"], sep="\t")
+        members_df = pd.read_csv(entry["members_path"], sep="	")
         members_df["best_set_scope"] = entry["best_set_scope"]
         members_df["best_set_name"] = entry["best_set_name"]
         members_df["best_set_dir"] = entry["best_set_dir"]
         members_frames.append(members_df)
 
-        summary_df = pd.read_csv(entry["summary_path"], sep="\t")
+        components_df = pd.read_csv(entry["components_path"], sep="	")
+        components_df["best_set_scope"] = entry["best_set_scope"]
+        components_df["best_set_name"] = entry["best_set_name"]
+        components_df["best_set_dir"] = entry["best_set_dir"]
+        components_frames.append(components_df)
+
+        summary_df = pd.read_csv(entry["summary_path"], sep="	")
         summary_df["best_set_scope"] = entry["best_set_scope"]
         summary_df["best_set_name"] = entry["best_set_name"]
         summary_df["best_set_dir"] = entry["best_set_dir"]
         summary_frames.append(summary_df)
 
+        category_df = pd.read_csv(entry["category_contrib_path"], sep="	")
+        category_df["best_set_scope"] = entry["best_set_scope"]
+        category_df["best_set_name"] = entry["best_set_name"]
+        category_df["best_set_dir"] = entry["best_set_dir"]
+        category_contrib_frames.append(category_df)
+
+        sample_df = pd.read_csv(entry["sample_contrib_path"], sep="	")
+        sample_df["best_set_scope"] = entry["best_set_scope"]
+        sample_df["best_set_name"] = entry["best_set_name"]
+        sample_df["best_set_dir"] = entry["best_set_dir"]
+        sample_contrib_frames.append(sample_df)
+
+        excluded_df = pd.read_csv(entry["excluded_hqmq_path"], sep="	")
+        excluded_df["best_set_scope"] = entry["best_set_scope"]
+        excluded_df["best_set_name"] = entry["best_set_name"]
+        excluded_df["best_set_dir"] = entry["best_set_dir"]
+        excluded_frames.append(excluded_df)
+
+    input_combined = pd.concat(input_frames, ignore_index=True)
     selected_combined = pd.concat(selected_frames, ignore_index=True)
     members_combined = pd.concat(members_frames, ignore_index=True)
+    components_combined = pd.concat(components_frames, ignore_index=True)
     summary_combined = pd.concat(summary_frames, ignore_index=True)
+    category_contrib_combined = pd.concat(category_contrib_frames, ignore_index=True)
+    sample_contrib_combined = pd.concat(sample_contrib_frames, ignore_index=True)
+    excluded_combined = pd.concat(excluded_frames, ignore_index=True)
 
+    input_out = os.path.join(output_dir, "best_sets_review_input_candidates.tsv")
     selected_out = os.path.join(output_dir, "best_sets_review_selected_genomes.tsv")
     members_out = os.path.join(output_dir, "best_sets_review_component_members.tsv")
+    components_out = os.path.join(output_dir, "best_sets_review_components.tsv")
     summary_out = os.path.join(output_dir, "best_sets_review_set_summaries.tsv")
-    selected_combined.to_csv(selected_out, sep="\t", index=False)
-    members_combined.to_csv(members_out, sep="\t", index=False)
-    summary_combined.to_csv(summary_out, sep="\t", index=False)
-    return [selected_out, members_out, summary_out]
+    category_contrib_out = os.path.join(output_dir, "best_sets_review_category_contributions.tsv")
+    sample_contrib_out = os.path.join(output_dir, "best_sets_review_sample_category_contributions.tsv")
+    excluded_out = os.path.join(output_dir, "best_sets_review_excluded_hqmq.tsv")
+    input_combined.to_csv(input_out, sep="	", index=False)
+    selected_combined.to_csv(selected_out, sep="	", index=False)
+    members_combined.to_csv(members_out, sep="	", index=False)
+    components_combined.to_csv(components_out, sep="	", index=False)
+    summary_combined.to_csv(summary_out, sep="	", index=False)
+    category_contrib_combined.to_csv(category_contrib_out, sep="	", index=False)
+    sample_contrib_combined.to_csv(sample_contrib_out, sep="	", index=False)
+    excluded_combined.to_csv(excluded_out, sep="	", index=False)
+    return [
+        input_out,
+        selected_out,
+        members_out,
+        components_out,
+        summary_out,
+        category_contrib_out,
+        sample_contrib_out,
+        excluded_out,
+    ]
 
 
 def export_best_sets(
@@ -1099,17 +1589,21 @@ def export_best_sets(
     fastani_frame = prepare_fastani_frame(annotated)
     if "mimag_tier" not in fastani_frame.columns:
         raise ValueError(
-            "Annotated atlas table is missing mimag_tier; cannot enforce MQ/HQ-only best-set selection."
+            "Annotated atlas table is missing mimag_tier; cannot rank best-set genomes by quality tier."
         )
-    candidate_frame = fastani_frame.loc[
-        fastani_frame["mimag_tier"].astype(str).str.lower().isin(["medium", "high"])
-    ].copy()
+    candidate_frame = fastani_frame.copy()
     if candidate_frame.empty:
-        raise ValueError("No MQ/HQ genomes available for best-set selection after excluding LQ genomes.")
-    excluded_lq = len(fastani_frame) - len(candidate_frame)
+        raise ValueError("No genomes available for best-set selection.")
+    tier_counts = (
+        candidate_frame["mimag_tier"]
+        .astype(str)
+        .str.lower()
+        .value_counts()
+        .to_dict()
+    )
     log_step(
-        f"[info] best-set candidate pool: {len(candidate_frame)} MQ/HQ genomes "
-        f"(excluded {excluded_lq} LQ genomes)"
+        f"[info] best-set candidate pool: {len(candidate_frame)} genomes "
+        f"(HQ={tier_counts.get('high', 0)}, MQ={tier_counts.get('medium', 0)}, LQ={tier_counts.get('low', 0)})"
     )
     pair_df = atlas_module.load_fastani_pairs(fastani_raw, fastani_frame)
     pair_df = filter_pair_df_to_frame_records(pair_df, candidate_frame)
@@ -1152,16 +1646,21 @@ def export_best_sets(
                 "best_set_scope": "sample",
                 "best_set_name": str(sample_value),
                 "best_set_dir": sample_dir,
-                "selected_path": os.path.join(sample_dir, "best_of_sample.selected_genomes.tsv"),
-                "members_path": os.path.join(sample_dir, "best_of_sample.component_members.tsv"),
-                "summary_path": os.path.join(sample_dir, "best_of_sample.summary.tsv"),
+                "input_candidates_path": os.path.join(sample_dir, "audit", "input_candidates.tsv"),
+                "selected_path": os.path.join(sample_dir, "audit", "selected_genomes.tsv"),
+                "members_path": os.path.join(sample_dir, "audit", "component_members.tsv"),
+                "components_path": os.path.join(sample_dir, "audit", "components.tsv"),
+                "summary_path": os.path.join(sample_dir, "audit", "set_summary.tsv"),
+                "category_contrib_path": os.path.join(sample_dir, "audit", "category_contributions.tsv"),
+                "sample_contrib_path": os.path.join(sample_dir, "audit", "sample_category_contributions.tsv"),
+                "excluded_hqmq_path": os.path.join(sample_dir, "audit", "excluded_hqmq.tsv"),
             }
         )
         log_step(f"[done] ({index}/{len(sample_values)}) best-of-sample export: {sample_dir}")
 
     best_global_root = os.path.join(output_dir, best_global_dir_name)
     os.makedirs(best_global_root, exist_ok=True)
-    log_step(f"[start] best-of-best export ({len(candidate_frame)} MQ/HQ genomes)")
+    log_step(f"[start] best-of-best export ({len(candidate_frame)} candidate genomes)")
     global_paths = export_deduplicated_set(
         set_frame=candidate_frame,
         pair_df=pair_df,
@@ -1185,9 +1684,14 @@ def export_best_sets(
             "best_set_scope": "global",
             "best_set_name": "best_of_best",
             "best_set_dir": best_global_root,
-            "selected_path": os.path.join(best_global_root, "best_of_best.selected_genomes.tsv"),
-            "members_path": os.path.join(best_global_root, "best_of_best.component_members.tsv"),
-            "summary_path": os.path.join(best_global_root, "best_of_best.summary.tsv"),
+            "input_candidates_path": os.path.join(best_global_root, "audit", "input_candidates.tsv"),
+            "selected_path": os.path.join(best_global_root, "audit", "selected_genomes.tsv"),
+            "members_path": os.path.join(best_global_root, "audit", "component_members.tsv"),
+            "components_path": os.path.join(best_global_root, "audit", "components.tsv"),
+            "summary_path": os.path.join(best_global_root, "audit", "set_summary.tsv"),
+            "category_contrib_path": os.path.join(best_global_root, "audit", "category_contributions.tsv"),
+            "sample_contrib_path": os.path.join(best_global_root, "audit", "sample_category_contributions.tsv"),
+            "excluded_hqmq_path": os.path.join(best_global_root, "audit", "excluded_hqmq.tsv"),
         }
     )
     log_step(f"[done] best-of-best export: {best_global_root}")
@@ -1203,6 +1707,7 @@ def main():
     ensure_pandas()
     manifest_path = os.path.abspath(os.path.expanduser(args.manifest_tsv))
     atlas_script = atlas_script_path(args.atlas_script)
+    atlas_module = load_atlas_module()
     python_exe = sys.executable or shutil.which("python3") or shutil.which("python")
     if not python_exe:
         raise RuntimeError("Could not determine a Python executable for running genome_quality_atlas.py")
@@ -1279,6 +1784,7 @@ def main():
             category,
             args.category_column,
             row.bin_id_token_index,
+            atlas_module,
         )
         individual_master_path = os.path.join(run_dir, args.individual_master_name)
         augmented.to_csv(individual_master_path, sep="\t", index=False)
@@ -1297,6 +1803,13 @@ def main():
 
         individual_output_dir = os.path.join(run_dir, args.individual_output_name)
         os.makedirs(individual_output_dir, exist_ok=True)
+        rep_fasta_paths = export_pre_ani_representative_fastas(augmented, individual_output_dir)
+        if rep_fasta_paths:
+            written_paths.extend(rep_fasta_paths)
+            log_step(
+                f"[done] ({index}/{total_runs}) exported pre-ANI representative FASTAs: "
+                f"{os.path.join(individual_output_dir, 'rep_fastas')} ({len(rep_fasta_paths)} FASTAs)"
+            )
         run_individual_atlas(
             python_exe=python_exe,
             atlas_script=atlas_script,
@@ -1341,6 +1854,27 @@ def main():
     )
     written_paths.append(output_dir)
     log_step(f"[done] global outputs in: {output_dir}")
+
+    family_paths, family_roots = run_family_comparison_atlases(
+        combined=combined,
+        output_dir=output_dir,
+        combined_master_name=args.combined_master_name,
+        python_exe=python_exe,
+        atlas_script=atlas_script,
+        prefix=args.global_prefix,
+        group_column=args.group_column,
+        sample_column=args.sample_column,
+        top_n_groups=args.top_n_groups,
+        category_column=args.category_column,
+        ani_threshold=args.ani_threshold,
+        ani_af_threshold=args.ani_af_threshold,
+        ani_threads=args.ani_threads,
+        ani_top_overlaps=args.ani_top_overlaps,
+        ani_results=args.ani_results,
+        matched_samples_only=args.matched_samples_only,
+    )
+    written_paths.extend(family_paths)
+    organize_roots.update(family_roots)
 
     log_step("[start] exporting best-of-sample and best-of-best genome sets")
     best_set_paths = export_best_sets(
