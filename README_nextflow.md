@@ -127,6 +127,7 @@ You must keep:
 Inside `--working_dir`:
 
 - `Master_genome_QC.tsv`
+- `genome_quality_atlas/` (atlas plots and summary tables generated automatically after master merge)
 - `dedupe/fasta/*.fasta` (final deduplicated FASTA set)
 - `checkm/`, `gtdbtk/`, `gunc/`, `barrnap/`, `trnascan/`, `qscore/`
 - `references/` (bootstrap status tables when `--ref_dir` is used)
@@ -209,6 +210,40 @@ For CheckM, the workflow uses `CHECKM_DATA_PATH` during task execution rather th
 - `--gtdbtk_memory`, `--gtdbtk_time`: defaults for `GTDBTK`
 - `--gunc_memory`, `--gunc_time`: defaults for `GUNC`
 
+### Genome atlas settings
+
+These control the final single-run `genome_quality_atlas.py` step written to `genome_quality_atlas/`.
+
+- `--atlas_enabled`: run or skip atlas generation at the end of the workflow
+- `--atlas_prefix`: atlas output file prefix
+- `--atlas_group_column`: grouping column for atlas summaries; default `Phylum`
+- `--atlas_sample_column`: optional sample column for compare/sample-aware outputs
+- `--atlas_matched_samples_only`: restrict category comparisons to matched samples only
+- `--atlas_top_n_groups`: top-N groups shown in grouped panels
+- `--atlas_compare_columns`: comma-separated columns passed as repeated `--compare-column`
+- `--atlas_compare_map`: optional TSV/CSV to merge before category comparisons
+- `--atlas_compare_map_key`: optional join key for `--atlas_compare_map`
+- `--atlas_ani_compare_columns`: comma-separated columns passed as repeated `--ani-compare-column`
+- `--atlas_ani_results`: optional existing FastANI results TSV to reuse
+- `--atlas_ani_genome_dir`: genome FASTA directory for FastANI; if empty, defaults to `<working_dir>/dedupe/fasta`
+- `--atlas_ani_fasta_column`: optional column containing FASTA paths instead of using `--atlas_ani_genome_dir`
+- `--atlas_ani_fasta_exts`: comma-separated FASTA extensions used when resolving genomes for FastANI
+- `--atlas_ani_threshold`: ANI threshold for genome overlap calls
+- `--atlas_ani_af_threshold`: FastANI alignment-fraction threshold
+- `--atlas_ani_threads`: threads for FastANI inside the atlas step
+- `--atlas_ani_top_overlaps`: maximum overlap combinations shown in the ANI UpSet output
+
+Example atlas-oriented overrides in `nextflow.config`:
+
+```groovy
+atlas_group_column = "Phylum"
+atlas_top_n_groups = 1000
+atlas_ani_compare_columns = "Phylum"
+atlas_ani_threshold = 99.0
+atlas_ani_af_threshold = 0.5
+atlas_ani_threads = 14
+```
+
 ### Debug/reporting
 
 - `--debug true`
@@ -228,7 +263,7 @@ nextflow run main.nf -profile mamba,debug ... --debug true
   - `FILTER_FASTA`, `SEQKIT_STAT`, `PRUNE_FASTA`, `CHECKM_SINGLE`
   - `BARRNAP`, `BLAST_RRNA`, `TRNASCAN`
 - Single aggregation tasks:
-  - combine stats/checkm/GTDB-Tk, qscore, dedupe, merge master
+  - combine stats/checkm/GTDB-Tk, qscore, dedupe, merge master, genome atlas
 - Batched directory-level tasks:
   - `CHECKM_SINGLE`, `GTDBTK`
 - Directory-level tasks:
@@ -256,6 +291,7 @@ CPU settings are active and respected for CheckM/GTDB-Tk/GUNC via `--checkm_cpus
 - `gunc/`
 - `references/` (bootstrap status tables when `--ref_dir` is used)
 - `Master_genome_QC.tsv`
+- `genome_quality_atlas/` (atlas plots and summary tables generated automatically after master merge)
 - summary figures from `merge_master.py`
 
 Nextflow intermediate work files go to:

@@ -17,6 +17,24 @@ params.gtdbtk_cpus      = params.gtdbtk_cpus      ?: 1
 params.gtdbtk_batch_size = params.gtdbtk_batch_size ?: 50
 params.gtdbtk_max_forks = params.gtdbtk_max_forks ?: 2
 params.gunc_cpus        = params.gunc_cpus        ?: 1
+params.atlas_enabled    = (params.atlas_enabled == null) ? true : params.atlas_enabled
+params.atlas_prefix     = params.atlas_prefix     ?: "genome_quality"
+params.atlas_group_column = params.atlas_group_column ?: "Phylum"
+params.atlas_sample_column = params.atlas_sample_column ?: ""
+params.atlas_matched_samples_only = params.atlas_matched_samples_only ?: false
+params.atlas_top_n_groups = params.atlas_top_n_groups ?: 12
+params.atlas_compare_columns = params.atlas_compare_columns ?: ""
+params.atlas_compare_map = params.atlas_compare_map ?: ""
+params.atlas_compare_map_key = params.atlas_compare_map_key ?: ""
+params.atlas_ani_compare_columns = params.atlas_ani_compare_columns ?: ""
+params.atlas_ani_results = params.atlas_ani_results ?: ""
+params.atlas_ani_genome_dir = params.atlas_ani_genome_dir ?: ""
+params.atlas_ani_fasta_column = params.atlas_ani_fasta_column ?: ""
+params.atlas_ani_fasta_exts = params.atlas_ani_fasta_exts ?: ".fasta,.fa,.fna,.fasta.gz,.fa.gz,.fna.gz"
+params.atlas_ani_threshold = params.atlas_ani_threshold ?: 95.0
+params.atlas_ani_af_threshold = params.atlas_ani_af_threshold ?: 0.5
+params.atlas_ani_threads = params.atlas_ani_threads ?: 1
+params.atlas_ani_top_overlaps = params.atlas_ani_top_overlaps ?: 15
 params.max_forks        = params.max_forks        ?: 64
 params.ref_dir          = params.ref_dir          ?: ""
 params.checkm_data_path = params.checkm_data_path ?: ""
@@ -83,6 +101,24 @@ def normalizeToList(value) {
         return value as List
     }
     return [value]
+}
+
+def normalizeDelimitedList(value) {
+    if (value == null) {
+        return []
+    }
+    if (value instanceof Collection) {
+        return value.collect { it.toString().trim() }.findAll { it }
+    }
+    def raw = value.toString().trim()
+    if (!raw) {
+        return []
+    }
+    return raw.split(/\s*,\s*/).collect { it.toString().trim() }.findAll { it }
+}
+
+def shellQuote(value) {
+    return "'" + value.toString().replace("'", "'\"'\"'") + "'"
 }
 
 def genomeId(path) {
@@ -846,6 +882,74 @@ process MERGE_MASTER {
     """
 }
 
+
+process GENOME_QUALITY_ATLAS {
+    cpus 1
+    conda "${projectDir}/envs/genome_quality_atlas.yaml"
+    publishDir "${params.working_dir}", mode: 'copy', overwrite: true
+
+    input:
+    path(master_tsv)
+    path(gunc_dir)
+
+    output:
+    path("genome_quality_atlas"), emit: outdir
+
+    script:
+    def atlasPrefix = params.atlas_prefix?.toString()?.trim()
+    def atlasGroupColumn = params.atlas_group_column?.toString()?.trim()
+    def atlasSampleColumn = params.atlas_sample_column?.toString()?.trim()
+    def atlasMatchedSamplesOnly = params.atlas_matched_samples_only ? true : false
+    def atlasTopNGroups = params.atlas_top_n_groups as Integer
+    def atlasCompareColumns = normalizeDelimitedList(params.atlas_compare_columns)
+    def atlasCompareMap = resolveAbsolutePath(params.atlas_compare_map)
+    def atlasCompareMapKey = params.atlas_compare_map_key?.toString()?.trim()
+    def atlasAniCompareColumns = normalizeDelimitedList(params.atlas_ani_compare_columns)
+    def atlasAniResults = resolveAbsolutePath(params.atlas_ani_results)
+    def atlasAniGenomeDir = resolveAbsolutePath(params.atlas_ani_genome_dir)
+    if (!atlasAniGenomeDir) {
+        atlasAniGenomeDir = new File(params.working_dir.toString(), "dedupe/fasta").getAbsolutePath()
+    }
+    def atlasAniFastaColumn = params.atlas_ani_fasta_column?.toString()?.trim()
+    def atlasAniFastaExts = params.atlas_ani_fasta_exts?.toString()?.trim()
+    def atlasAniThreshold = params.atlas_ani_threshold
+    def atlasAniAfThreshold = params.atlas_ani_af_threshold
+    def atlasAniThreads = params.atlas_ani_threads as Integer
+    def atlasAniTopOverlaps = params.atlas_ani_top_overlaps as Integer
+    def compareArgLines = atlasCompareColumns.collect { "    cmd+=( --compare-column ${shellQuote(it)} )" }.join("\n")
+    def aniCompareArgLines = atlasAniCompareColumns.collect { "    cmd+=( --ani-compare-column ${shellQuote(it)} )" }.join("\n")
+    """
+    test -d ${gunc_dir}
+    cmd=(
+      python ${projectDir}/genome_quality_atlas.py
+      ${master_tsv}
+      -o genome_quality_atlas
+      --top-n-groups ${atlasTopNGroups}
+      --ani-threshold ${atlasAniThreshold}
+      --ani-af-threshold ${atlasAniAfThreshold}
+      --ani-threads ${atlasAniThreads}
+      --ani-top-overlaps ${atlasAniTopOverlaps}
+    )
+    ${atlasPrefix ? "cmd+=( --prefix ${shellQuote(atlasPrefix)} )" : ""}
+    ${atlasGroupColumn ? "cmd+=( --group-column ${shellQuote(atlasGroupColumn)} )" : ""}
+    ${atlasSampleColumn ? "cmd+=( --sample-column ${shellQuote(atlasSampleColumn)} )" : ""}
+    ${atlasMatchedSamplesOnly ? "cmd+=( --matched-samples-only )" : ""}
+    ${atlasCompareMap ? "cmd+=( --compare-map ${shellQuote(atlasCompareMap)} )" : ""}
+    ${atlasCompareMapKey ? "cmd+=( --compare-map-key ${shellQuote(atlasCompareMapKey)} )" : ""}
+    ${atlasAniResults ? "cmd+=( --ani-results ${shellQuote(atlasAniResults)} )" : ""}
+    ${atlasAniGenomeDir ? "cmd+=( --ani-genome-dir ${shellQuote(atlasAniGenomeDir)} )" : ""}
+    ${atlasAniFastaColumn ? "cmd+=( --ani-fasta-column ${shellQuote(atlasAniFastaColumn)} )" : ""}
+    ${atlasAniFastaExts ? "cmd+=( --ani-fasta-exts ${shellQuote(atlasAniFastaExts)} )" : ""}
+${compareArgLines}
+${aniCompareArgLines}
+    printf 'Running:'
+    printf ' %q' "\${cmd[@]}"
+    printf '
+'
+    "\${cmd[@]}"
+    """
+}
+
 workflow {
     main:
         def resolvedRefDir = resolveAbsolutePath(params.ref_dir)
@@ -1090,7 +1194,11 @@ workflow {
         gunc = GUNC(gunc_input).outdir
 
         master = MERGE_MASTER(dedupe_for_merge, barblast.subunits, trna_counts.counts)
+        atlas = params.atlas_enabled ?
+            GENOME_QUALITY_ATLAS(master.master, gunc).outdir :
+            Channel.empty()
 
     emit:
-        master.master
+        master = master.master
+        atlas = atlas
 }
