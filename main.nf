@@ -35,6 +35,9 @@ params.atlas_ani_threshold = params.atlas_ani_threshold ?: 95.0
 params.atlas_ani_af_threshold = params.atlas_ani_af_threshold ?: 0.5
 params.atlas_ani_threads = params.atlas_ani_threads ?: 1
 params.atlas_ani_top_overlaps = params.atlas_ani_top_overlaps ?: 15
+params.atlas_cpus       = params.atlas_cpus       ?: params.atlas_ani_threads
+params.atlas_memory     = params.atlas_memory     ?: "8 GB"
+params.atlas_time       = params.atlas_time       ?: "12h"
 params.max_forks        = params.max_forks        ?: 64
 params.ref_dir          = params.ref_dir          ?: ""
 params.checkm_data_path = params.checkm_data_path ?: ""
@@ -884,7 +887,7 @@ process MERGE_MASTER {
 
 
 process GENOME_QUALITY_ATLAS {
-    cpus 1
+    cpus params.atlas_cpus
     conda "${projectDir}/envs/genome_quality_atlas.yaml"
     publishDir "${params.working_dir}", mode: 'copy', overwrite: true
 
@@ -914,7 +917,7 @@ process GENOME_QUALITY_ATLAS {
     def atlasAniFastaExts = params.atlas_ani_fasta_exts?.toString()?.trim()
     def atlasAniThreshold = params.atlas_ani_threshold
     def atlasAniAfThreshold = params.atlas_ani_af_threshold
-    def atlasAniThreads = params.atlas_ani_threads as Integer
+    def atlasAniThreads = Math.max(1, Math.min(task.cpus as Integer, params.atlas_ani_threads as Integer))
     def atlasAniTopOverlaps = params.atlas_ani_top_overlaps as Integer
     def compareArgLines = atlasCompareColumns.collect { "    cmd+=( --compare-column ${shellQuote(it)} )" }.join("\n")
     def aniCompareArgLines = atlasAniCompareColumns.collect { "    cmd+=( --ani-compare-column ${shellQuote(it)} )" }.join("\n")
@@ -944,8 +947,7 @@ ${compareArgLines}
 ${aniCompareArgLines}
     printf 'Running:'
     printf ' %q' "\${cmd[@]}"
-    printf '
-'
+    printf '\\n'
     "\${cmd[@]}"
     """
 }

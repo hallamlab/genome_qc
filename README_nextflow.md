@@ -230,8 +230,11 @@ These control the final single-run `genome_quality_atlas.py` step written to `ge
 - `--atlas_ani_fasta_exts`: comma-separated FASTA extensions used when resolving genomes for FastANI
 - `--atlas_ani_threshold`: ANI threshold for genome overlap calls
 - `--atlas_ani_af_threshold`: FastANI alignment-fraction threshold
-- `--atlas_ani_threads`: threads for FastANI inside the atlas step
+- `--atlas_ani_threads`: threads for FastANI inside the atlas step; capped at the CPUs allocated to the atlas task
 - `--atlas_ani_top_overlaps`: maximum overlap combinations shown in the ANI UpSet output
+- `--atlas_cpus`: CPUs requested for the atlas task; set this to match or exceed `atlas_ani_threads`
+- `--atlas_memory`: memory requested for `GENOME_QUALITY_ATLAS` on Slurm
+- `--atlas_time`: walltime requested for `GENOME_QUALITY_ATLAS` on Slurm
 
 Example atlas-oriented overrides in `nextflow.config`:
 
@@ -242,6 +245,9 @@ atlas_ani_compare_columns = "Phylum"
 atlas_ani_threshold = 99.0
 atlas_ani_af_threshold = 0.5
 atlas_ani_threads = 14
+atlas_cpus = 14
+atlas_memory = "64 GB"
+atlas_time = "24h"
 ```
 
 ### Debug/reporting
