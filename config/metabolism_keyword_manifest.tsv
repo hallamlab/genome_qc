@@ -1,233 +1,276 @@
 family_id	family_label	family_color	mode_id	mode_label	keyword_scope	keyword
-carbon_c1	Carbon / C1	#1a1a1a			family	carbon fixation
-carbon_c1	Carbon / C1	#1a1a1a			family	calvin
-carbon_c1	Carbon / C1	#1a1a1a			family	rubisco
-carbon_c1	Carbon / C1	#1a1a1a			family	ribulose-bisphosphate carboxylase
-carbon_c1	Carbon / C1	#1a1a1a			family	wood-ljungdahl
-carbon_c1	Carbon / C1	#1a1a1a			family	acetyl-coa pathway
-carbon_c1	Carbon / C1	#1a1a1a			family	reductive citric acid cycle
-carbon_c1	Carbon / C1	#1a1a1a			family	reverse tca
-carbon_c1	Carbon / C1	#1a1a1a			family	methane
-carbon_c1	Carbon / C1	#1a1a1a			family	methanotroph
-carbon_c1	Carbon / C1	#1a1a1a			family	methanogenesis
-carbon_c1	Carbon / C1	#1a1a1a			family	methanol
-carbon_c1	Carbon / C1	#1a1a1a			family	methylotroph
-carbon_c1	Carbon / C1	#1a1a1a			family	methylotrophy
-carbon_c1	Carbon / C1	#1a1a1a			family	carbon monoxide dehydrogenase
-carbon_c1	Carbon / C1	#1a1a1a			family	formaldehyde
-carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	rubisco
-carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	ribulose-bisphosphate carboxylase
-carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	carbon fixation
-carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	calvin
-carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	wood-ljungdahl
+arsenic	Arsenic	#d0d0d0			family	arsenate
+arsenic	Arsenic	#d0d0d0			family	arsenic
+arsenic	Arsenic	#d0d0d0			family	arsenic detoxification
+arsenic	Arsenic	#d0d0d0			family	arsenite
+arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	aioa
+arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	aiob
+arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arr
+arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsa
+arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsb
+arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsc
+arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsenate reductase
+arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsenic detoxification
+arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsenic resistance
+arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsenite oxidase
+arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsm
 carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	acetyl-coa pathway
-carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	reverse tca
-carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	reductive citric acid cycle
-carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	co dehydrogenase/acetyl-coa synthase
 carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	acetyl-coa synthase co dehydrogenase
-carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methane monooxygenase
-carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methanol dehydrogenase
-carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methylamine dehydrogenase
-carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methylotroph
-carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methylotrophy
-carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methanotroph
-carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methanogenesis
-carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methane oxidation
-carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methanol
-carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methylotrophic
+carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	calvin
+carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	carbon fixation
+carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	co dehydrogenase/acetyl-coa synthase
+carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	ribulose-bisphosphate carboxylase
+carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	rubisco
+carbon_c1	Carbon / C1	#1a1a1a	carbon_fixation	Carbon fixation	mode	wood-ljungdahl
 carbon_c1	Carbon / C1	#1a1a1a	co_formate	CO/formate metabolism	mode	carbon monoxide dehydrogenase
 carbon_c1	Carbon / C1	#1a1a1a	co_formate	CO/formate metabolism	mode	co dehydrogenase
 carbon_c1	Carbon / C1	#1a1a1a	co_formate	CO/formate metabolism	mode	formate dehydrogenase
 carbon_c1	Carbon / C1	#1a1a1a	co_formate	CO/formate metabolism	mode	formate oxidation
-nitrogen	Nitrogen	#3d3d3d			family	nitrogen
-nitrogen	Nitrogen	#3d3d3d			family	nitrate
-nitrogen	Nitrogen	#3d3d3d			family	nitrite
-nitrogen	Nitrogen	#3d3d3d			family	nitric oxide
-nitrogen	Nitrogen	#3d3d3d			family	nitrous oxide
-nitrogen	Nitrogen	#3d3d3d			family	ammonia
-nitrogen	Nitrogen	#3d3d3d			family	ammonium
-nitrogen	Nitrogen	#3d3d3d			family	hydroxylamine
-nitrogen	Nitrogen	#3d3d3d			family	denitr
-nitrogen	Nitrogen	#3d3d3d			family	nitrif
-nitrogen	Nitrogen	#3d3d3d			family	anammox
-nitrogen	Nitrogen	#3d3d3d			family	cyanate
-nitrogen	Nitrogen	#3d3d3d			family	urea
-nitrogen	Nitrogen	#3d3d3d			family	urease
-nitrogen	Nitrogen	#3d3d3d			family	nitrogenase
-nitrogen	Nitrogen	#3d3d3d	nitrogen_fixation	Nitrogen fixation	mode	nitrogenase
-nitrogen	Nitrogen	#3d3d3d	nitrogen_fixation	Nitrogen fixation	mode	nifh
-nitrogen	Nitrogen	#3d3d3d	nitrogen_fixation	Nitrogen fixation	mode	nifd
-nitrogen	Nitrogen	#3d3d3d	nitrogen_fixation	Nitrogen fixation	mode	nifk
-nitrogen	Nitrogen	#3d3d3d	nitrogen_fixation	Nitrogen fixation	mode	dinitrogenase
-nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	ammonia monooxygenase
-nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	hydroxylamine oxidoreductase
-nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	nitrite oxidoreductase
-nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	amoa
-nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	amob
-nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	amoc
-nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	hao
-nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	nxra
-nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	nxrb
-nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	nitrif
-nitrogen	Nitrogen	#3d3d3d	nitrate_reduction	Nitrate reduction	mode	nitrate reductase
-nitrogen	Nitrogen	#3d3d3d	nitrate_reduction	Nitrate reduction	mode	nargh
-nitrogen	Nitrogen	#3d3d3d	nitrate_reduction	Nitrate reduction	mode	napa
-nitrogen	Nitrogen	#3d3d3d	nitrate_reduction	Nitrate reduction	mode	nitrate reduction
-nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nitrite reductase
-nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nirbd
-nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nrfa
-nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nirk
-nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nirs
-nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nitrite reduction
-nitrogen	Nitrogen	#3d3d3d	denitrification	Denitrification	mode	nitric oxide reductase
-nitrogen	Nitrogen	#3d3d3d	denitrification	Denitrification	mode	nitrous-oxide reductase
-nitrogen	Nitrogen	#3d3d3d	denitrification	Denitrification	mode	nitrous oxide reductase
+carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methane monooxygenase
+carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methane oxidation
+carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methanogenesis
+carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methanol
+carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methanol dehydrogenase
+carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methanotroph
+carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methylamine dehydrogenase
+carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methylotroph
+carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methylotrophic
+carbon_c1	Carbon / C1	#1a1a1a	methylotrophy_methane	Methane/methanol/C1 use	mode	methylotrophy
+carbon_c1	Carbon / C1	#1a1a1a	methanogenesis	Methanogenesis / MCR	mode	anaerobic methane oxidation
+carbon_c1	Carbon / C1	#1a1a1a	methanogenesis	Methanogenesis / MCR	mode	mcra
+carbon_c1	Carbon / C1	#1a1a1a	methanogenesis	Methanogenesis / MCR	mode	methane production
+carbon_c1	Carbon / C1	#1a1a1a	methanogenesis	Methanogenesis / MCR	mode	methanogenesis
+carbon_c1	Carbon / C1	#1a1a1a	methanogenesis	Methanogenesis / MCR	mode	methyl coenzyme m reductase
+carbon_c1	Carbon / C1	#1a1a1a	methanogenesis	Methanogenesis / MCR	mode	reverse methanogenesis
+carbon_c1	Carbon / C1	#1a1a1a			family	acetyl-coa pathway
+carbon_c1	Carbon / C1	#1a1a1a			family	calvin
+carbon_c1	Carbon / C1	#1a1a1a			family	carbon fixation
+carbon_c1	Carbon / C1	#1a1a1a			family	carbon monoxide dehydrogenase
+carbon_c1	Carbon / C1	#1a1a1a			family	formaldehyde
+carbon_c1	Carbon / C1	#1a1a1a			family	methane
+carbon_c1	Carbon / C1	#1a1a1a			family	methanogenesis
+carbon_c1	Carbon / C1	#1a1a1a			family	methanol
+carbon_c1	Carbon / C1	#1a1a1a			family	methanotroph
+carbon_c1	Carbon / C1	#1a1a1a			family	methylotroph
+carbon_c1	Carbon / C1	#1a1a1a			family	methylotrophy
+carbon_c1	Carbon / C1	#1a1a1a			family	ribulose-bisphosphate carboxylase
+carbon_c1	Carbon / C1	#1a1a1a			family	rubisco
+carbon_c1	Carbon / C1	#1a1a1a			family	wood-ljungdahl
+hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	[fefe] hydrogenase
+hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	[nife] hydrogenase
+hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	[nife]-hydrogenase
+hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hox
+hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hya
+hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hyb
+hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hyda
+hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hydb
+hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hydrogen oxidation
+hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hydrogen production
+hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hydrogenase
+hydrogen	Hydrogen	#969696			family	hydrogen oxidation
+hydrogen	Hydrogen	#969696			family	hydrogen production
+hydrogen	Hydrogen	#969696			family	hydrogenase
+hydrogen	Hydrogen	#969696			family	molecular hydrogen
+iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	fec
+iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	ferric uptake
+iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	heme transport
+iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	heme uptake
+iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	iron transport
+iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	siderophore
+iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	tonb-dependent iron
+iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	cyc2
+iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	ferric reductase
+iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	ferrous iron
+iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	iron oxidation
+iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	iron reduction
+iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	mtra
+iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	mtrb
+iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	mtrc
+iron	Iron	#b3b3b3			family	ferric
+iron	Iron	#b3b3b3			family	ferrous
+iron	Iron	#b3b3b3			family	heme uptake
+iron	Iron	#b3b3b3			family	iron
+iron	Iron	#b3b3b3			family	iron oxidation
+iron	Iron	#b3b3b3			family	iron reduction
+iron	Iron	#b3b3b3			family	siderophore
+nitrogen	Nitrogen	#3d3d3d	anammox	Anammox	mode	anaerobic ammonium oxid
+nitrogen	Nitrogen	#3d3d3d	anammox	Anammox	mode	anaerobic ammonium oxidation
+nitrogen	Nitrogen	#3d3d3d	anammox	Anammox	mode	anammox
+nitrogen	Nitrogen	#3d3d3d	anammox	Anammox	mode	hydrazine oxidoreductase
+nitrogen	Nitrogen	#3d3d3d	anammox	Anammox	mode	hydrazine synthase
+nitrogen	Nitrogen	#3d3d3d	anammox	Anammox	mode	hzo
+nitrogen	Nitrogen	#3d3d3d	anammox	Anammox	mode	hzsa
+nitrogen	Nitrogen	#3d3d3d	anammox	Anammox	mode	hzsb
+nitrogen	Nitrogen	#3d3d3d	anammox	Anammox	mode	hzsc
+nitrogen	Nitrogen	#3d3d3d	anammox	Anammox	mode	scalindua
 nitrogen	Nitrogen	#3d3d3d	denitrification	Denitrification	mode	denitr
+nitrogen	Nitrogen	#3d3d3d	denitrification	Denitrification	mode	nitric oxide reductase
+nitrogen	Nitrogen	#3d3d3d	denitrification	Denitrification	mode	nitrous oxide reductase
+nitrogen	Nitrogen	#3d3d3d	denitrification	Denitrification	mode	nitrous-oxide reductase
 nitrogen	Nitrogen	#3d3d3d	denitrification	Denitrification	mode	norb
 nitrogen	Nitrogen	#3d3d3d	denitrification	Denitrification	mode	norc
 nitrogen	Nitrogen	#3d3d3d	denitrification	Denitrification	mode	nosz
 nitrogen	Nitrogen	#3d3d3d	dnra	DNRA	mode	dissimilatory nitrate reduction to ammonium
 nitrogen	Nitrogen	#3d3d3d	dnra	DNRA	mode	dnra
-nitrogen	Nitrogen	#3d3d3d	dnra	DNRA	mode	nrfa
 nitrogen	Nitrogen	#3d3d3d	dnra	DNRA	mode	nirb
-nitrogen	Nitrogen	#3d3d3d	dnra	DNRA	mode	nir d
-nitrogen	Nitrogen	#3d3d3d	urea_cyanate	Urea/cyanate use	mode	urease
-nitrogen	Nitrogen	#3d3d3d	urea_cyanate	Urea/cyanate use	mode	urea carboxylase
-nitrogen	Nitrogen	#3d3d3d	urea_cyanate	Urea/cyanate use	mode	urea amidolyase
-nitrogen	Nitrogen	#3d3d3d	urea_cyanate	Urea/cyanate use	mode	urea transport
+nitrogen	Nitrogen	#3d3d3d	dnra	DNRA	mode	nird
+nitrogen	Nitrogen	#3d3d3d	dnra	DNRA	mode	nrfa
+nitrogen	Nitrogen	#3d3d3d	nitrate_reduction	Nitrate reduction	mode	napa
+nitrogen	Nitrogen	#3d3d3d	nitrate_reduction	Nitrate reduction	mode	nargh
+nitrogen	Nitrogen	#3d3d3d	nitrate_reduction	Nitrate reduction	mode	nitrate reductase
+nitrogen	Nitrogen	#3d3d3d	nitrate_reduction	Nitrate reduction	mode	nitrate reduction
+nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	ammonia monooxygenase
+nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	amoa
+nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	amob
+nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	amoc
+nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	hao
+nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	hydroxylamine oxidoreductase
+nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	nitrif
+nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	nitrite oxidoreductase
+nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	nxra
+nitrogen	Nitrogen	#3d3d3d	nitrification	Nitrification	mode	nxrb
+nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nirbd
+nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nirk
+nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nirs
+nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nitrite reductase
+nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nitrite reduction
+nitrogen	Nitrogen	#3d3d3d	nitrite_reduction	Nitrite reduction	mode	nrfa
+nitrogen	Nitrogen	#3d3d3d	nitrogen_fixation	Nitrogen fixation	mode	dinitrogenase
+nitrogen	Nitrogen	#3d3d3d	nitrogen_fixation	Nitrogen fixation	mode	nifd
+nitrogen	Nitrogen	#3d3d3d	nitrogen_fixation	Nitrogen fixation	mode	nifh
+nitrogen	Nitrogen	#3d3d3d	nitrogen_fixation	Nitrogen fixation	mode	nifk
+nitrogen	Nitrogen	#3d3d3d	nitrogen_fixation	Nitrogen fixation	mode	nitrogenase
 nitrogen	Nitrogen	#3d3d3d	urea_cyanate	Urea/cyanate use	mode	cyanase
 nitrogen	Nitrogen	#3d3d3d	urea_cyanate	Urea/cyanate use	mode	cyanate
-sulfur	Sulfur	#5c5c5c			family	sulfur
-sulfur	Sulfur	#5c5c5c			family	sulfate
-sulfur	Sulfur	#5c5c5c			family	sulfite
-sulfur	Sulfur	#5c5c5c			family	sulfide
-sulfur	Sulfur	#5c5c5c			family	thiosulfate
-sulfur	Sulfur	#5c5c5c			family	tetrathionate
-sulfur	Sulfur	#5c5c5c			family	sulfonate
-sulfur	Sulfur	#5c5c5c			family	sulfoquinovose
-sulfur	Sulfur	#5c5c5c			family	dimethylsulf
-sulfur	Sulfur	#5c5c5c			family	taurine
-sulfur	Sulfur	#5c5c5c			family	dmsp
-sulfur	Sulfur	#5c5c5c			family	dimethyl sulfide
-sulfur	Sulfur	#5c5c5c			family	dimethylsulfoniopropionate
-sulfur	Sulfur	#5c5c5c			family	methanethiol
-sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	sulfate adenylyltransferase
-sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	adenylylsulfate reductase
-sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	dissimilatory sulfite reductase
-sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	sat
-sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	apra
-sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	aprb
-sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	dsrc
-sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	dsra
-sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	dsrb
-sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	sulfate reduction
-sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfide:quinone oxidoreductase
-sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfide quinone oxidoreductase
-sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfur oxidation
-sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfur dioxygenase
-sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfite oxidase
-sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfite dehydrogenase
-sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sqr
-sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	soxe
-sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	soxf
-sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	soxy
-sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	soxz
-sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	thiosulfate
-sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	tetrathionate
-sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	soxa
-sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	soxb
-sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	soxc
-sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	soxd
-sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	tsd
-sulfur	Sulfur	#5c5c5c	organosulfur	Organosulfur use	mode	sulfonate
-sulfur	Sulfur	#5c5c5c	organosulfur	Organosulfur use	mode	taurine
-sulfur	Sulfur	#5c5c5c	organosulfur	Organosulfur use	mode	dimethylsulf
-sulfur	Sulfur	#5c5c5c	organosulfur	Organosulfur use	mode	dmsp
-sulfur	Sulfur	#5c5c5c	organosulfur	Organosulfur use	mode	sulfoquinovose
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dmsp
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dmsp lyase
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dimethylsulfoniopropionate
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dimethyl sulfide
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dimethylsulf
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dmda
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddd
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddp
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddq
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddl
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddw
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddy
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dsyb
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	mdda
-sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	methanethiol s-methyltransferase
-phosphorus	Phosphorus	#7a7a7a			family	phosphate
-phosphorus	Phosphorus	#7a7a7a			family	phosphonate
-phosphorus	Phosphorus	#7a7a7a			family	phosphite
-phosphorus	Phosphorus	#7a7a7a			family	polyphosphate
-phosphorus	Phosphorus	#7a7a7a			family	phosphorus
-phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	phosphate transport
-phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	phosphate regulon
+nitrogen	Nitrogen	#3d3d3d	urea_cyanate	Urea/cyanate use	mode	urea amidolyase
+nitrogen	Nitrogen	#3d3d3d	urea_cyanate	Urea/cyanate use	mode	urea carboxylase
+nitrogen	Nitrogen	#3d3d3d	urea_cyanate	Urea/cyanate use	mode	urea transport
+nitrogen	Nitrogen	#3d3d3d	urea_cyanate	Urea/cyanate use	mode	urease
+nitrogen	Nitrogen	#3d3d3d			family	ammonia
+nitrogen	Nitrogen	#3d3d3d			family	ammonium
+nitrogen	Nitrogen	#3d3d3d			family	anammox
+nitrogen	Nitrogen	#3d3d3d			family	cyanate
+nitrogen	Nitrogen	#3d3d3d			family	denitr
+nitrogen	Nitrogen	#3d3d3d			family	hydroxylamine
+nitrogen	Nitrogen	#3d3d3d			family	nitrate
+nitrogen	Nitrogen	#3d3d3d			family	nitric oxide
+nitrogen	Nitrogen	#3d3d3d			family	nitrif
+nitrogen	Nitrogen	#3d3d3d			family	nitrite
+nitrogen	Nitrogen	#3d3d3d			family	nitrogen
+nitrogen	Nitrogen	#3d3d3d			family	nitrogenase
+nitrogen	Nitrogen	#3d3d3d			family	nitrous oxide
+nitrogen	Nitrogen	#3d3d3d			family	urea
+nitrogen	Nitrogen	#3d3d3d			family	urease
 phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	alkaline phosphatase
 phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	pho regulon
 phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	phoa
 phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	phod
+phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	phosphate regulon
+phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	phosphate transport
+phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	phosphate uptake
 phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	phox
 phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	psts
-phosphorus	Phosphorus	#7a7a7a	phosphate_scavenging	Phosphate scavenging	mode	phosphate uptake
-phosphorus	Phosphorus	#7a7a7a	phosphonate_phosphite	Phosphonate/phosphite	mode	phosphonate
-phosphorus	Phosphorus	#7a7a7a	phosphonate_phosphite	Phosphonate/phosphite	mode	phosphite
 phosphorus	Phosphorus	#7a7a7a	phosphonate_phosphite	Phosphonate/phosphite	mode	2-aminoethylphosphonate
-phosphorus	Phosphorus	#7a7a7a	phosphonate_phosphite	Phosphonate/phosphite	mode	phn
-phosphorus	Phosphorus	#7a7a7a	phosphonate_phosphite	Phosphonate/phosphite	mode	ptx
 phosphorus	Phosphorus	#7a7a7a	phosphonate_phosphite	Phosphonate/phosphite	mode	htx
-hydrogen	Hydrogen	#969696			family	hydrogenase
-hydrogen	Hydrogen	#969696			family	molecular hydrogen
-hydrogen	Hydrogen	#969696			family	hydrogen oxidation
-hydrogen	Hydrogen	#969696			family	hydrogen production
-hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hydrogenase
-hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hydrogen oxidation
-hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hydrogen production
-hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	[fefe] hydrogenase
-hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	[nife] hydrogenase
-hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	[nife]-hydrogenase
-hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hya
-hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hyb
-hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hyda
-hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hydb
-hydrogen	Hydrogen	#969696	hydrogen_metabolism	Hydrogen metabolism	mode	hox
-iron	Iron	#b3b3b3			family	iron
-iron	Iron	#b3b3b3			family	ferric
-iron	Iron	#b3b3b3			family	ferrous
-iron	Iron	#b3b3b3			family	iron oxidation
-iron	Iron	#b3b3b3			family	iron reduction
-iron	Iron	#b3b3b3			family	siderophore
-iron	Iron	#b3b3b3			family	heme uptake
-iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	iron oxidation
-iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	iron reduction
-iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	ferric reductase
-iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	ferrous iron
-iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	cyc2
-iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	mtra
-iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	mtrb
-iron	Iron	#b3b3b3	iron_redox	Iron redox	mode	mtrc
-iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	siderophore
-iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	heme uptake
-iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	heme transport
-iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	iron transport
-iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	ferric uptake
-iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	fec
-iron	Iron	#b3b3b3	iron_acquisition	Iron acquisition	mode	tonb-dependent iron
-arsenic	Arsenic	#d0d0d0			family	arsenic
-arsenic	Arsenic	#d0d0d0			family	arsenate
-arsenic	Arsenic	#d0d0d0			family	arsenite
-arsenic	Arsenic	#d0d0d0			family	arsenic detoxification
-arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsenate reductase
-arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsenite oxidase
-arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsenic resistance
-arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsenic detoxification
-arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsm
-arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsa
-arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsb
-arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arsc
-arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	aioa
-arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	aiob
-arsenic	Arsenic	#d0d0d0	arsenic_detox_redox	Arsenic detox/redox	mode	arr
+phosphorus	Phosphorus	#7a7a7a	phosphonate_phosphite	Phosphonate/phosphite	mode	phn
+phosphorus	Phosphorus	#7a7a7a	phosphonate_phosphite	Phosphonate/phosphite	mode	phosphite
+phosphorus	Phosphorus	#7a7a7a	phosphonate_phosphite	Phosphonate/phosphite	mode	phosphonate
+phosphorus	Phosphorus	#7a7a7a	phosphonate_phosphite	Phosphonate/phosphite	mode	ptx
+phosphorus	Phosphorus	#7a7a7a			family	phosphate
+phosphorus	Phosphorus	#7a7a7a			family	phosphite
+phosphorus	Phosphorus	#7a7a7a			family	phosphonate
+phosphorus	Phosphorus	#7a7a7a			family	phosphorus
+phosphorus	Phosphorus	#7a7a7a			family	polyphosphate
+sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	adenylylsulfate reductase
+sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	apra
+sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	aprb
+sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	dissimilatory sulfite reductase
+sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	dsra
+sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	dsrb
+sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	dsrc
+sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	sat
+sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	sulfate adenylyltransferase
+sulfur	Sulfur	#5c5c5c	sulfate_reduction	Sulfate reduction	mode	sulfate reduction
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	cryptic sulfur cycle
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	nitrate-dependent sulfur oxidation
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	reverse dsr
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	soxe
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	soxf
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	soxy
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	soxz
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sqr
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfide oxidation
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfide quinone oxidoreductase
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfide:quinone oxidoreductase
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfite dehydrogenase
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfite oxidase
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfur dioxygenase
+sulfur	Sulfur	#5c5c5c	sulfur_oxidation	Sulfur oxidation	mode	sulfur oxidation
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	aprm
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	dsrc
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	dsrj
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	dsrk
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	dsrl
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	dsrm
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	dsrmkjop
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	dsro
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	dsrp
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	fcca
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	fccab
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	fccb
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	oxidative dsr
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	oxidative sulfur metabolism
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	reverse dissimilatory sulfite reductase
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	reverse dsr
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	reverse dsr sulfur oxidation
+sulfur	Sulfur	#5c5c5c	reverse_dsr_sulfur_oxidation	Reverse Dsr sulfur oxidation	mode	sulfur oxidation via dsr
+sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	soxa
+sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	soxb
+sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	soxc
+sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	soxd
+sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	tetrathionate
+sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	thiosulfate
+sulfur	Sulfur	#5c5c5c	thiosulfate_tetrathionate	Thiosulfate/tetrathionate	mode	tsd
+sulfur	Sulfur	#5c5c5c	organosulfur	Organosulfur use	mode	dimethylsulf
+sulfur	Sulfur	#5c5c5c	organosulfur	Organosulfur use	mode	dmsp
+sulfur	Sulfur	#5c5c5c	organosulfur	Organosulfur use	mode	sulfonate
+sulfur	Sulfur	#5c5c5c	organosulfur	Organosulfur use	mode	sulfoquinovose
+sulfur	Sulfur	#5c5c5c	organosulfur	Organosulfur use	mode	taurine
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddd
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddl
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddp
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddq
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddw
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dddy
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dimethyl sulfide
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dimethylsulf
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dimethylsulfoniopropionate
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dmda
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dmsp
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dmsp lyase
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	dsyb
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	mdda
+sulfur	Sulfur	#5c5c5c	dmsp_dms	DMSP/DMS transformations	mode	methanethiol s-methyltransferase
+sulfur	Sulfur	#5c5c5c			family	dimethyl sulfide
+sulfur	Sulfur	#5c5c5c			family	dimethylsulf
+sulfur	Sulfur	#5c5c5c			family	dimethylsulfoniopropionate
+sulfur	Sulfur	#5c5c5c			family	dmsp
+sulfur	Sulfur	#5c5c5c			family	methanethiol
+sulfur	Sulfur	#5c5c5c			family	sulfate
+sulfur	Sulfur	#5c5c5c			family	sulfide
+sulfur	Sulfur	#5c5c5c			family	sulfite
+sulfur	Sulfur	#5c5c5c			family	sulfonate
+sulfur	Sulfur	#5c5c5c			family	sulfoquinovose
+sulfur	Sulfur	#5c5c5c			family	sulfur
+sulfur	Sulfur	#5c5c5c			family	taurine
+sulfur	Sulfur	#5c5c5c			family	tetrathionate
+sulfur	Sulfur	#5c5c5c			family	thiosulfate
+carbon_c1	Carbon / C1	#9ad0f5	reductive_tca	Reverse / reductive TCA	mode	reverse tca
+carbon_c1	Carbon / C1	#9ad0f5	reductive_tca	Reverse / reductive TCA	mode	reductive tca
+carbon_c1	Carbon / C1	#9ad0f5	reductive_tca	Reverse / reductive TCA	mode	reverse krebs
+carbon_c1	Carbon / C1	#9ad0f5	reductive_tca	Reverse / reductive TCA	mode	reverse krebs cycle
+carbon_c1	Carbon / C1	#9ad0f5	reductive_tca	Reverse / reductive TCA	mode	reductive citric acid cycle
+carbon_c1	Carbon / C1	#9ad0f5	reductive_tca	Reverse / reductive TCA	mode	reductive tricarboxylic acid cycle
+carbon_c1	Carbon / C1	#9ad0f5	reductive_tca	Reverse / reductive TCA	mode	atp citrate lyase
+carbon_c1	Carbon / C1	#9ad0f5	reductive_tca	Reverse / reductive TCA	mode	citryl-coa synthetase
+carbon_c1	Carbon / C1	#9ad0f5	reductive_tca	Reverse / reductive TCA	mode	citryl-coa lyase

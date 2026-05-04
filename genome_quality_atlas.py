@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import glob
 import itertools
 import math
 import os
@@ -8,6 +9,7 @@ import re
 import shutil
 import subprocess
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -43,6 +45,41 @@ SHARED_DIFFERENCE_METRICS = [
     ("trna_unique", "Unique tRNAs"),
 ]
 FAVORABLE_NEGATIVE_METRICS = {"Contamination"}
+GUNC_LOW_REFERENCE_THRESHOLD = 0.3
+GUNC_DEFAULT_CSS_THRESHOLD = 0.45
+GUNC_STRICT_RRS_THRESHOLD = 0.5
+GUNC_STRICT_CSS_THRESHOLD = 0.85
+GUNC_ABOVE_GENUS_LEVELS = {"kingdom", "phylum", "class", "order", "family"}
+GUNC_ASSESSMENT_ORDER = [
+    "credible_chimeric_signal",
+    "likely_not_chimeric",
+    "low_reference_uncertain",
+    "unscored",
+]
+GUNC_ASSESSMENT_LABELS = {
+    "credible_chimeric_signal": "Credible chimeric signal",
+    "likely_not_chimeric": "Likely not chimeric",
+    "low_reference_uncertain": "Low-reference uncertain",
+    "unscored": "Unscored",
+}
+GUNC_ASSESSMENT_SHORT_LABELS = {
+    "credible_chimeric_signal": "Chimera",
+    "likely_not_chimeric": "Clean",
+    "low_reference_uncertain": "Low-ref",
+    "unscored": "Unscored",
+}
+GUNC_ASSESSMENT_COLORS = {
+    "credible_chimeric_signal": "#1a1a1a",
+    "likely_not_chimeric": "#7f7f7f",
+    "low_reference_uncertain": "#bdbdbd",
+    "unscored": "#e0e0e0",
+}
+GUNC_QUALITY_SCOPES = [
+    ("all", "All genomes"),
+    ("high", "HQ genomes"),
+    ("medium", "MQ genomes"),
+    ("low", "LQ genomes"),
+]
 
 REQUIRED_COLUMNS = [
     "Genome_Id",
@@ -268,6 +305,221 @@ def read_table_auto(path):
     return pd.read_csv(path, sep="\t")
 
 
+def normalize_gunc_genome_id(value):
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return None
+    for suffix in [
+        ".fasta",
+        ".fa",
+        ".fna",
+        ".fasta.gz",
+        ".fa.gz",
+        ".fna.gz",
+        ".gz",
+    ]:
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+            break
+    return text
+
+
+def load_gunc_summary_table(gunc_summary_path):
+    gunc_df = pd.read_csv(gunc_summary_path, sep="\t")
+    if gunc_df.empty or "genome" not in gunc_df.columns:
+        return gunc_df
+
+    gunc_df = gunc_df.copy()
+    gunc_df["__gunc_key"] = gunc_df["genome"].map(normalize_gunc_genome_id)
+    gunc_df = gunc_df.dropna(subset=["__gunc_key"]).drop_duplicates("__gunc_key")
+    rename_map = {
+        "n_genes_called": "gunc_n_genes_called",
+        "n_genes_mapped": "gunc_n_genes_mapped",
+        "n_contigs": "gunc_n_contigs",
+        "taxonomic_level": "gunc_taxonomic_level",
+        "proportion_genes_retained_in_major_clades": "gunc_proportion_genes_retained_in_major_clades",
+        "genes_retained_index": "gunc_genes_retained_index",
+        "clade_separation_score": "gunc_clade_separation_score",
+        "contamination_portion": "gunc_contamination_portion",
+        "n_effective_surplus_clades": "gunc_n_effective_surplus_clades",
+        "mean_hit_identity": "gunc_mean_hit_identity",
+        "reference_representation_score": "gunc_reference_representation_score",
+        "pass.GUNC": "gunc_pass",
+    }
+    keep_columns = ["__gunc_key"] + [column for column in rename_map if column in gunc_df.columns]
+    return gunc_df.loc[:, keep_columns].rename(columns=rename_map)
+
+
+def find_run_directory_gunc_summary(master_path):
+    run_dir = os.path.dirname(os.path.abspath(master_path))
+    patterns = [
+        os.path.join(run_dir, "gunc", "gunc", "GUNC.*.maxCSS_level.tsv"),
+        os.path.join(run_dir, "gunc", "GUNC.*.maxCSS_level.tsv"),
+    ]
+    matches = []
+    for pattern in patterns:
+        matches.extend(glob.glob(pattern))
+    if not matches:
+        return None
+    matches = sorted({os.path.abspath(path) for path in matches})
+    return matches[0]
+
+
+def maybe_attach_gunc_summary(frame, master_path=None, gunc_summary_path=None):
+    resolved_path = gunc_summary_path
+    if resolved_path is None and master_path:
+        resolved_path = find_run_directory_gunc_summary(master_path)
+    if not resolved_path or not os.path.exists(resolved_path):
+        return frame
+
+    gunc_df = load_gunc_summary_table(resolved_path)
+    if gunc_df.empty:
+        return frame
+
+    augmented = frame.copy()
+    if "gunc_clade_separation_score" in augmented.columns:
+        return augmented
+
+    merge_candidates = []
+    if "Bin Id" in augmented.columns:
+        merge_candidates.append("Bin Id")
+    if "Genome_Id" in augmented.columns:
+        merge_candidates.append("Genome_Id")
+
+    for merge_column in merge_candidates:
+        working = augmented.copy()
+        working["__gunc_key"] = working[merge_column].map(normalize_gunc_genome_id)
+        merged = working.merge(gunc_df, on="__gunc_key", how="left")
+        if merged["gunc_clade_separation_score"].notna().any():
+            return merged.drop(columns=["__gunc_key"])
+
+    return augmented
+
+
+def classify_gunc_assessment(rrs, css):
+    if pd.isna(rrs) or pd.isna(css):
+        return "unscored"
+    if float(rrs) < GUNC_LOW_REFERENCE_THRESHOLD:
+        return "low_reference_uncertain"
+    if float(css) > GUNC_DEFAULT_CSS_THRESHOLD:
+        return "credible_chimeric_signal"
+    return "likely_not_chimeric"
+
+
+def classify_gunc_strict_assessment(rrs, css, taxonomic_level):
+    if pd.isna(rrs) or pd.isna(css):
+        return "unscored"
+    if float(rrs) < GUNC_STRICT_RRS_THRESHOLD:
+        return "low_reference_uncertain"
+    if (
+        float(css) >= GUNC_STRICT_CSS_THRESHOLD
+        and str(taxonomic_level).strip().lower() in GUNC_ABOVE_GENUS_LEVELS
+    ):
+        return "credible_chimeric_signal"
+    return "likely_not_chimeric"
+
+
+def clean_gunc_taxonomic_level(series):
+    return (
+        series.fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .replace({"nan": "", "none": "", "null": ""})
+    )
+
+
+def derive_gunc_columns(frame):
+    annotated = frame.copy()
+    if "gunc_clade_separation_score" not in annotated.columns:
+        return annotated
+
+    numeric_columns = [
+        "gunc_n_genes_called",
+        "gunc_n_genes_mapped",
+        "gunc_n_contigs",
+        "gunc_proportion_genes_retained_in_major_clades",
+        "gunc_genes_retained_index",
+        "gunc_clade_separation_score",
+        "gunc_contamination_portion",
+        "gunc_n_effective_surplus_clades",
+        "gunc_mean_hit_identity",
+        "gunc_reference_representation_score",
+    ]
+    for column in numeric_columns:
+        if column in annotated.columns:
+            annotated[column] = pd.to_numeric(annotated[column], errors="coerce")
+
+    if "gunc_taxonomic_level" in annotated.columns:
+        annotated["gunc_taxonomic_level"] = clean_gunc_taxonomic_level(
+            annotated["gunc_taxonomic_level"]
+        )
+    else:
+        annotated["gunc_taxonomic_level"] = ""
+
+    if "gunc_pass" in annotated.columns:
+        annotated["gunc_pass"] = (
+            annotated["gunc_pass"]
+            .map(lambda value: value if pd.isna(value) else str(value).strip().lower())
+            .map({"true": True, "false": False})
+        )
+
+    annotated["gunc_assessment"] = [
+        classify_gunc_assessment(rrs, css)
+        for rrs, css in zip(
+            annotated["gunc_reference_representation_score"],
+            annotated["gunc_clade_separation_score"],
+        )
+    ]
+    annotated["gunc_assessment_label"] = annotated["gunc_assessment"].map(
+        GUNC_ASSESSMENT_LABELS
+    ).fillna("Unscored")
+    annotated["gunc_strict_assessment"] = [
+        classify_gunc_strict_assessment(rrs, css, level)
+        for rrs, css, level in zip(
+            annotated["gunc_reference_representation_score"],
+            annotated["gunc_clade_separation_score"],
+            annotated["gunc_taxonomic_level"],
+        )
+    ]
+    annotated["gunc_strict_assessment_label"] = annotated["gunc_strict_assessment"].map(
+        GUNC_ASSESSMENT_LABELS
+    ).fillna("Unscored")
+    annotated["gunc_low_reference_uncertain"] = (
+        annotated["gunc_assessment"] == "low_reference_uncertain"
+    ).astype(int)
+    annotated["gunc_credible_chimeric_signal"] = (
+        annotated["gunc_assessment"] == "credible_chimeric_signal"
+    ).astype(int)
+    annotated["gunc_likely_not_chimeric"] = (
+        annotated["gunc_assessment"] == "likely_not_chimeric"
+    ).astype(int)
+    annotated["gunc_unscored"] = (
+        annotated["gunc_assessment"] == "unscored"
+    ).astype(int)
+    annotated["gunc_strict_low_reference_uncertain"] = (
+        annotated["gunc_strict_assessment"] == "low_reference_uncertain"
+    ).astype(int)
+    annotated["gunc_strict_credible_chimeric_signal"] = (
+        annotated["gunc_strict_assessment"] == "credible_chimeric_signal"
+    ).astype(int)
+    annotated["gunc_strict_likely_not_chimeric"] = (
+        annotated["gunc_strict_assessment"] == "likely_not_chimeric"
+    ).astype(int)
+    annotated["gunc_strict_unscored"] = (
+        annotated["gunc_strict_assessment"] == "unscored"
+    ).astype(int)
+    annotated["gunc_above_genus_conflict"] = (
+        annotated["gunc_taxonomic_level"].isin(GUNC_ABOVE_GENUS_LEVELS)
+    ).astype(int)
+    annotated["gunc_strict_chimera"] = (
+        annotated["gunc_reference_representation_score"].ge(GUNC_STRICT_RRS_THRESHOLD)
+        & annotated["gunc_clade_separation_score"].ge(GUNC_STRICT_CSS_THRESHOLD)
+        & annotated["gunc_taxonomic_level"].isin(GUNC_ABOVE_GENUS_LEVELS)
+    ).astype(int)
+    return annotated
+
+
 def sanitize_token(value):
     token = str(value).strip()
     allowed = []
@@ -362,6 +614,7 @@ def filter_to_matched_samples(compare_df, compare_column, sample_column=None):
 
 
 PREFERRED_METHOD_ORDER = ["SAGs", "xPG_SAGs", "MAGs", "xPG_MAGs"]
+VARIANT_ORPHAN_FILTER_FAMILIES = {"SAG"}
 
 
 def preferred_method_rank(label):
@@ -459,6 +712,8 @@ def filter_variants_to_base_exact_matches(frame, compare_column, sample_column=N
     if len(families) != 1:
         return frame
     family = next(iter(families))
+    if family not in VARIANT_ORPHAN_FILTER_FAMILIES:
+        return frame
     base_categories = [category for category, info in labels.items() if info["method_family"] == family and info["variant_status"] == "base"]
     variant_categories = [category for category, info in labels.items() if info["method_family"] == family and info["variant_status"] == "variant"]
     if not base_categories or not variant_categories:
@@ -509,6 +764,8 @@ def summarize_variant_filter_audit(frame, compare_column, sample_column=None):
     if len(families) != 1:
         return None
     family = next(iter(families))
+    if family not in VARIANT_ORPHAN_FILTER_FAMILIES:
+        return None
     base_categories = [category for category, info in labels.items() if info["method_family"] == family and info["variant_status"] == "base"]
     variant_categories = [category for category, info in labels.items() if info["method_family"] == family and info["variant_status"] == "variant"]
     if not base_categories or not variant_categories:
@@ -1219,6 +1476,7 @@ def compute_quality_index(frame):
             labels.append("tRNA>=18")
         pattern_names.append("+".join(labels) if labels else "none")
     annotated["recovery_pattern_label"] = pattern_names
+    annotated = derive_gunc_columns(annotated)
     return annotated
 
 
@@ -1230,8 +1488,25 @@ def summarize(frame, group_column=None):
                 "median_qscore": frame[SCORE_COLUMN].median(),
                 "mean_qscore": frame[SCORE_COLUMN].mean(),
                 "median_integrity": frame["integrity_score"].median(),
+                "mean_integrity": frame["integrity_score"].mean(),
                 "median_recoverability": frame["recoverability_score"].median(),
+                "mean_recoverability": frame["recoverability_score"].mean(),
                 "median_mimag_quality_index": frame["mimag_quality_index"].median(),
+                "mean_mimag_quality_index": frame["mimag_quality_index"].mean(),
+                "median_completeness": frame["Completeness"].median(),
+                "mean_completeness": frame["Completeness"].mean(),
+                "median_contamination": frame["Contamination"].median(),
+                "mean_contamination": frame["Contamination"].mean(),
+                "median_16S": frame["rrna_16S_score"].median(),
+                "mean_16S": frame["rrna_16S_score"].mean(),
+                "median_23S": frame["rrna_23S_score"].median(),
+                "mean_23S": frame["rrna_23S_score"].mean(),
+                "median_5S": frame["rrna_5S_score"].median(),
+                "mean_5S": frame["rrna_5S_score"].mean(),
+                "median_trna_ge_18": frame["trna_ge_18"].median(),
+                "mean_trna_ge_18": frame["trna_ge_18"].mean(),
+                "median_recovered_feature_count": frame["recovered_feature_count"].median(),
+                "mean_recovered_feature_count": frame["recovered_feature_count"].mean(),
                 "high_quality_n": int((frame["mimag_tier"] == "high").sum()),
                 "medium_quality_n": int((frame["mimag_tier"] == "medium").sum()),
                 "low_quality_n": int((frame["mimag_tier"] == "low").sum()),
@@ -1260,8 +1535,25 @@ def summarize(frame, group_column=None):
                     median_qscore=(SCORE_COLUMN, "median"),
                     mean_qscore=(SCORE_COLUMN, "mean"),
                     median_integrity=("integrity_score", "median"),
+                    mean_integrity=("integrity_score", "mean"),
                     median_recoverability=("recoverability_score", "median"),
+                    mean_recoverability=("recoverability_score", "mean"),
                     median_mimag_quality_index=("mimag_quality_index", "median"),
+                    mean_mimag_quality_index=("mimag_quality_index", "mean"),
+                    median_completeness=("Completeness", "median"),
+                    mean_completeness=("Completeness", "mean"),
+                    median_contamination=("Contamination", "median"),
+                    mean_contamination=("Contamination", "mean"),
+                    median_16S=("rrna_16S_score", "median"),
+                    mean_16S=("rrna_16S_score", "mean"),
+                    median_23S=("rrna_23S_score", "median"),
+                    mean_23S=("rrna_23S_score", "mean"),
+                    median_5S=("rrna_5S_score", "median"),
+                    mean_5S=("rrna_5S_score", "mean"),
+                    median_trna_ge_18=("trna_ge_18", "median"),
+                    mean_trna_ge_18=("trna_ge_18", "mean"),
+                    median_recovered_feature_count=("recovered_feature_count", "median"),
+                    mean_recovered_feature_count=("recovered_feature_count", "mean"),
                 )
                 .sort_values(
                     by=["median_qscore", "n_genomes"],
@@ -1802,6 +2094,262 @@ def plot_compare_metric_panels(frame, compare_column, output_base):
     save_figure(fig, output_base + "_metric_panels")
 
 
+def atlas_significance_stars(value):
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iat[0]
+    if pd.isna(numeric):
+        return ""
+    if numeric < 0.0001:
+        return "****"
+    if numeric < 0.001:
+        return "***"
+    if numeric < 0.01:
+        return "**"
+    if numeric < 0.05:
+        return "*"
+    return ""
+
+
+def add_compare_significance_brackets(ax, metric_name, grouped_values, order, stats_df):
+    if stats_df is None or stats_df.empty:
+        return
+    subset = stats_df.loc[
+        stats_df["metric"].astype(str).eq(str(metric_name))
+        & stats_df["analysis_scope"].astype(str).str.endswith("_pairwise")
+        & stats_df["significant_q05"].fillna(False)
+    ].copy()
+    if subset.empty:
+        return
+
+    finite_values = []
+    for values in grouped_values:
+        numeric = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+        finite_values.extend(numeric.tolist())
+    if not finite_values:
+        return
+    data_max = float(max(finite_values))
+    data_min = float(min(finite_values))
+    data_span = max(1e-9, data_max - data_min)
+    level_height = data_span * 0.09
+    line_height = data_span * 0.03
+    top_padding = data_span * 0.14
+    if data_max == data_min:
+        level_height = max(0.5, abs(data_max) * 0.1 if data_max != 0 else 0.5)
+        line_height = level_height * 0.35
+        top_padding = level_height * 1.2
+
+    position_map = {category: float(index + 1) for index, category in enumerate(order)}
+    subset["span"] = subset.apply(
+        lambda row: abs(position_map.get(str(row.get("group_b", "")), 0.0) - position_map.get(str(row.get("group_a", "")), 0.0)),
+        axis=1,
+    )
+    subset = subset.sort_values(by=["span", "qvalue_bh"], ascending=[True, True], kind="mergesort")
+    occupied = []
+    brackets = []
+    max_level = 0
+    for row in subset.to_dict("records"):
+        group_a = str(row.get("group_a", ""))
+        group_b = str(row.get("group_b", ""))
+        if group_a not in position_map or group_b not in position_map:
+            continue
+        x1 = position_map[group_a]
+        x2 = position_map[group_b]
+        if x1 == x2:
+            continue
+        if x1 > x2:
+            x1, x2 = x2, x1
+        level = 0
+        while any(not (x2 < start or x1 > end) and used_level == level for start, end, used_level in occupied):
+            level += 1
+        occupied.append((x1, x2, level))
+        max_level = max(max_level, level)
+        y = data_max + top_padding + (level * level_height)
+        star_label = str(row.get("significance", "") or "").strip()
+        if not star_label:
+            star_label = atlas_significance_stars(row.get("qvalue_bh", np.nan)) or "*"
+        brackets.append((x1, x2, y, star_label))
+
+    for x1, x2, y, star_label in brackets:
+        ax.plot([x1, x1, x2, x2], [y, y + line_height, y + line_height, y], color="black", linewidth=0.9, zorder=4)
+        ax.text((x1 + x2) / 2.0, y + line_height, star_label, ha="center", va="bottom", fontsize=9, zorder=5)
+    current_bottom, current_top = ax.get_ylim()
+    required_top = data_max + top_padding + ((max_level + 1.9) * level_height)
+    ax.set_ylim(current_bottom, max(current_top, required_top))
+
+
+def compare_metric_grouped_values(compare_df, compare_column, metric, order):
+    if metric not in compare_df.columns:
+        return []
+    values = pd.to_numeric(compare_df[metric], errors="coerce")
+    return [
+        values.loc[compare_df[compare_column].astype(str).eq(category)].dropna().values.astype(float)
+        for category in order
+    ]
+
+
+def draw_compare_compact_metric_axis(ax, grouped_values, order, metric, title, stats_df=None, rng=None):
+    if not any(len(values) for values in grouped_values):
+        ax.axis("off")
+        return False
+    rng = rng or np.random.default_rng(42)
+    box = ax.boxplot(grouped_values, patch_artist=True, labels=order, showfliers=False)
+    for patch in box["boxes"]:
+        patch.set_facecolor("#c0c0c0")
+        patch.set_edgecolor("black")
+        patch.set_linewidth(1.0)
+    for median in box["medians"]:
+        median.set_color("black")
+        median.set_linewidth(1.3)
+    for whisker in box["whiskers"]:
+        whisker.set_color("black")
+        whisker.set_linewidth(0.9)
+    for cap in box["caps"]:
+        cap.set_color("black")
+        cap.set_linewidth(0.9)
+    for index, values in enumerate(grouped_values, start=1):
+        if len(values) == 0:
+            continue
+        jitter = rng.uniform(-0.14, 0.14, size=len(values))
+        ax.scatter(
+            np.full(len(values), float(index)) + jitter,
+            np.asarray(values, dtype=float),
+            s=18,
+            color="#c7c7c7",
+            edgecolors="none",
+            alpha=0.7,
+            zorder=1,
+        )
+    ax.set_title(title)
+    ax.set_ylabel(title)
+    ax.set_xticklabels(order, rotation=90)
+    ax.grid(axis="y", color="#d9d9d9", linestyle="-", linewidth=0.6)
+    add_compare_significance_brackets(ax, metric, grouped_values, order, stats_df)
+    return True
+
+
+def atlas_single_metric_specs(compare_df):
+    specs = [
+        (SCORE_COLUMN, SCORE_LABEL),
+        ("Completeness", "Completeness (%)"),
+        ("Contamination", "Contamination (%)"),
+        ("integrity_score", "Integrity"),
+        ("recoverability_score", "Recoverability"),
+        ("mimag_quality_index", "MIMAG quality index"),
+        ("16S_rRNA", "16S copies"),
+        ("23S_rRNA", "23S copies"),
+        ("5S_rRNA", "5S copies"),
+        ("trna_unique", "Unique tRNAs"),
+        ("recovered_feature_count", "Recovered feature count"),
+        ("gunc_clade_separation_score", "GUNC clade separation score"),
+        ("gunc_reference_representation_score", "GUNC reference representation score"),
+        ("gunc_contamination_portion", "GUNC contamination portion"),
+    ]
+    return [(metric, label) for metric, label in specs if metric in compare_df.columns and pd.to_numeric(compare_df[metric], errors="coerce").notna().any()]
+
+
+def export_compare_single_metric_plots(compare_df, compare_column, compare_base, stats_df=None):
+    ensure_plotting()
+    if compare_df.empty or compare_column not in compare_df.columns:
+        return []
+    order = category_order(compare_df, compare_column)
+    if not order:
+        return []
+    output_dir = Path(compare_base + "_single_metrics")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    wrote = []
+    rng = np.random.default_rng(42)
+    for metric, title in atlas_single_metric_specs(compare_df):
+        grouped_values = compare_metric_grouped_values(compare_df, compare_column, metric, order)
+        if not grouped_values or not any(len(values) for values in grouped_values):
+            continue
+        fig, ax = plt.subplots(figsize=(max(7.5, len(order) * 1.45), 6.5))
+        if not draw_compare_compact_metric_axis(ax, grouped_values, order, metric, title, stats_df=stats_df, rng=rng):
+            plt.close(fig)
+            continue
+        if metric in {"integrity_score", "recoverability_score", "mimag_quality_index", "rrna_16S_score", "rrna_23S_score", "rrna_5S_score", "trna_ge_18"}:
+            bottom, top = ax.get_ylim()
+            ax.set_ylim(min(0, bottom), max(1.02, top))
+        fig.tight_layout()
+        out_base = output_dir / f"{Path(compare_base).name}_{sanitize_token(metric)}"
+        save_figure(fig, str(out_base))
+        wrote.extend([str(out_base) + ".png", str(out_base) + ".pdf"])
+    hallmark_paths = export_compare_hallmark_bar_plot(compare_df, compare_column, compare_base, stats_df=stats_df)
+    wrote.extend(hallmark_paths)
+    return wrote
+
+
+def export_compare_hallmark_bar_plot(compare_df, compare_column, compare_base, stats_df=None):
+    ensure_plotting()
+    hallmark_specs = [
+        ("rrna_16S_score", "16S"),
+        ("rrna_23S_score", "23S"),
+        ("rrna_5S_score", "5S"),
+        ("trna_ge_18", "tRNA>=18"),
+    ]
+    available_specs = [
+        (metric, label)
+        for metric, label in hallmark_specs
+        if metric in compare_df.columns and pd.to_numeric(compare_df[metric], errors="coerce").notna().any()
+    ]
+    if not available_specs:
+        return []
+
+    order = category_order(compare_df, compare_column)
+    if not order:
+        return []
+    output_dir = Path(compare_base + "_single_metrics")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    n_cols = 2
+    n_rows = int(math.ceil(len(available_specs) / float(n_cols)))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(max(11, len(order) * 1.2), max(6.5, n_rows * 4.0)),
+        squeeze=False,
+    )
+    axes = axes.ravel()
+    x_positions = np.arange(1, len(order) + 1)
+    for ax, (metric, label) in zip(axes, available_specs):
+        grouped_values = compare_metric_grouped_values(compare_df, compare_column, metric, order)
+        if not grouped_values or not any(len(values) for values in grouped_values):
+            ax.axis("off")
+            continue
+        means = [
+            float(np.nanmean(values)) if len(values) else np.nan
+            for values in grouped_values
+        ]
+        ax.bar(
+            x_positions,
+            means,
+            color="#bdbdbd",
+            edgecolor="black",
+            linewidth=0.8,
+            width=0.72,
+            zorder=2,
+        )
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(order, rotation=90)
+        ax.set_ylim(0, 1.05)
+        ax.set_ylabel("Fraction present")
+        ax.set_title(label)
+        ax.grid(axis="y", color="#d9d9d9", linestyle="-", linewidth=0.6, zorder=0)
+        for index, value in enumerate(means, start=1):
+            if pd.isna(value):
+                continue
+            ax.text(index, float(value) + 0.025, f"{float(value):.2f}", ha="center", va="bottom", fontsize=8)
+        add_compare_significance_brackets(ax, metric, grouped_values, order, stats_df)
+        bottom, top = ax.get_ylim()
+        ax.set_ylim(0, max(1.05, top))
+
+    for index in range(len(available_specs), len(axes)):
+        axes[index].axis("off")
+    fig.suptitle(f"Hallmark feature contributions by {compare_column}", fontsize=16, y=0.99)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    out_base = output_dir / f"{Path(compare_base).name}_hallmark_contributions"
+    save_figure(fig, str(out_base))
+    return [str(out_base) + ".png", str(out_base) + ".pdf"]
+
+
 def plot_compare_taxonomy_heatmap(ax, frame, compare_column, group_column=None, top_n_groups=12, exclude_unclassified=False):
     selected_group = choose_group_column(frame, group_column)
     if not selected_group or selected_group not in frame.columns:
@@ -1861,18 +2409,368 @@ def summarize_compare(frame, compare_column):
             median_qscore=(SCORE_COLUMN, "median"),
             mean_qscore=(SCORE_COLUMN, "mean"),
             median_completeness=("Completeness", "median"),
+            mean_completeness=("Completeness", "mean"),
             median_contamination=("Contamination", "median"),
+            mean_contamination=("Contamination", "mean"),
             median_integrity=("integrity_score", "median"),
+            mean_integrity=("integrity_score", "mean"),
             median_recoverability=("recoverability_score", "median"),
+            mean_recoverability=("recoverability_score", "mean"),
+            median_mimag_quality_index=("mimag_quality_index", "median"),
+            mean_mimag_quality_index=("mimag_quality_index", "mean"),
+            median_16S=("rrna_16S_score", "median"),
             mean_16S=("rrna_16S_score", "mean"),
+            median_23S=("rrna_23S_score", "median"),
             mean_23S=("rrna_23S_score", "mean"),
+            median_5S=("rrna_5S_score", "median"),
             mean_5S=("rrna_5S_score", "mean"),
+            median_trna_ge_18=("trna_ge_18", "median"),
             mean_trna_ge_18=("trna_ge_18", "mean"),
+            median_recovered_feature_count=("recovered_feature_count", "median"),
+            mean_recovered_feature_count=("recovered_feature_count", "mean"),
         )
         .reindex(order)
         .reset_index()
     )
     return compare_df, summary
+
+
+def summarize_compare_gunc(compare_df, compare_column):
+    if "gunc_assessment" not in compare_df.columns:
+        return None
+
+    order = category_order(compare_df, compare_column)
+    rows = []
+    for quality_scope, quality_label in GUNC_QUALITY_SCOPES:
+        if quality_scope == "all":
+            tier_df = compare_df.copy()
+        else:
+            tier_df = compare_df.loc[compare_df["mimag_tier"].astype(str) == quality_scope].copy()
+        grouped = pd.DataFrame({compare_column: order})
+        if not tier_df.empty:
+            grouped_values = (
+                tier_df.groupby(compare_column)
+                .agg(
+                    n_genomes=("Genome_Id", "size"),
+                    n_gunc_scored=("gunc_assessment", lambda values: int((pd.Series(values) != "unscored").sum())),
+                    n_gunc_unscored=("gunc_assessment", lambda values: int((pd.Series(values) == "unscored").sum())),
+                    n_gunc_credible_chimeric_signal=("gunc_assessment", lambda values: int((pd.Series(values) == "credible_chimeric_signal").sum())),
+                n_gunc_likely_not_chimeric=("gunc_assessment", lambda values: int((pd.Series(values) == "likely_not_chimeric").sum())),
+                n_gunc_low_reference_uncertain=("gunc_assessment", lambda values: int((pd.Series(values) == "low_reference_uncertain").sum())),
+                n_gunc_strict_chimera=("gunc_strict_chimera", "sum"),
+                n_gunc_strict_credible_chimeric_signal=("gunc_strict_assessment", lambda values: int((pd.Series(values) == "credible_chimeric_signal").sum())),
+                n_gunc_strict_likely_not_chimeric=("gunc_strict_assessment", lambda values: int((pd.Series(values) == "likely_not_chimeric").sum())),
+                n_gunc_strict_low_reference_uncertain=("gunc_strict_assessment", lambda values: int((pd.Series(values) == "low_reference_uncertain").sum())),
+                n_gunc_strict_unscored=("gunc_strict_assessment", lambda values: int((pd.Series(values) == "unscored").sum())),
+                median_gunc_css=("gunc_clade_separation_score", "median"),
+                mean_gunc_css=("gunc_clade_separation_score", "mean"),
+                median_gunc_rrs=("gunc_reference_representation_score", "median"),
+                mean_gunc_rrs=("gunc_reference_representation_score", "mean"),
+                median_gunc_contamination_portion=("gunc_contamination_portion", "median"),
+                mean_gunc_contamination_portion=("gunc_contamination_portion", "mean"),
+                )
+                .reset_index()
+            )
+            grouped = grouped.merge(grouped_values, on=compare_column, how="left")
+        grouped["quality_scope"] = quality_scope
+        grouped["quality_scope_label"] = quality_label
+        count_columns = [
+            "n_genomes",
+            "n_gunc_scored",
+            "n_gunc_unscored",
+            "n_gunc_credible_chimeric_signal",
+            "n_gunc_likely_not_chimeric",
+            "n_gunc_low_reference_uncertain",
+            "n_gunc_strict_chimera",
+            "n_gunc_strict_credible_chimeric_signal",
+            "n_gunc_strict_likely_not_chimeric",
+            "n_gunc_strict_low_reference_uncertain",
+            "n_gunc_strict_unscored",
+        ]
+        for column in count_columns:
+            if column in grouped.columns:
+                grouped[column] = grouped[column].fillna(0).astype(int)
+        for assessment in GUNC_ASSESSMENT_ORDER:
+            count_column = f"n_gunc_{assessment}"
+            fraction_column = f"fraction_gunc_{assessment}"
+            grouped[fraction_column] = np.where(
+                grouped["n_genomes"] > 0,
+                grouped[count_column] / grouped["n_genomes"],
+                0.0,
+            )
+        grouped["fraction_gunc_scored"] = np.where(
+            grouped["n_genomes"] > 0,
+            grouped["n_gunc_scored"] / grouped["n_genomes"],
+            0.0,
+        )
+        grouped["fraction_gunc_unscored"] = np.where(
+            grouped["n_genomes"] > 0,
+            grouped["n_gunc_unscored"] / grouped["n_genomes"],
+            0.0,
+        )
+        grouped["fraction_gunc_strict_chimera"] = np.where(
+            grouped["n_genomes"] > 0,
+            grouped["n_gunc_strict_chimera"] / grouped["n_genomes"],
+            0.0,
+        )
+        for assessment in GUNC_ASSESSMENT_ORDER:
+            strict_count_column = f"n_gunc_strict_{assessment}"
+            strict_fraction_column = f"fraction_gunc_strict_{assessment}"
+            grouped[strict_fraction_column] = np.where(
+                grouped["n_genomes"] > 0,
+                grouped[strict_count_column] / grouped["n_genomes"],
+                0.0,
+            )
+        rows.append(grouped)
+
+    if not rows:
+        return None
+    return pd.concat(rows, ignore_index=True)
+
+
+def plot_compare_gunc_chimerism_facets(compare_df, compare_column, output_base):
+    if "gunc_assessment" not in compare_df.columns:
+        return False
+
+    summary = summarize_compare_gunc(compare_df, compare_column)
+    if summary is None or summary.empty:
+        return False
+
+    ensure_plotting()
+    order = category_order(compare_df, compare_column)
+    wrote_default = plot_compare_gunc_default_facets(summary, compare_column, order, output_base)
+    wrote_strict = plot_compare_gunc_strict_facets(summary, compare_column, order, output_base)
+    if not wrote_default or not wrote_strict:
+        return False
+    shared_ymax = resolve_gunc_plot_ymax(summary)
+
+    scopes_in_summary = [
+        (scope, label) for scope, label in GUNC_QUALITY_SCOPES
+        if scope in set(summary["quality_scope"].astype(str))
+    ]
+    if not scopes_in_summary:
+        return False
+
+    fig, axes = plt.subplots(
+        len(scopes_in_summary),
+        2,
+        figsize=(max(16, len(order) * 1.3), max(11, len(scopes_in_summary) * 3.3)),
+        sharex=False,
+        sharey=False,
+    )
+    if len(scopes_in_summary) == 1:
+        axes = np.array([axes])
+
+    for row_index, (quality_scope, quality_label) in enumerate(scopes_in_summary):
+        subset = summary.loc[summary["quality_scope"].astype(str) == quality_scope].copy()
+        subset[compare_column] = pd.Categorical(
+            subset[compare_column].astype(str),
+            categories=order,
+            ordered=True,
+        )
+        subset = subset.sort_values(compare_column, kind="mergesort")
+
+        draw_gunc_default_panel(
+            axes[row_index, 0],
+            subset,
+            compare_column,
+            quality_label,
+            y_max=shared_ymax,
+            show_legend=(row_index == 0),
+        )
+        draw_gunc_strict_panel(
+            axes[row_index, 1],
+            subset,
+            compare_column,
+            quality_label,
+            y_max=shared_ymax,
+            show_legend=(row_index == 0),
+        )
+
+    fig.suptitle(f"GUNC chimerism summary by {compare_column}", fontsize=16, y=0.995)
+    apply_tight_layout(fig, rect=[0, 0, RIGHT_MARGIN, 0.98])
+    save_figure(fig, output_base + "_gunc_chimerism_facets")
+    return True
+
+
+def resolve_gunc_plot_ymax(summary):
+    max_total = float(summary["n_genomes"].fillna(0).max()) if "n_genomes" in summary.columns else 0.0
+    if max_total <= 0:
+        return 1.0
+    headroom = max(2.0, math.ceil(max_total * 0.14))
+    return max_total + headroom
+
+
+def annotate_bar_totals(ax, x_positions, totals, y_max):
+    if y_max <= 0:
+        return
+    offset = max(0.75, y_max * 0.018)
+    for x_pos, total in zip(x_positions, totals):
+        ax.text(
+            x_pos,
+            float(total) + offset,
+            str(int(total)),
+            ha="center",
+            va="bottom",
+            fontsize=7,
+            rotation=0,
+            clip_on=False,
+        )
+
+
+def draw_gunc_default_panel(ax, subset, compare_column, quality_label, y_max, show_legend=True):
+    draw_gunc_assessment_panel(
+        ax=ax,
+        subset=subset,
+        compare_column=compare_column,
+        quality_label=quality_label,
+        title_suffix="default (RRS >= 0.3, CSS > 0.45)",
+        prefix="n_gunc_",
+        legend_title="Assessment",
+        y_max=y_max,
+        show_legend=show_legend,
+    )
+
+
+def draw_gunc_assessment_panel(ax, subset, compare_column, quality_label, title_suffix, prefix, legend_title, y_max, show_legend=True):
+    default_plot = subset[[compare_column]].copy()
+    default_plot[compare_column] = default_plot[compare_column].astype(str)
+    x_positions = np.arange(len(default_plot))
+    bottoms = np.zeros(len(default_plot), dtype=float)
+    for assessment in GUNC_ASSESSMENT_ORDER:
+        values = subset[f"{prefix}{assessment}"].fillna(0).astype(float).to_numpy()
+        ax.bar(
+            x_positions,
+            values,
+            bottom=bottoms,
+            color=GUNC_ASSESSMENT_COLORS[assessment],
+            edgecolor="black",
+            linewidth=0.4,
+            label=GUNC_ASSESSMENT_SHORT_LABELS[assessment],
+        )
+        bottoms = bottoms + values
+    totals = subset["n_genomes"].fillna(0).astype(float).to_numpy()
+    ax.set_ylim(0, y_max)
+    ax.set_ylabel("Genome count")
+    ax.set_xlabel(compare_column)
+    ax.set_title(f"{quality_label}: {title_suffix}")
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(default_plot[compare_column].tolist())
+    style_long_ticklabels(ax, axis="x", rotation=90, size=8)
+    annotate_bar_totals(ax, x_positions, totals, y_max)
+    if show_legend:
+        place_axis_legend_right(ax, title=legend_title)
+    else:
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.remove()
+
+
+def draw_gunc_strict_panel(ax, subset, compare_column, quality_label, y_max, show_legend=True):
+    draw_gunc_assessment_panel(
+        ax=ax,
+        subset=subset,
+        compare_column=compare_column,
+        quality_label=quality_label,
+        title_suffix="strict (RRS >= 0.5, CSS >= 0.85, above genus)",
+        prefix="n_gunc_strict_",
+        legend_title="Assessment",
+        y_max=y_max,
+        show_legend=show_legend,
+    )
+
+
+def plot_compare_gunc_default_facets(summary, compare_column, order, output_base):
+    ensure_plotting()
+    shared_ymax = resolve_gunc_plot_ymax(summary)
+    scopes_in_summary = [
+        (scope, label) for scope, label in GUNC_QUALITY_SCOPES
+        if scope in set(summary["quality_scope"].astype(str))
+    ]
+    if not scopes_in_summary:
+        return False
+
+    n_panels = len(scopes_in_summary)
+    ncols = 2
+    nrows = int(math.ceil(n_panels / float(ncols)))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(max(14, len(order) * 1.7), max(9, nrows * 4.6)),
+        sharex=False,
+        sharey=False,
+    )
+    axes = np.atleast_1d(axes).ravel()
+
+    for row_index, (quality_scope, quality_label) in enumerate(scopes_in_summary):
+        subset = summary.loc[summary["quality_scope"].astype(str) == quality_scope].copy()
+        subset[compare_column] = pd.Categorical(
+            subset[compare_column].astype(str),
+            categories=order,
+            ordered=True,
+        )
+        subset = subset.sort_values(compare_column, kind="mergesort")
+        draw_gunc_default_panel(
+            axes[row_index],
+            subset,
+            compare_column,
+            quality_label,
+            y_max=shared_ymax,
+            show_legend=(row_index == 0),
+        )
+    for index in range(n_panels, len(axes)):
+        axes[index].axis("off")
+    fig.suptitle(f"GUNC default assessment by {compare_column}", fontsize=16, y=0.995)
+    apply_tight_layout(fig, rect=[0, 0, RIGHT_MARGIN, 0.98])
+    save_figure(fig, output_base + "_gunc_default_facets")
+    return True
+
+def plot_compare_gunc_strict_facets(summary, compare_column, order, output_base):
+    ensure_plotting()
+    shared_ymax = resolve_gunc_plot_ymax(summary)
+    scopes_in_summary = [
+        (scope, label) for scope, label in GUNC_QUALITY_SCOPES
+        if scope in set(summary["quality_scope"].astype(str))
+    ]
+    if not scopes_in_summary:
+        return False
+
+    n_panels = len(scopes_in_summary)
+    ncols = 2
+    nrows = int(math.ceil(n_panels / float(ncols)))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(max(14, len(order) * 1.7), max(9, nrows * 4.6)),
+        sharex=False,
+        sharey=False,
+    )
+    axes = np.atleast_1d(axes).ravel()
+
+    for row_index, (quality_scope, quality_label) in enumerate(scopes_in_summary):
+        subset = summary.loc[summary["quality_scope"].astype(str) == quality_scope].copy()
+        subset[compare_column] = pd.Categorical(
+            subset[compare_column].astype(str),
+            categories=order,
+            ordered=True,
+        )
+        subset = subset.sort_values(compare_column, kind="mergesort")
+        draw_gunc_strict_panel(
+            axes[row_index],
+            subset,
+            compare_column,
+            quality_label,
+            y_max=shared_ymax,
+            show_legend=(row_index == 0),
+        )
+    for index in range(n_panels, len(axes)):
+        axes[index].axis("off")
+    fig.suptitle(f"GUNC strict and coverage by {compare_column}", fontsize=16, y=0.995)
+    apply_tight_layout(fig, rect=[0, 0, RIGHT_MARGIN, 0.98])
+    save_figure(fig, output_base + "_gunc_strict_facets")
+    return True
+
+
 
 
 def summarize_taxonomy_quality(compare_df, compare_column, taxonomy_column=None, exclude_unclassified=False):
@@ -2512,6 +3410,10 @@ def run_method_significance_tests(compare_df, compare_column, sample_counts=None
         ("mimag_quality_index", "MIMAG quality index"),
         ("Completeness", "Completeness (%)"),
         ("Contamination", "Contamination (%)"),
+        ("rrna_16S_score", "16S score"),
+        ("rrna_23S_score", "23S score"),
+        ("rrna_5S_score", "5S score"),
+        ("trna_ge_18", "tRNA>=18"),
     ]
     for metric, metric_label in per_genome_metrics:
         if metric not in compare_df.columns:
@@ -3303,6 +4205,9 @@ def save_compare_outputs(
     compare_base = output_base + f"_compare_{safe_name}"
 
     compare_summary.to_csv(compare_base + "_summary.tsv", sep="\t", index=False)
+    gunc_summary = summarize_compare_gunc(compare_df, compare_column)
+    if gunc_summary is not None and not gunc_summary.empty:
+        gunc_summary.to_csv(compare_base + "_gunc_chimerism_summary.tsv", sep="\t", index=False)
     if variant_filter_audit_df is not None and not variant_filter_audit_df.empty:
         variant_filter_audit_df.to_csv(compare_base + "_variant_filter_audit.tsv", sep="\t", index=False)
     taxonomy_quality_summary, _ = summarize_taxonomy_quality(compare_df, compare_column, group_column)
@@ -3337,6 +4242,12 @@ def save_compare_outputs(
     )
     if method_significance is not None:
         method_significance.to_csv(compare_base + "_method_significance.tsv", sep="\t", index=False)
+    single_metric_plot_paths = export_compare_single_metric_plots(
+        compare_df,
+        compare_column,
+        compare_base,
+        stats_df=method_significance,
+    )
 
     best_set_df, best_set_sample_column = build_best_sample_method_set(
         compare_df=compare_df,
@@ -3381,6 +4292,7 @@ def save_compare_outputs(
 
     plot_compare_threshold_facets(compare_df, compare_column, compare_base)
     plot_compare_component_facets(compare_df, compare_column, compare_base)
+    wrote_gunc_facets = plot_compare_gunc_chimerism_facets(compare_df, compare_column, compare_base)
 
     fig, ax = plt.subplots(figsize=(max(7, len(category_order(compare_df, compare_column)) * 0.8), 6.5))
     plot_compare_qscore(ax, compare_df, compare_column)
@@ -3443,6 +4355,12 @@ def save_compare_outputs(
         compare_base + "_threshold_facets.pdf",
         compare_base + "_component_facets.png",
         compare_base + "_component_facets.pdf",
+        compare_base + "_gunc_chimerism_facets.png",
+        compare_base + "_gunc_chimerism_facets.pdf",
+        compare_base + "_gunc_default_facets.png",
+        compare_base + "_gunc_default_facets.pdf",
+        compare_base + "_gunc_strict_facets.png",
+        compare_base + "_gunc_strict_facets.pdf",
         compare_base + "_qscore.png",
         compare_base + "_qscore.pdf",
         compare_base + "_taxonomy_quality_summary.png",
@@ -3460,7 +4378,10 @@ def save_compare_outputs(
         compare_base + "_metric_panels.pdf",
         compare_base + "_taxonomy_heatmap.png",
         compare_base + "_taxonomy_heatmap.pdf",
+        *single_metric_plot_paths,
     ]
+    if gunc_summary is not None and not gunc_summary.empty:
+        wrote_files.append(compare_base + "_gunc_chimerism_summary.tsv")
     if variant_filter_audit_df is not None and not variant_filter_audit_df.empty:
         wrote_files.append(compare_base + "_variant_filter_audit.tsv")
     if stats_df is not None:
@@ -3518,6 +4439,13 @@ def save_compare_outputs(
         wrote_files = [
             path for path in wrote_files
             if "_sample_breakout_dashboard." not in path
+        ]
+    if not wrote_gunc_facets:
+        wrote_files = [
+            path for path in wrote_files
+            if "_gunc_chimerism_facets." not in path
+            and "_gunc_default_facets." not in path
+            and "_gunc_strict_facets." not in path
         ]
     return wrote_files
 
@@ -4840,6 +5768,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     master = pd.read_csv(master_path, sep="\t")
+    master = maybe_attach_gunc_summary(master, master_path=master_path)
     ensure_columns(master)
     if args.compare_map:
         master = merge_compare_map(master, args.compare_map, args.compare_map_key)

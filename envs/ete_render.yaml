@@ -1,0 +1,11 @@
+name: genome_qc_ete_render
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.10
+  - pandas
+  - pyyaml
+  - ete4
+  - pyqt6

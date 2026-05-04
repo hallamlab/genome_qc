@@ -1,0 +1,498 @@
+# ETE pretty phylogeny render template
+# Apply with:
+#   python scripts/apply_ete_template.py --tree path/to/bac120_tree.nwk --best-table path/to/best_of_best/selected_set/master.tsv
+#
+# Values filled by scripts/apply_ete_template.py:
+# - TREE: Newick tree path.
+# - METADATA_CORE / METADATA_GUNC / METADATA_QUALITY / METADATA_TAXONOMY: tree metadata tables.
+# - METADATA_SPECIFIC_MARKER: functional marker heatmap metadata table.
+# - OUTPUT_PREFIX: output path without extension.
+# - BEST_REPRESENTATIVE_TABLE: best_of_best selected-set master TSV.
+#
+tree: {{TREE}}
+metadata:
+- {{METADATA_CORE}}
+- {{METADATA_GUNC}}
+- {{METADATA_QUALITY}}
+- {{METADATA_TAXONOMY}}
+- {{METADATA_SPECIFIC_MARKER}}
+id_column: tree_id
+output_prefix: {{OUTPUT_PREFIX}}
+output_formats:
+- svg
+- pdf
+- png
+newick_format: 0
+rooting:
+  method: midpoint
+  outgroup_id: ''
+layout: rectangular
+canvas:
+  width_mm: 390
+  dpi: 300
+  arc_start: -210
+  arc_span: 240
+  margin_top: 30
+  margin_right: 220
+  margin_bottom: 105
+  margin_left: 40
+  show_scale: true
+ladderize: true
+show_leaf_names: false
+leaf_name_column: tree_id
+leaf_name_font_size: 7
+branch_width: 2
+spacing:
+  after_leaf_name: 6
+  before_strips: 24
+  between_strips: 3
+  between_strips_and_text: 7
+  between_text_columns: 6
+  between_heatmap_and_text: 8
+support:
+  show: true
+  min_value: 0.9
+  font_size: 6
+  scale: auto
+  position: branch-top
+clade_brackets:
+- column: Phylum
+  label: Phylum
+  show: false
+  font_size: 8
+  position: branch-right
+  min_tips: 2
+  margin_left: 8
+  color: '#111111'
+branch_colors:
+- column: Phylum
+  label: Phylum branches
+  show: true
+  palette: default
+  mixed_color: '#777777'
+  color_mixed: false
+metadata_strips:
+- column: category
+  label: Category
+  width: 10
+  height: 9
+  palette:
+    MAGs: '#4E79A7'
+    SAGs: purple
+    xPG_MAGs: '#59A14F'
+    xPG_SAGs: '#F28E2B'
+- column: sample
+  label: Sample
+  width: 10
+  height: 9
+  palette: default
+heatmap_columns:
+- column: integrity_score
+  label: Integrity
+  show: true
+  width: 7
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_left: 0
+  label_margin_right: 16
+- column: recoverability_score
+  label: Recoverability
+  show: true
+  width: 7
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_left: 0
+  label_margin_right: 16
+- column: Completeness
+  label: Completeness
+  show: true
+  width: 7
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 0.01
+  reverse: false
+  gap_after: 1
+  label_margin_left: 0
+  label_margin_right: 16
+- column: Contamination
+  label: Contamination
+  show: true
+  width: 7
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 0.01
+  reverse: false
+  gap_after: 1
+  label_margin_left: 0
+  label_margin_right: 16
+- column: qscore
+  label: Q-score
+  show: true
+  width: 7
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 0.01
+  reverse: false
+  gap_after: 1
+  label_margin_left: 0
+  label_margin_right: 16
+- column: 16S_rRNA
+  label: 16S rRNA
+  show: true
+  width: 7
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 8
+  divider_after: true
+  divider_color: '#4A4A4A'
+  divider_width: 1.5
+  divider_dash: '6,4'
+  label_margin_left: 0
+  label_margin_right: 16
+- column: marker_specific_carbon_fixation_fraction
+  label: C fix
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_co_formate_fraction
+  label: CO/formate
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_methylotrophy_methane_fraction
+  label: C1/methane
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_methanogenesis_fraction
+  label: Methanogenesis
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_hydrogen_metabolism_fraction
+  label: H2
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_iron_acquisition_fraction
+  label: Fe uptake
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_iron_redox_fraction
+  label: Fe redox
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_anammox_fraction
+  label: Anammox
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_denitrification_fraction
+  label: Denitrif
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_dnra_fraction
+  label: DNRA
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_nitrate_reduction_fraction
+  label: NO3 red
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_nitrification_fraction
+  label: Nitrif
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_nitrite_reduction_fraction
+  label: NO2 red
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_nitrogen_fixation_fraction
+  label: N fix
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_urea_cyanate_fraction
+  label: Urea/cyan
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_phosphate_scavenging_fraction
+  label: P scav
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_phosphonate_phosphite_fraction
+  label: Phosphonate
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_sulfate_reduction_fraction
+  label: SO4 red
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_sulfur_oxidation_fraction
+  label: S oxid
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_reverse_dsr_sulfur_oxidation_fraction
+  label: rDSR S oxid
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_thiosulfate_tetrathionate_fraction
+  label: Thio/tetra
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_organosulfur_fraction
+  label: Org sulfur
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_dmsp_dms_fraction
+  label: DMSP/DMS
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+- column: marker_specific_reductive_tca_fraction
+  label: rTCA
+  show: true
+  width: 5
+  height: 9
+  min_value: 0
+  max_value: 1
+  value_scale: 1
+  reverse: false
+  gap_after: 1
+  label_margin_right: 16
+  label_margin_left: 0
+best_representatives:
+  show: true
+  table: {{BEST_REPRESENTATIVE_TABLE}}
+  marker: '*'
+  match_columns:
+  - sample
+  - category
+  - Genome_Id
+  output_column: best_representative
+text_columns:
+- column: Family
+  label: Family
+  font_size: 6
+  max_length: null
+  width: auto
+  align: left
+- column: Species
+  label: Species
+  font_size: 6
+  max_length: null
+  width: auto
+  align: left
+  mark_best_representative: true
+numeric_bars: []
+legend:
+  show: true
+  max_items_per_strip: 20
+  title_font_size: 8
+  item_font_size: 6
+  swatch_size: 8
+  right_padding: 8
+  swatch_text_gap: 2
+  title_padding: 80
+  heatmap_label_font_size: 5
+  show_heatmap_column_labels: true
+  heatmap_column_label: Heatmap columns
+  heatmap_title_margin_bottom: 8
+  heatmap_colorbar_width: 90
+  heatmap_colorbar_height: 26
+  heatmap_colorbar_bar_height: 8
+  heatmap_colorbar_steps: 32
+  heatmap_label_visual_center_fraction: 0.58
+  heatmap_label_center_offset_px: 0
+  heatmap_label_margin_right: 16
+  heatmap_label_margin_left: 0

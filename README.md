@@ -107,6 +107,37 @@ snakemake -p -s Snakefile.genome_qc --use-conda --cores all
 We have included a few genomes in the test directory of this repo.  
 Just configure the workflow as above using the test dir and run the workflow.
 
+### Reproducible phylogeny figures with ETE
+
+`render_phylogeny_ete.py` renders Newick trees with the split metadata tables produced by the de novo phylogeny helper. The visual choices are stored in a JSON config so figures can be regenerated without manual TreeViewer steps.
+
+Create the optional rendering environment:
+
+```bash
+mamba env create -f envs/ete_render.yaml
+mamba activate genome_qc_ete_render
+```
+
+Create a reusable config for one tree:
+
+```bash
+python render_phylogeny_ete.py init-config \
+  --tree path/to/bac120_tree.nwk \
+  -o bac120_ete_config.json
+```
+
+Render the tree:
+
+```bash
+python render_phylogeny_ete.py render -c bac120_ete_config.json
+```
+
+Or render all non-empty trees under a de novo phylogeny output root:
+
+```bash
+python render_phylogeny_ete.py batch path/to/denovo_phylogeny -c bac120_ete_config.json
+```
+
 
 # Workflow Overview:
 This workflow performs high-confidence microbial genome quality control and functional annotation using a reproducible, modular Snakemake pipeline. The pipeline accepts a directory of genome FASTA files and outputs a set of high-quality, deduplicated, annotated genomes with associated quality metrics and metadata. The workflow integrates multiple tools for structural quality assessment, gene prediction, taxonomic classification, contamination detection, and functional annotation.

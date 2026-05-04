@@ -2,15 +2,23 @@
 
 import argparse
 import glob
+import hashlib
 import itertools
+import math
 import os
+import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 
 from summarize_metapathways_genomes import (
+    MARKER_MANIFEST_PATH,
+    DEFAULT_REFERENCE_MAPPINGS_DIR,
     ELEMENTAL_MODE_LABELS,
     ELEMENTAL_MODE_ORDER,
     build_annotation_quality_table,
@@ -20,28 +28,14 @@ from summarize_metapathways_genomes import (
     build_marker_summary_table,
     build_summary_tables,
     ensure_plotting,
-    id_aliases,
+    load_allowed_genomes,
     load_marker_manifest,
+    resolve_optional_path_arg,
+    load_taxonomy_label_lookup,
     save_figure,
     sanitize_label,
     write_outputs,
 )
-
-PAIRED_QC_METRICS = [
-    ("qscore", "Qscore"),
-    ("integrity_score", "Integrity"),
-    ("recoverability_score", "Recoverability"),
-    ("mimag_quality_index", "MIMAG quality index"),
-]
-
-PAIRED_FUNCTION_METRICS = [
-    ("informative_annotation_fraction", "Informative annotation fraction"),
-    ("pathway_input_fraction", "Pathway-input fraction"),
-    ("pathway_support_fraction", "Pathway-support fraction"),
-    ("total_pathways", "Inferred pathways"),
-    ("median_pathway_score", "Median pathway score"),
-    ("mean_reaction_coverage", "Mean reaction coverage"),
-]
 
 PLOT_EXTENSIONS = {".png", ".pdf", ".svg", ".jpg", ".jpeg", ".tif", ".tiff"}
 TABLE_EXTENSIONS = {".tsv", ".csv", ".txt", ".json", ".yaml", ".yml", ".parquet"}
@@ -81,6 +75,7 @@ PREFERRED_METHOD_TOKENS = {
     "xpgsmag": 3,
     "xpgsmags": 3,
 }
+SPECIES_LINEAGE_RANKS = ["Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
 
 
 def method_token(value):
@@ -182,20 +177,166 @@ def build_parser():
         help="Pathway score threshold used for high-confidence summaries. Default: 0.8",
     )
     parser.add_argument(
-        "--marker-manifest",
+        "--workers",
+        type=int,
+        default=1,
+        help=(
+            "Worker count passed through to summarize_metapathways_genomes.py-style "
+            "per-results summarization. Default: 1"
+        ),
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        help=(
+            "Legacy global thread override. If >0, this value is used for both "
+            "--workers and --prep-workers."
+        ),
+    )
+    parser.add_argument(
+        "--prep-workers",
+        type=int,
+        default=0,
+        help=(
+            "Heavy preprocessing worker count passed through to "
+            "summarize_metapathways_genomes.py. Use 0 to reuse --workers. Default: 0"
+        ),
+    )
+    parser.add_argument(
+        "--progress-interval",
+        type=int,
+        default=10,
+        help="Progress update interval for per-results summarization. Default: 10",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress verbose per-results summarization progress messages.",
+    )
+    parser.add_argument(
+        "--heartbeat-seconds",
+        type=int,
+        default=60,
+        help="Heartbeat interval for long per-results stages. Default: 60",
+    )
+    parser.add_argument(
+        "--genome-filter-tsv",
         default=None,
         help=(
-            "Optional marker manifest passed through when manifest rows point to raw "
-            "MetaPathways results directories."
+            "Optional atlas/master-style TSV used to restrict which genomes are "
+            "summarized in raw MetaPathways results directories."
+        ),
+    )
+    parser.add_argument(
+        "--filter-id-column",
+        default=None,
+        help=(
+            "Optional genome ID column in --genome-filter-tsv. Defaults to "
+            "auto-detecting Bin Id, genome_id, or Genome_Id."
+        ),
+    )
+    parser.add_argument(
+        "--filter-tier-column",
+        default="mimag_tier",
+        help="Tier column in --genome-filter-tsv. Default: mimag_tier",
+    )
+    parser.add_argument(
+        "--include-tiers",
+        default="medium,high",
+        help="Comma-separated tiers to keep from --genome-filter-tsv. Default: medium,high",
+    )
+    parser.add_argument(
+        "--taxonomy-label-tsv",
+        default=None,
+        help=(
+            "Optional atlas/master-style TSV used to replace genome IDs in plot labels "
+            "with taxonomy labels. Defaults to --genome-filter-tsv when available."
+        ),
+    )
+    parser.add_argument(
+        "--taxonomy-id-column",
+        default=None,
+        help=(
+            "Optional genome ID column in --taxonomy-label-tsv. Defaults to "
+            "--filter-id-column, then auto-detection."
+        ),
+    )
+    parser.add_argument(
+        "--marker-manifest",
+        default=str(MARKER_MANIFEST_PATH),
+        help=(
+            "Marker manifest passed through to MetaPathways summary building. "
+            "Default: <cwd>/config/metabolism_marker_manifest.tsv when available, "
+            "otherwise <repo>/config/metabolism_marker_manifest.tsv. "
+            "Use 'none' to disable curated marker denominators."
         ),
     )
     parser.add_argument(
         "--reference-mappings-dir",
+        default=str(DEFAULT_REFERENCE_MAPPINGS_DIR),
+        help=(
+            "Normalized reference mapping directory built by "
+            "scripts/build_metabolism_reference_mappings.py. Default: "
+            "<cwd>/reference_mappings when available, otherwise <repo>/reference_mappings. "
+            "Use 'none' to disable reference-term augmentation."
+        ),
+    )
+    parser.add_argument(
+        "--reference-chunk-size",
+        type=int,
+        default=500000,
+        help="Rows per chunk when streaming accession reference mappings. Default: 500000",
+    )
+    parser.add_argument(
+        "--reference-progress-rows",
+        type=int,
+        default=2000000,
+        help="Progress update interval while loading reference mappings. Default: 2000000",
+    )
+    parser.add_argument(
+        "--reference-force-full-index",
+        action="store_true",
+        help="Force loading/building the full accession reference lookup.",
+    )
+    parser.add_argument(
+        "--experimental-mobility-screen",
+        action="store_true",
+        help=(
+            "Run the separate experimental candidate mobility marker screen from "
+            "annotation text and write dedicated tables/plots."
+        ),
+    )
+    parser.add_argument(
+        "--experimental-mobility-genome-type-tsv",
         default=None,
         help=(
-            "Optional normalized reference mapping directory built by "
-            "scripts/build_metabolism_reference_mappings.py. Used when manifest rows "
-            "point to raw MetaPathways results directories."
+            "Optional metadata TSV used to resolve genome_type as SAG or MAG for "
+            "the experimental mobility screen."
+        ),
+    )
+    parser.add_argument(
+        "--experimental-mobility-genome-type-column",
+        default=None,
+        help=(
+            "Column in --experimental-mobility-genome-type-tsv containing SAG/MAG "
+            "labels. If omitted, common column names are tried."
+        ),
+    )
+    parser.add_argument(
+        "--experimental-mobility-genome-type-id-column",
+        default=None,
+        help=(
+            "Genome ID column in --experimental-mobility-genome-type-tsv. "
+            "If omitted, common ID columns are tried."
+        ),
+    )
+    parser.add_argument(
+        "--experimental-mobility-include-broad-screen",
+        action="store_true",
+        help=(
+            "Also write separate optional broad-screen mobility tables. These are "
+            "kept out of the main prevalence table and figure."
         ),
     )
     parser.add_argument(
@@ -203,33 +344,13 @@ def build_parser():
         default=None,
         help=(
             "Optional genome atlas combined output directory. If provided, the wrapper "
-            "builds like-to-like paired MetaPathways comparisons using atlas shared-best genomes."
+            "builds MetaPathways best-of-sample / best-of-best outputs."
         ),
-    )
-    parser.add_argument(
-        "--atlas-shared-best-tsv",
-        default=None,
-        help=(
-            "Optional explicit path to atlas *_shared_best_genomes.tsv. Overrides auto-detection "
-            "from --genome-atlas-dir."
-        ),
-    )
-    parser.add_argument(
-        "--atlas-annotated-tsv",
-        default=None,
-        help=(
-            "Optional explicit path to atlas *_annotated.tsv. Used to backfill QC metrics if needed."
-        ),
-    )
-    parser.add_argument(
-        "--atlas-prefix",
-        default="genome_quality",
-        help="Atlas file prefix for auto-detection. Default: genome_quality",
     )
     parser.add_argument(
         "--atlas-compare-column",
         default="category",
-        help="Comparison/category column used in atlas shared-best outputs. Default: category",
+        help="Comparison/category column used in atlas component outputs. Default: category",
     )
     parser.add_argument(
         "--atlas-sample-column",
@@ -242,12 +363,68 @@ def build_parser():
         help="Genome ID column name in atlas outputs. Default: Genome_Id",
     )
     parser.add_argument(
+        "--atlas-shared-best-tsv",
+        default=None,
+        help=(
+            "Optional explicit atlas *_shared_best_genomes.tsv path for "
+            "atlas-linked shared-best comparisons."
+        ),
+    )
+    parser.add_argument(
+        "--atlas-annotated-tsv",
+        default=None,
+        help=(
+            "Optional explicit atlas *_annotated.tsv path for atlas-linked "
+            "species_all comparisons."
+        ),
+    )
+    parser.add_argument(
         "--atlas-disable-alias-fallback",
         action="store_true",
         help=(
             "Disable conservative ID alias fallback when joining atlas genomes to "
             "MetaPathways genome IDs."
         ),
+    )
+    parser.add_argument(
+        "--skip-atlas-linked",
+        action="store_true",
+        help="Skip atlas-linked category comparison outputs.",
+    )
+    parser.add_argument(
+        "--atlas-linkage-mode",
+        choices=["species_all", "shared_best"],
+        default="species_all",
+        help=(
+            "Atlas-linked comparison design. Default: species_all, which keeps "
+            "complete species-level lineages across categories."
+        ),
+    )
+    parser.add_argument(
+        "--atlas-representative-level",
+        choices=["species", "genome"],
+        default="species",
+        help=(
+            "Representative level used only with --atlas-linkage-mode shared_best. "
+            "Default: species"
+        ),
+    )
+    parser.add_argument(
+        "--skip-atlas-linked-annotation-presence",
+        action="store_true",
+        help="Skip atlas-linked annotation presence matrices for faster runs.",
+    )
+    parser.add_argument(
+        "--max-heatmap-functions",
+        type=int,
+        default=250,
+        help="Maximum functions/features drawn in atlas-linked heatmaps. Default: 250",
+    )
+    parser.add_argument(
+        "--max-lineage-detail-plots",
+        type=int,
+        default=25,
+        help="Maximum atlas-linked lineage detail heatmaps to draw. Default: 25",
     )
     parser.add_argument(
         "--best-subset-tsv",
@@ -290,11 +467,11 @@ def build_parser():
     )
     parser.add_argument(
         "--min-mimag-tier",
-        default="medium",
+        default="low",
         choices=["low", "medium", "high"],
         help=(
-            "Optional minimum MIMAG tier filter for atlas-linked comparisons. "
-            "Default: medium (keeps medium+high). Use 'low' to disable filtering or "
+            "Optional minimum MIMAG tier filter for atlas-backed best-of selection. "
+            "Default: low (keeps all matched genomes). Use 'medium' to keep medium+high or "
             "'high' for high only."
         ),
     )
@@ -303,14 +480,9 @@ def build_parser():
         action="store_true",
         help=(
             "Disable auto-detection of genome atlas outputs. By default the wrapper "
-            "tries to find a sibling/nearby combined_genome_atlas directory and run "
-            "atlas-linked + best-ANI subset comparisons automatically."
+            "tries to find a sibling/nearby combined_genome_atlas directory for "
+            "best-of and best-ANI subset outputs."
         ),
-    )
-    parser.add_argument(
-        "--skip-atlas-linked",
-        action="store_true",
-        help="Skip atlas-linked paired comparisons.",
     )
     parser.add_argument(
         "--skip-best-subset",
@@ -325,7 +497,65 @@ def build_parser():
             "by style and type."
         ),
     )
+    parser.add_argument(
+        "--run-denovo-phylogeny",
+        action="store_true",
+        help=(
+            "Build de novo 16S and GTDB-marker phylogenies for all atlas-matched "
+            "HQ/nonchimeric genomes and all MQ-or-better/nonchimeric genomes. "
+            "Best-representative subsets are exported and built automatically."
+        ),
+    )
+    parser.add_argument(
+        "--denovo-phylogeny-threads",
+        type=int,
+        default=1,
+        help=(
+            "Threads passed to the phylogeny helper for Barrnap, MAFFT, and "
+            "GTDB-Tk. Default: 1"
+        ),
+    )
+    parser.add_argument(
+        "--denovo-gtdbtk-data-path",
+        default=None,
+        help=(
+            "Optional GTDBTK_DATA_PATH override passed to the phylogeny helper "
+            "when building GTDB marker alignments/trees."
+        ),
+    )
     return parser
+
+
+def phylogeny_script_path():
+    path = Path(__file__).resolve().with_name("best_set_phylogeny.py")
+    if not path.exists():
+        raise ValueError(f"Phylogeny script was not found: {path}")
+    return path
+
+
+def run_denovo_phylogeny(python_exe, output_dir, threads, gtdbtk_data_path=None):
+    phylogeny_script = phylogeny_script_path()
+    cmd = [
+        str(python_exe),
+        str(phylogeny_script),
+        str(Path(output_dir).resolve()),
+        "--threads",
+        str(max(1, int(threads))),
+    ]
+    if gtdbtk_data_path:
+        cmd.extend(["--gtdbtk-data-path", str(Path(gtdbtk_data_path).expanduser().resolve())])
+    print(f"[start] de novo phylogeny: {output_dir}")
+    env = os.environ.copy()
+    env["PYTHONWARNINGS"] = "ignore"
+    completed = subprocess.run(cmd, check=False, text=True, capture_output=True, env=env)
+    if completed.stderr:
+        print(completed.stderr, end="", file=sys.stderr)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"De novo phylogeny failed with exit code {completed.returncode}: {' '.join(cmd)}"
+        )
+    print(f"[done] de novo phylogeny: {output_dir}")
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
 def read_manifest(path):
@@ -372,7 +602,10 @@ def read_manifest(path):
     for column in required:
         if column not in frame.columns:
             raise ValueError(f"Manifest is missing required column: {column}")
-    frame = frame[required].copy()
+    frame = frame.copy()
+    for column in frame.columns:
+        if frame[column].dtype == object:
+            frame[column] = frame[column].map(lambda value: value.strip() if isinstance(value, str) else value)
     frame["sample"] = frame["sample"].astype(str).str.strip()
     frame["category"] = frame["category"].astype(str).str.strip().map(canonical_method_label)
     frame["input_dir"] = frame["input_dir"].astype(str).str.strip()
@@ -381,22 +614,24 @@ def read_manifest(path):
     return frame
 
 
-def expand_manifest_inputs(frame):
-    expanded_rows = []
-    for row in frame.to_dict("records"):
-        pattern = str(row["input_dir"]).strip()
-        matches = sorted(glob.glob(str(Path(pattern).expanduser()), recursive=True))
-        if not matches:
-            raise FileNotFoundError(f"Manifest pattern did not match any paths: {pattern}")
-        for match in matches:
-            expanded_rows.append(
-                {
-                    "sample": row["sample"],
-                    "category": row["category"],
-                    "input_dir": str(Path(match).resolve()),
-                }
-            )
-    return pd.DataFrame(expanded_rows, columns=["sample", "category", "input_dir"])
+def manifest_row_value(row, column, default=None):
+    value = row.get(column, default)
+    if value is None:
+        return default
+    if isinstance(value, float) and pd.isna(value):
+        return default
+    text = str(value).strip()
+    if text == "" or text.lower() == "nan":
+        return default
+    return text
+
+
+def resolve_manifest_row_inputs(row):
+    pattern = str(row["input_dir"]).strip()
+    matches = sorted(glob.glob(str(Path(pattern).expanduser()), recursive=True))
+    if not matches:
+        raise FileNotFoundError(f"Manifest pattern did not match any paths: {pattern}")
+    return [Path(match).resolve() for match in matches]
 
 
 def add_context_columns(frame, sample, category, input_dir):
@@ -416,6 +651,52 @@ def add_context_columns(frame, sample, category, input_dir):
     return output
 
 
+def matching_id_aliases(value):
+    text = str(value).strip()
+    aliases = []
+    if not text:
+        return aliases
+
+    def add(candidate):
+        candidate = str(candidate).strip()
+        if candidate and candidate not in aliases:
+            aliases.append(candidate)
+
+    add(text)
+    path_name = Path(text).name
+    if path_name != text:
+        add(path_name)
+        text = path_name
+
+    stem = text
+    for suffix in [".fasta", ".fa", ".fna", ".fasta.gz", ".fa.gz", ".fna.gz"]:
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            add(stem)
+            break
+
+    if "." in stem:
+        parts = stem.split(".")
+        for end in range(len(parts) - 1, 0, -1):
+            add(".".join(parts[:end]))
+
+    bin_match = re.match(r"^(bin_\d+)", stem)
+    if bin_match:
+        add(bin_match.group(1))
+
+    for sag_match in re.finditer(r"\b(AB-\d+_[A-Za-z]\d+_AB-\d+(?:_\d+)?)\b", stem):
+        add(sag_match.group(1))
+
+    genome_match = re.match(
+        r"^(.+?)(?:\.best_match.*|\.majority_rule.*|\.ocsvm.*|\.intersect.*|\.xPG.*)$",
+        stem,
+    )
+    if genome_match:
+        add(genome_match.group(1))
+
+    return aliases
+
+
 def classify_output_file(path_obj):
     suffix = path_obj.suffix.lower()
     stem = path_obj.stem.lower()
@@ -431,6 +712,127 @@ def classify_output_file(path_obj):
             style = label
             break
     return kind, style
+
+
+def effective_worker_settings(args):
+    if int(args.threads) > 0:
+        return int(args.threads), int(args.threads)
+    workers = max(1, int(args.workers))
+    prep_workers = int(args.prep_workers) if int(args.prep_workers) > 0 else workers
+    return workers, max(1, prep_workers)
+
+
+def build_wrapper_filter_context(args):
+    allowed_genomes = None
+    filter_id_column = None
+    if args.genome_filter_tsv:
+        include_tiers = [
+            token.strip()
+            for token in str(args.include_tiers).split(",")
+            if token.strip()
+        ]
+        allowed_genomes, filter_id_column = load_allowed_genomes(
+            args.genome_filter_tsv,
+            filter_id_column=args.filter_id_column,
+            filter_tier_column=args.filter_tier_column,
+            include_tiers=include_tiers,
+        )
+
+    taxonomy_tsv = args.taxonomy_label_tsv or args.genome_filter_tsv
+    taxonomy_lookup = None
+    taxonomy_id_column = None
+    taxonomy_ambiguous_alias_count = 0
+    if taxonomy_tsv:
+        taxonomy_lookup, taxonomy_id_column, taxonomy_ambiguous_alias_count = load_taxonomy_label_lookup(
+            taxonomy_tsv,
+            taxonomy_id_column=args.taxonomy_id_column or args.filter_id_column,
+        )
+
+    return {
+        "allowed_genomes": allowed_genomes,
+        "filter_id_column": filter_id_column,
+        "taxonomy_lookup": taxonomy_lookup,
+        "taxonomy_id_column": taxonomy_id_column,
+        "taxonomy_ambiguous_alias_count": taxonomy_ambiguous_alias_count,
+        "taxonomy_tsv": taxonomy_tsv,
+    }
+
+
+def build_row_filter_context(args, row):
+    filter_tsv = manifest_row_value(row, "genome_filter_tsv", args.genome_filter_tsv)
+    filter_id_column = manifest_row_value(row, "filter_id_column", args.filter_id_column)
+    filter_tier_column = manifest_row_value(row, "filter_tier_column", args.filter_tier_column)
+    include_tiers = manifest_row_value(row, "include_tiers", args.include_tiers)
+    taxonomy_tsv = manifest_row_value(row, "taxonomy_label_tsv", args.taxonomy_label_tsv or filter_tsv)
+    taxonomy_id_column = manifest_row_value(row, "taxonomy_id_column", args.taxonomy_id_column or filter_id_column)
+
+    allowed_genomes = None
+    selected_filter_id_column = None
+    if filter_tsv:
+        allowed_genomes, selected_filter_id_column = load_allowed_genomes(
+            Path(filter_tsv).expanduser().resolve(),
+            filter_id_column=filter_id_column,
+            filter_tier_column=filter_tier_column,
+            include_tiers=[
+                token.strip()
+                for token in str(include_tiers).split(",")
+                if token.strip()
+            ],
+        )
+
+    taxonomy_lookup = None
+    selected_taxonomy_id_column = None
+    taxonomy_ambiguous_alias_count = 0
+    if taxonomy_tsv:
+        taxonomy_lookup, selected_taxonomy_id_column, taxonomy_ambiguous_alias_count = load_taxonomy_label_lookup(
+            Path(taxonomy_tsv).expanduser().resolve(),
+            taxonomy_id_column=taxonomy_id_column,
+        )
+
+    return {
+        "filter_tsv": str(Path(filter_tsv).expanduser().resolve()) if filter_tsv else None,
+        "allowed_genomes": allowed_genomes,
+        "filter_id_column": selected_filter_id_column or filter_id_column,
+        "taxonomy_lookup": taxonomy_lookup,
+        "taxonomy_tsv": str(Path(taxonomy_tsv).expanduser().resolve()) if taxonomy_tsv else None,
+        "taxonomy_id_column": selected_taxonomy_id_column or taxonomy_id_column,
+        "taxonomy_ambiguous_alias_count": taxonomy_ambiguous_alias_count,
+    }
+
+
+def default_group_output_dir(input_paths, subdir_name):
+    if not input_paths:
+        return None
+    if len(input_paths) == 1:
+        return input_paths[0] / subdir_name
+    common_root = Path(os.path.commonpath([str(path) for path in input_paths]))
+    return common_root / subdir_name
+
+
+def resolve_row_output_dir(row, input_paths, args):
+    explicit = manifest_row_value(row, "output_dir", None)
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    return default_group_output_dir(input_paths, args.individual_subdir)
+
+
+def build_atlas_linked_args(args, prefix):
+    return SimpleNamespace(
+        genome_atlas_dir=args.genome_atlas_dir,
+        atlas_shared_best_tsv=getattr(args, "atlas_shared_best_tsv", None),
+        atlas_annotated_tsv=getattr(args, "atlas_annotated_tsv", None),
+        atlas_prefix="genome_quality",
+        atlas_compare_column=args.atlas_compare_column,
+        atlas_sample_column=args.atlas_sample_column,
+        atlas_genome_id_column=args.atlas_genome_id_column,
+        atlas_linkage_mode=args.atlas_linkage_mode,
+        atlas_representative_level=args.atlas_representative_level,
+        atlas_disable_alias_fallback=bool(args.atlas_disable_alias_fallback),
+        min_mimag_tier=args.min_mimag_tier,
+        max_heatmap_functions=args.max_heatmap_functions,
+        max_lineage_detail_plots=args.max_lineage_detail_plots,
+        prefix=prefix,
+    )
 
 
 def move_output_file(source_path, target_path):
@@ -474,8 +876,6 @@ def organize_directory_outputs(directory):
         if kind is None:
             continue
         target = directory_path / kind / style / entry.name
-        if target.exists():
-            target = next_available_target(target)
         source_before_move = str(entry)
         move_output_file(entry, target)
         rows.append(
@@ -502,8 +902,22 @@ def organize_output_tree(root_dir):
 
     total_files = 0
     index_paths = []
+    skip_dirs = {
+        "plots",
+        "tables",
+        "_organized",
+        "selected_set",
+        "phylogeny",
+    }
     for current_dir, dirnames, _ in os.walk(root_path):
-        dirnames[:] = [name for name in dirnames if name not in {"plots", "tables", "_organized"}]
+        dirnames[:] = [
+            name for name in dirnames
+            if (
+                name not in skip_dirs
+                and "matched_lineage_annotation_presence" not in name
+                and not name.endswith("linked_comparative_analysis")
+            )
+        ]
         count, index_path = organize_directory_outputs(current_dir)
         if count > 0:
             total_files += count
@@ -581,7 +995,7 @@ def detect_input_mode(input_dir):
     )
 
 
-def load_existing_summary(summary_dir):
+def load_existing_summary(summary_dir, marker_manifest=None):
     genome_path = find_single_file(summary_dir, "*_genome_summary.tsv")
     prefix = genome_path.name[: -len("_genome_summary.tsv")]
     pathway_path = find_preferred_file(
@@ -605,6 +1019,12 @@ def load_existing_summary(summary_dir):
         summary_dir,
         f"{prefix}_annotation_quality_summary.tsv",
         "*_annotation_quality_summary.tsv",
+        required=False,
+    )
+    annotation_audit_path = find_preferred_file(
+        summary_dir,
+        f"{prefix}_elemental_annotation_audit.tsv",
+        "*_elemental_annotation_audit.tsv",
         required=False,
     )
     marker_summary_path = find_preferred_file(
@@ -667,9 +1087,13 @@ def load_existing_summary(summary_dir):
         pd.read_csv(annotation_quality_path, sep="\t")
         if annotation_quality_path else build_annotation_quality_table(genome_summary)
     )
+    annotation_audit_long = (
+        pd.read_csv(annotation_audit_path, sep="\t")
+        if annotation_audit_path else pd.DataFrame()
+    )
     marker_summary = (
         pd.read_csv(marker_summary_path, sep="\t")
-        if marker_summary_path else build_marker_summary_table(genome_summary)
+        if marker_summary_path else build_marker_summary_table(genome_summary, marker_manifest=marker_manifest)
     )
     reference_mode_summary = (
         pd.read_csv(reference_mode_summary_path, sep="\t")
@@ -713,7 +1137,165 @@ def load_existing_summary(summary_dir):
         elemental_mode_pathway_summary,
         pathway_long,
         pathway_orf_long,
+        annotation_audit_long,
     )
+
+
+def summarize_results_group(input_dirs, group_output_dir, prefix, row_filter_context, marker_manifest, args):
+    genome_parts = []
+    pathway_parts = []
+    pathway_orf_parts = []
+    annotation_audit_parts = []
+    pathway_audit_parts = []
+    marker_audit_parts = []
+    reference_mode_audit_parts = []
+    wrote_paths = []
+    skipped_inputs = []
+
+    total_dirs = len(input_dirs)
+    for index, results_dir in enumerate(input_dirs, start=1):
+        print(f"[start] ({index}/{total_dirs}) summarizing results directory: {results_dir}")
+        try:
+            (
+                part_genome_summary,
+                part_pathway_long,
+                part_pathway_orf_long,
+                part_annotation_audit_long,
+                part_pathway_audit_long,
+                part_marker_audit_long,
+                part_reference_mode_audit_long,
+            ) = build_summary_tables(
+                results_dir=results_dir,
+                high_conf_threshold=args.high_confidence_threshold,
+                allowed_genomes=row_filter_context["allowed_genomes"],
+                taxonomy_label_lookup=row_filter_context["taxonomy_lookup"],
+                marker_manifest=marker_manifest,
+                reference_mappings_dir=args.reference_mappings_dir,
+                workers=effective_worker_settings(args)[0],
+                progress=not args.quiet,
+                progress_interval=args.progress_interval,
+                reference_chunk_size=args.reference_chunk_size,
+                reference_progress_rows=args.reference_progress_rows,
+                heartbeat_seconds=args.heartbeat_seconds,
+                reference_force_full_index=bool(args.reference_force_full_index),
+                prep_workers=effective_worker_settings(args)[1],
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "No MetaPathways genome records remain after applying --genome-filter-tsv." in message:
+                skipped_inputs.append(
+                    {
+                        "input_dir": str(results_dir),
+                        "error_type": exc.__class__.__name__,
+                        "error_message": message,
+                    }
+                )
+                print(f"[warn] ({index}/{total_dirs}) skipped after filter: {results_dir}")
+                continue
+            raise
+
+        individual_output_dir = results_dir / args.individual_subdir
+        print(f"[start] ({index}/{total_dirs}) writing individual output set: {individual_output_dir}")
+        wrote_paths.extend(
+            write_outputs(
+                individual_output_dir,
+                prefix,
+                part_genome_summary,
+                part_pathway_long,
+                part_pathway_orf_long,
+                part_annotation_audit_long,
+                part_pathway_audit_long,
+                marker_audit_long=part_marker_audit_long,
+                reference_mode_audit_long=part_reference_mode_audit_long,
+                marker_manifest=marker_manifest,
+                progress=not args.quiet,
+                heartbeat_seconds=args.heartbeat_seconds,
+                experimental_mobility_screen=bool(args.experimental_mobility_screen),
+                experimental_mobility_genome_type_tsv=args.experimental_mobility_genome_type_tsv,
+                experimental_mobility_genome_type_column=args.experimental_mobility_genome_type_column,
+                experimental_mobility_genome_type_id_column=args.experimental_mobility_genome_type_id_column,
+                experimental_mobility_include_broad_screen=bool(args.experimental_mobility_include_broad_screen),
+            )
+        )
+        print(f"[done] ({index}/{total_dirs}) genomes={len(part_genome_summary):,} from {results_dir}")
+
+        genome_parts.append(part_genome_summary)
+        pathway_parts.append(part_pathway_long)
+        pathway_orf_parts.append(part_pathway_orf_long)
+        annotation_audit_parts.append(part_annotation_audit_long)
+        pathway_audit_parts.append(part_pathway_audit_long)
+        marker_audit_parts.append(part_marker_audit_long)
+        reference_mode_audit_parts.append(part_reference_mode_audit_long)
+
+    if not genome_parts:
+        raise ValueError("No valid MetaPathways summaries remained after grouped results processing.")
+
+    genome_summary = pd.concat(genome_parts, ignore_index=True)
+    pathway_long = pd.concat(pathway_parts, ignore_index=True)
+    pathway_orf_long = pd.concat(pathway_orf_parts, ignore_index=True)
+    annotation_audit_long = pd.concat(annotation_audit_parts, ignore_index=True)
+    pathway_audit_long = pd.concat(pathway_audit_parts, ignore_index=True)
+    marker_audit_long = pd.concat(marker_audit_parts, ignore_index=True)
+    reference_mode_audit_long = pd.concat(reference_mode_audit_parts, ignore_index=True)
+
+    print(f"[start] writing grouped output set: {group_output_dir}")
+    wrote_paths.extend(
+        write_outputs(
+            group_output_dir,
+            prefix,
+            genome_summary,
+            pathway_long,
+            pathway_orf_long,
+            annotation_audit_long,
+            pathway_audit_long,
+            marker_audit_long=marker_audit_long,
+            reference_mode_audit_long=reference_mode_audit_long,
+            marker_manifest=marker_manifest,
+            progress=not args.quiet,
+            heartbeat_seconds=args.heartbeat_seconds,
+            experimental_mobility_screen=bool(args.experimental_mobility_screen),
+            experimental_mobility_genome_type_tsv=args.experimental_mobility_genome_type_tsv,
+            experimental_mobility_genome_type_column=args.experimental_mobility_genome_type_column,
+            experimental_mobility_genome_type_id_column=args.experimental_mobility_genome_type_id_column,
+            experimental_mobility_include_broad_screen=bool(args.experimental_mobility_include_broad_screen),
+        )
+    )
+    print(f"[done] grouped MetaPathways outputs in: {group_output_dir}")
+
+    annotation_summary = build_annotation_source_table(genome_summary)
+    annotation_quality_summary = build_annotation_quality_table(genome_summary)
+    marker_summary = build_marker_summary_table(genome_summary, marker_manifest=marker_manifest)
+    reference_mode_summary = genome_summary[
+        [
+            column for column in genome_summary.columns
+            if column == "genome_id" or column.startswith("reference_mode_")
+        ]
+    ].copy()
+    elemental_annotation_summary = build_elemental_summary_table(genome_summary, "annotation", "total_orfs", "orfs")
+    elemental_mode_annotation_summary = build_elemental_mode_summary_table(genome_summary, "annotation", "total_orfs", "orfs")
+    elemental_pathway_support_summary = build_elemental_summary_table(genome_summary, "pathway_support", "pathway_support_orfs", "orfs")
+    elemental_mode_pathway_support_summary = build_elemental_mode_summary_table(genome_summary, "pathway_support", "pathway_support_orfs", "orfs")
+    elemental_pathway_summary = build_elemental_summary_table(genome_summary, "pathway", "total_pathways", "count", assigned_unit_label="pathways")
+    elemental_mode_pathway_summary = build_elemental_mode_summary_table(genome_summary, "pathway", "total_pathways", "count", assigned_unit_label="pathways")
+
+    return {
+        "genome_summary": genome_summary,
+        "annotation_summary": annotation_summary,
+        "annotation_quality_summary": annotation_quality_summary,
+        "marker_summary": marker_summary,
+        "reference_mode_summary": reference_mode_summary,
+        "elemental_annotation_summary": elemental_annotation_summary,
+        "elemental_mode_annotation_summary": elemental_mode_annotation_summary,
+        "elemental_pathway_support_summary": elemental_pathway_support_summary,
+        "elemental_mode_pathway_support_summary": elemental_mode_pathway_support_summary,
+        "elemental_pathway_summary": elemental_pathway_summary,
+        "elemental_mode_pathway_summary": elemental_mode_pathway_summary,
+        "pathway_long": pathway_long,
+        "pathway_orf_long": pathway_orf_long,
+        "annotation_audit_long": annotation_audit_long,
+        "wrote_paths": wrote_paths,
+        "skipped_inputs": skipped_inputs,
+    }
 
 
 def choose_atlas_file(atlas_dir, explicit_path, pattern, preferred_token=None, required=True):
@@ -729,6 +1311,15 @@ def choose_atlas_file(atlas_dir, explicit_path, pattern, preferred_token=None, r
         return None
 
     atlas_base = Path(atlas_dir).expanduser().resolve()
+    if preferred_token:
+        for candidate in [
+            atlas_base / preferred_token,
+            atlas_base / "tables" / "other" / preferred_token,
+            atlas_base / "tables" / "components" / preferred_token,
+        ]:
+            if candidate.is_file():
+                return candidate
+
     matches = sorted(path for path in atlas_base.glob(pattern) if path.is_file())
     if not matches:
         matches = sorted(path for path in atlas_base.rglob(pattern) if path.is_file())
@@ -754,30 +1345,17 @@ def choose_atlas_file(atlas_dir, explicit_path, pattern, preferred_token=None, r
     return None
 
 
-def load_atlas_inputs(args):
+def load_atlas_component_members(args):
     atlas_dir = Path(args.genome_atlas_dir).expanduser().resolve() if args.genome_atlas_dir else None
-    safe_compare = sanitize_label(args.atlas_compare_column)
-
-    shared_preferred = f"{sanitize_label(args.atlas_prefix)}_compare_{safe_compare}_shared_best_genomes.tsv"
-    shared_best_path = choose_atlas_file(
+    component_members_path = choose_atlas_file(
         atlas_dir=atlas_dir,
-        explicit_path=args.atlas_shared_best_tsv,
-        pattern="*_shared_best_genomes.tsv",
-        preferred_token=shared_preferred,
+        explicit_path=None,
+        pattern="best_sets_review_component_members.tsv",
+        preferred_token="best_sets_review_component_members.tsv",
         required=True,
     )
-    annotated_preferred = f"{sanitize_label(args.atlas_prefix)}_annotated.tsv"
-    annotated_path = choose_atlas_file(
-        atlas_dir=atlas_dir,
-        explicit_path=args.atlas_annotated_tsv,
-        pattern="*_annotated.tsv",
-        preferred_token=annotated_preferred,
-        required=False,
-    )
-
-    shared_best_df = pd.read_csv(shared_best_path, sep="\t")
-    annotated_df = pd.read_csv(annotated_path, sep="\t") if annotated_path else pd.DataFrame()
-    return shared_best_path, annotated_path, shared_best_df, annotated_df
+    component_members_df = pd.read_csv(component_members_path, sep="\t")
+    return component_members_path, component_members_df
 
 
 def auto_detect_atlas_dir(manifest_path, output_dir, manifest_df):
@@ -807,22 +1385,20 @@ def auto_detect_atlas_dir(manifest_path, output_dir, manifest_df):
     for candidate in candidates:
         if not candidate.exists() or not candidate.is_dir():
             continue
-        has_shared = any(path.is_file() for path in candidate.rglob("*_shared_best_genomes.tsv"))
-        has_subset = (candidate / "best_sets_review_selected_genomes.tsv").exists()
-        if has_shared or has_subset:
+        has_component_members = any(path.is_file() for path in candidate.rglob("best_sets_review_component_members.tsv"))
+        has_subset = any(path.is_file() for path in candidate.rglob("best_sets_review_selected_genomes.tsv"))
+        if has_component_members or has_subset:
             return candidate
     return None
 
 
-def has_atlas_shared_best(args):
-    if args.atlas_shared_best_tsv:
-        return True
+def has_atlas_component_members(args):
     if not args.genome_atlas_dir:
         return False
     atlas_dir = Path(args.genome_atlas_dir).expanduser().resolve()
     if not atlas_dir.exists():
         return False
-    return any(path.is_file() for path in atlas_dir.rglob("*_shared_best_genomes.tsv"))
+    return any(path.is_file() for path in atlas_dir.rglob("best_sets_review_component_members.tsv"))
 
 
 def resolve_best_subset_path(args):
@@ -832,9 +1408,16 @@ def resolve_best_subset_path(args):
             raise FileNotFoundError(f"Best-subset TSV was not found: {resolved}")
         return resolved
     if args.genome_atlas_dir:
-        candidate = Path(args.genome_atlas_dir).expanduser().resolve() / "best_sets_review_selected_genomes.tsv"
-        if candidate.exists():
-            return candidate
+        atlas_dir = Path(args.genome_atlas_dir).expanduser().resolve()
+        direct_candidate = atlas_dir / "best_sets_review_selected_genomes.tsv"
+        if direct_candidate.exists():
+            return direct_candidate
+        preferred_candidate = atlas_dir / "tables" / "selected" / "best_sets_review_selected_genomes.tsv"
+        if preferred_candidate.exists():
+            return preferred_candidate
+        matches = sorted(path for path in atlas_dir.rglob("best_sets_review_selected_genomes.tsv") if path.is_file())
+        if matches:
+            return matches[0]
     return None
 
 
@@ -904,7 +1487,7 @@ def build_best_subset_lookup(subset_df, args):
                 continue
             if column == "fasta_path":
                 value = Path(value).name
-            aliases.update(id_aliases(value))
+            aliases.update(matching_id_aliases(value))
         if not aliases:
             continue
         category_value = (
@@ -954,7 +1537,7 @@ def filter_frame_by_best_subset(frame, subset_lookup, sample_column="sample", ca
 
     keep_mask = []
     for row in working.to_dict("records"):
-        aliases = id_aliases(row.get(genome_column, ""))
+        aliases = set(matching_id_aliases(row.get(genome_column, "")))
         if not aliases:
             keep_mask.append(False)
             continue
@@ -969,104 +1552,585 @@ def filter_frame_by_best_subset(frame, subset_lookup, sample_column="sample", ca
         keep_mask.append(matched)
     return working.loc[np.array(keep_mask, dtype=bool)].copy()
 
-def prepare_atlas_shared_best(shared_best_df, annotated_df, args):
-    compare_column = args.atlas_compare_column
-    sample_column = args.atlas_sample_column
-    genome_id_column = args.atlas_genome_id_column
-    required = [compare_column, genome_id_column, "component_id"]
-    for column in required:
-        if column not in shared_best_df.columns:
-            raise ValueError(
-                f"Atlas shared-best table is missing required column '{column}'. "
-                f"Provide the correct --atlas-* column names."
-            )
 
-    atlas_df = shared_best_df.copy()
-    atlas_df[compare_column] = (
-        atlas_df[compare_column]
-        .astype(str)
+def best_set_has_16s(frame):
+    if "contains_16S" in frame.columns:
+        contains_series = pd.to_numeric(frame["contains_16S"], errors="coerce").fillna(0)
+        return contains_series.gt(0).astype(int)
+    if "16S_rRNA" in frame.columns:
+        rrna_series = pd.to_numeric(frame["16S_rRNA"], errors="coerce").fillna(0)
+        return rrna_series.gt(0).astype(int)
+    return pd.Series(0, index=frame.index, dtype=int)
+
+
+def coarse_quality_bin(series, step):
+    numeric = pd.to_numeric(series, errors="coerce")
+    return (numeric / float(step)).round().fillna(float("-inf"))
+
+
+def gunc_assessment_rank(series):
+    if series is None:
+        return pd.Series(dtype=int)
+    rank_map = {
+        "likely_not_chimeric": 0,
+        "low_reference_uncertain": 1,
+        "unscored": 1,
+        "credible_chimeric_signal": 2,
+    }
+    cleaned = (
+        series.astype(str)
         .str.strip()
-        .map(canonical_method_label)
+        .str.lower()
+        .replace({"nan": "unscored", "none": "unscored", "null": "unscored"})
     )
-    atlas_df[genome_id_column] = atlas_df[genome_id_column].astype(str).str.strip()
-    if sample_column in atlas_df.columns:
-        atlas_df[sample_column] = atlas_df[sample_column].astype(str).str.strip()
-    else:
-        atlas_df[sample_column] = ""
+    return cleaned.map(rank_map).fillna(2).astype(int)
 
-    qc_fill_columns = [
-        "qscore",
+
+def gunc_confident_call_mask(series):
+    if series is None:
+        return pd.Series(dtype=bool)
+    cleaned = (
+        series.astype(str)
+        .str.strip()
+        .str.lower()
+        .replace({"nan": "unscored", "none": "unscored", "null": "unscored"})
+    )
+    return cleaned.isin({"likely_not_chimeric", "credible_chimeric_signal"})
+
+
+def metapathways_best_set_sort_spec(frame):
+    preferred = [
+        "__mimag_quality_bin",
+        "__gunc_strict_rank",
+        "__integrity_bin",
+        "__recoverability_bin",
+        "__has_16s",
+        "mimag_quality_index",
         "integrity_score",
         "recoverability_score",
-        "mimag_quality_index",
-        "Completeness",
-        "Contamination",
+        "mp_informative_annotation_fraction",
+        "mp_informative_annotation_orfs",
+        "mp_marker_supported_orfs",
+        "mp_reference_mode_supported_accessions",
+        "mp_total_pathways",
+        "qscore",
+        "mp_genome_id",
     ]
-    if not annotated_df.empty and genome_id_column in annotated_df.columns:
-        annotated = annotated_df.copy()
-        annotated[genome_id_column] = annotated[genome_id_column].astype(str).str.strip()
-        if compare_column in annotated.columns:
-            annotated[compare_column] = (
-                annotated[compare_column]
-                .astype(str)
-                .str.strip()
-                .map(canonical_method_label)
-            )
-        if sample_column in annotated.columns:
-            annotated[sample_column] = annotated[sample_column].astype(str).str.strip()
-            merge_keys = [sample_column, compare_column, genome_id_column]
-            available_merge_keys = [key for key in merge_keys if key in atlas_df.columns and key in annotated.columns]
-            if len(available_merge_keys) < 2:
-                available_merge_keys = [genome_id_column]
-        else:
-            available_merge_keys = [genome_id_column]
-
-        keep_cols = list(dict.fromkeys(available_merge_keys + qc_fill_columns))
-        keep_cols = [column for column in keep_cols if column in annotated.columns]
-        if keep_cols:
-            atlas_df = atlas_df.merge(
-                annotated[keep_cols].drop_duplicates(),
-                on=available_merge_keys,
-                how="left",
-                suffixes=("", "_annotated"),
-            )
-            for column in qc_fill_columns:
-                annotated_col = f"{column}_annotated"
-                if annotated_col in atlas_df.columns:
-                    atlas_df[column] = atlas_df[column] if column in atlas_df.columns else np.nan
-                    atlas_df[column] = atlas_df[column].where(atlas_df[column].notna(), atlas_df[annotated_col])
-                    atlas_df = atlas_df.drop(columns=[annotated_col])
-    return atlas_df
+    sort_columns = []
+    ascending = []
+    for column in preferred:
+        if column not in frame.columns:
+            continue
+        sort_columns.append(column)
+        ascending.append(column in {"__gunc_strict_rank", "mp_genome_id"})
+    return sort_columns, ascending
 
 
-def prepare_atlas_species_source(shared_best_df, annotated_df, args):
-    compare_column = args.atlas_compare_column
-    sample_column = args.atlas_sample_column
-    genome_id_column = args.atlas_genome_id_column
+def prepare_metapathways_best_set_candidates(matched_df, compare_column):
+    if matched_df.empty:
+        return pd.DataFrame()
 
-    if (
-        not annotated_df.empty
-        and compare_column in annotated_df.columns
-        and genome_id_column in annotated_df.columns
-    ):
-        atlas_df = annotated_df.copy()
-        source_label = "annotated"
-    else:
-        atlas_df = prepare_atlas_shared_best(shared_best_df, annotated_df, args)
-        source_label = "shared_best"
+    required = {"component_id", "mp_genome_id", compare_column}
+    if not required.issubset(set(matched_df.columns)):
+        return pd.DataFrame()
 
-    atlas_df[compare_column] = (
-        atlas_df[compare_column]
+    working = matched_df.copy()
+    numeric_columns = [
+        "mimag_quality_index",
+        "integrity_score",
+        "recoverability_score",
+        "qscore",
+        "mp_informative_annotation_orfs",
+        "mp_informative_annotation_fraction",
+        "mp_total_pathways",
+        "mp_marker_supported_orfs",
+        "mp_reference_mode_supported_accessions",
+    ]
+    for column in numeric_columns:
+        if column in working.columns:
+            working[column] = pd.to_numeric(working[column], errors="coerce")
+    working["__mimag_quality_bin"] = coarse_quality_bin(working.get("mimag_quality_index"), 0.02)
+    if "gunc_strict_assessment" in working.columns:
+        working["__gunc_strict_rank"] = gunc_assessment_rank(working["gunc_strict_assessment"])
+    working["__integrity_bin"] = coarse_quality_bin(working.get("integrity_score"), 0.02)
+    working["__recoverability_bin"] = coarse_quality_bin(working.get("recoverability_score"), 0.02)
+    working["__has_16s"] = best_set_has_16s(working)
+
+    working["sample"] = working.apply(pair_sample_value, axis=1)
+    working["category"] = (
+        working[compare_column]
         .astype(str)
         .str.strip()
         .map(canonical_method_label)
     )
-    atlas_df[genome_id_column] = atlas_df[genome_id_column].astype(str).str.strip()
-    if sample_column in atlas_df.columns:
-        atlas_df[sample_column] = atlas_df[sample_column].astype(str).str.strip()
+    working["Genome_Id"] = working["mp_genome_id"].astype(str).str.strip()
+    working["genome_id"] = working["mp_genome_id"].astype(str).str.strip()
+    working["atlas_genome_id"] = working["_atlas_genome_id"].astype(str).str.strip() if "_atlas_genome_id" in working.columns else ""
+    working["component_id"] = working["component_id"].astype(str).str.strip()
+    working = working.loc[
+        working["sample"].astype(str).str.strip().ne("")
+        & working["category"].astype(str).str.strip().ne("")
+        & working["Genome_Id"].astype(str).str.strip().ne("")
+        & working["component_id"].astype(str).str.strip().ne("")
+    ].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    sort_columns, ascending = metapathways_best_set_sort_spec(working)
+    if sort_columns:
+        working = working.sort_values(by=sort_columns, ascending=ascending, kind="mergesort")
+    return working.reset_index(drop=True)
+
+
+def _build_best_set_scope_table(working, group_columns, scope_label):
+    if working.empty:
+        return pd.DataFrame()
+    ranked = working.copy()
+    ranked["best_set_scope"] = scope_label
+    if scope_label == "sample":
+        ranked["best_set_name"] = ranked["sample"].astype(str)
     else:
-        atlas_df[sample_column] = ""
-    return atlas_df, source_label
+        ranked["best_set_name"] = "global"
+    ranked["selection_rank_within_set"] = ranked.groupby(group_columns, dropna=False).cumcount() + 1
+    ranked["selected"] = ranked["selection_rank_within_set"].eq(1)
+    ranked["best_set_label"] = np.where(
+        ranked["best_set_scope"].astype(str).eq("sample"),
+        "best_of_sample",
+        "best_of_best",
+    )
+    ranked["selection_metric"] = (
+        "coarse(mimag_quality_index)>gunc(class_gate_only)>"
+        "coarse(integrity_score,recoverability_score)>16S_presence>"
+        "mimag_quality_index>integrity_score>recoverability_score>"
+        "mp_informative_annotation_fraction>mp_informative_annotation_orfs>"
+        "mp_marker_supported_orfs>mp_reference_mode_supported_accessions>"
+        "mp_total_pathways>qscore"
+    )
+    return ranked
+
+
+def build_metapathways_best_set_tables(matched_df, compare_column):
+    working = prepare_metapathways_best_set_candidates(matched_df, compare_column)
+    if working.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    if {"best_set_scope", "best_set_name"}.issubset(set(working.columns)):
+        scope_values = working["best_set_scope"].astype(str).str.strip().str.lower()
+        sample_working = working.loc[scope_values.eq("sample")].copy()
+        global_working = working.loc[scope_values.eq("global")].copy()
+        if sample_working.empty:
+            sample_working = working.copy()
+        if global_working.empty:
+            global_working = working.copy()
+    else:
+        sample_working = working.copy()
+        global_working = working.copy()
+
+    sample_review_df = _build_best_set_scope_table(
+        working=sample_working,
+        group_columns=["best_set_name", "component_id"],
+        scope_label="sample",
+    )
+    global_review_df = _build_best_set_scope_table(
+        working=global_working,
+        group_columns=["component_id"],
+        scope_label="global",
+    )
+    review_df = pd.concat([sample_review_df, global_review_df], ignore_index=True)
+    if review_df.empty:
+        return review_df, pd.DataFrame(), pd.DataFrame()
+    helper_columns = [column for column in review_df.columns if str(column).startswith("__")]
+    if helper_columns:
+        review_df = review_df.drop(columns=helper_columns, errors="ignore")
+
+    selected_df = review_df.loc[review_df["selected"].fillna(False)].copy().reset_index(drop=True)
+    contribution_df = (
+        selected_df.groupby(["best_set_scope", "best_set_name", "best_set_label", "category"], dropna=False)
+        .size()
+        .reset_index(name="selected_genome_count")
+    )
+    if not contribution_df.empty:
+        contribution_df["category"] = contribution_df["category"].astype(str).str.strip().map(canonical_method_label)
+        category_counts = (
+            contribution_df.groupby("category")["selected_genome_count"].sum().to_dict()
+        )
+        method_order = ordered_methods(contribution_df["category"].astype(str).tolist(), counts=category_counts)
+        order_map = {category: index for index, category in enumerate(method_order)}
+        contribution_df["__method_order"] = contribution_df["category"].map(order_map).fillna(len(order_map)).astype(int)
+        contribution_df = (
+            contribution_df.sort_values(
+                by=["best_set_scope", "best_set_name", "__method_order", "category"],
+                ascending=[True, True, True, True],
+                kind="mergesort",
+            )
+            .drop(columns=["__method_order"])
+            .reset_index(drop=True)
+        )
+    return review_df, selected_df, contribution_df
+
+
+def run_metapathways_best_sets(
+    args,
+    output_dir,
+    prefix,
+    manifest_df,
+    combined_genome_df,
+    combined_annotation_df,
+    combined_annotation_quality_df,
+    combined_marker_df,
+    combined_reference_mode_df,
+    combined_elemental_annotation_df,
+    combined_elemental_mode_annotation_df,
+    combined_elemental_pathway_support_df,
+    combined_elemental_mode_pathway_support_df,
+    combined_elemental_pathway_df,
+    combined_elemental_mode_pathway_df,
+    combined_pathway_df,
+    combined_pathway_orf_df,
+    combined_annotation_audit_df=None,
+):
+    component_members_path, atlas_df = load_atlas_component_members(args)
+    if atlas_df.empty:
+        raise ValueError(f"Atlas component-member table is empty: {component_members_path}")
+    mp_df, exact_map, alias_map = build_metapathways_lookup(combined_genome_df)
+    _atlas_match_audit_df, matched_df = match_atlas_genomes_to_metapathways(
+        atlas_df=atlas_df,
+        mp_df=mp_df,
+        exact_map=exact_map,
+        alias_map=alias_map,
+        args=args,
+    )
+    if args.min_mimag_tier:
+        tier_order = {"low": 0, "medium": 1, "high": 2}
+        min_value = tier_order[str(args.min_mimag_tier).strip().lower()]
+        if "mimag_tier" not in matched_df.columns:
+            raise ValueError(
+                "--min-mimag-tier was provided, but 'mimag_tier' is missing from atlas-backed matched genomes."
+            )
+        matched_df["_mimag_tier_norm"] = matched_df["mimag_tier"].astype(str).str.lower().str.strip()
+        matched_df["_mimag_tier_value"] = matched_df["_mimag_tier_norm"].map(tier_order)
+        matched_df = matched_df.loc[matched_df["_mimag_tier_value"].fillna(-1).ge(min_value)].copy()
+        matched_df = matched_df.drop(columns=["_mimag_tier_norm", "_mimag_tier_value"], errors="ignore")
+    if matched_df.empty:
+        raise ValueError("No atlas-backed MetaPathways genomes are available for best-set selection.")
+
+    review_df, selected_df, contribution_df = build_metapathways_best_set_tables(
+        matched_df=matched_df,
+        compare_column=args.atlas_compare_column,
+    )
+    if selected_df.empty:
+        raise ValueError("MetaPathways best-set selection produced zero selected genomes.")
+
+    output_dir = Path(output_dir)
+    wrote_paths = []
+    review_out = output_dir / "best_sets_review_candidates.tsv"
+    selected_out = output_dir / "best_sets_review_selected_genomes.tsv"
+    contribution_out = output_dir / "best_sets_review_category_contributions.tsv"
+    review_df.to_csv(review_out, sep="\t", index=False)
+    selected_df.to_csv(selected_out, sep="\t", index=False)
+    contribution_df.to_csv(contribution_out, sep="\t", index=False)
+    wrote_paths.extend([review_out, selected_out, contribution_out])
+    review_selection_overall_frames = []
+    review_selection_pairwise_frames = []
+
+    for (scope_value, set_name), selected_rows in selected_df.groupby(["best_set_scope", "best_set_name"], dropna=False):
+        scope_text = str(scope_value).strip().lower()
+        set_name_text = str(set_name).strip()
+        if scope_text == "sample":
+            subset_dir = output_dir / "best_of_sample" / sanitize_label(set_name_text)
+        else:
+            subset_dir = output_dir / "best_of_best"
+        subset_dir.mkdir(parents=True, exist_ok=True)
+        selected_set_dir = subset_dir / "selected_set"
+        selected_rows = selected_rows.copy().reset_index(drop=True)
+        selected_rows, selected_fasta_paths = export_selected_set_fastas(selected_rows, selected_set_dir)
+
+        subset_lookup = build_best_subset_lookup(selected_rows.copy(), args)
+        subset_genome_df = filter_frame_by_best_subset(combined_genome_df, subset_lookup)
+        subset_annotation_df = filter_frame_by_best_subset(combined_annotation_df, subset_lookup)
+        subset_annotation_quality_df = filter_frame_by_best_subset(combined_annotation_quality_df, subset_lookup)
+        subset_annotation_audit_df = filter_frame_by_best_subset(combined_annotation_audit_df, subset_lookup)
+        subset_marker_df = filter_frame_by_best_subset(combined_marker_df, subset_lookup)
+        subset_reference_mode_df = filter_frame_by_best_subset(combined_reference_mode_df, subset_lookup)
+        subset_elemental_annotation_df = filter_frame_by_best_subset(combined_elemental_annotation_df, subset_lookup)
+        subset_elemental_mode_annotation_df = filter_frame_by_best_subset(combined_elemental_mode_annotation_df, subset_lookup)
+        subset_elemental_pathway_support_df = filter_frame_by_best_subset(combined_elemental_pathway_support_df, subset_lookup)
+        subset_elemental_mode_pathway_support_df = filter_frame_by_best_subset(
+            combined_elemental_mode_pathway_support_df,
+            subset_lookup,
+        )
+        subset_elemental_pathway_df = filter_frame_by_best_subset(combined_elemental_pathway_df, subset_lookup)
+        subset_elemental_mode_pathway_df = filter_frame_by_best_subset(combined_elemental_mode_pathway_df, subset_lookup)
+        subset_pathway_df = filter_frame_by_best_subset(combined_pathway_df, subset_lookup)
+        subset_pathway_orf_df = filter_frame_by_best_subset(combined_pathway_orf_df, subset_lookup)
+        if subset_genome_df.empty:
+            continue
+
+        subset_prefix = sanitize_label(prefix)
+        subset_selected_out = subset_dir / "selected_genomes.tsv"
+        subset_contribution_out = subset_dir / "category_contributions.tsv"
+        subset_selected_count_out = subset_dir / "selected_category_count_summary.tsv"
+        subset_selection_pref_out = subset_dir / "selection_preference_by_category.tsv"
+        subset_selection_pairwise_out = subset_dir / "selection_preference_pairwise.tsv"
+        selected_rows.to_csv(subset_selected_out, sep="\t", index=False)
+        subset_contribution_df = contribution_df.loc[
+            contribution_df["best_set_scope"].astype(str).eq(str(scope_value))
+            & contribution_df["best_set_name"].astype(str).eq(str(set_name))
+        ].copy()
+        subset_contribution_df.to_csv(subset_contribution_out, sep="\t", index=False)
+        selected_count_df = summarize_selected_category_counts(selected_rows, category_column="category")
+        selected_count_df.to_csv(subset_selected_count_out, sep="\t", index=False)
+        subset_review_df = review_df.loc[
+            review_df["best_set_scope"].astype(str).eq(str(scope_value))
+            & review_df["best_set_name"].astype(str).eq(str(set_name))
+        ].copy()
+        subset_selection_pref_df, subset_selection_pairwise_df = summarize_selection_preferences(
+            subset_review_df,
+            category_column="category",
+        )
+        subset_selection_pref_df.to_csv(subset_selection_pref_out, sep="\t", index=False)
+        subset_selection_pairwise_df.to_csv(subset_selection_pairwise_out, sep="\t", index=False)
+        wrote_paths.extend(
+            [
+                subset_selected_out,
+                subset_contribution_out,
+                subset_selected_count_out,
+                subset_selection_pref_out,
+                subset_selection_pairwise_out,
+                *selected_fasta_paths,
+            ]
+        )
+        if not subset_selection_pref_df.empty:
+            review_selection_overall = subset_selection_pref_df.copy()
+            review_selection_overall["best_set_scope"] = str(scope_value)
+            review_selection_overall["best_set_name"] = str(set_name)
+            review_selection_overall_frames.append(review_selection_overall)
+        if not subset_selection_pairwise_df.empty:
+            review_selection_pairwise = subset_selection_pairwise_df.copy()
+            review_selection_pairwise["best_set_scope"] = str(scope_value)
+            review_selection_pairwise["best_set_name"] = str(set_name)
+            review_selection_pairwise_frames.append(review_selection_pairwise)
+
+        subset_paths = write_combined_tables(
+            output_dir=subset_dir,
+            prefix=subset_prefix,
+            manifest_df=manifest_df,
+            combined_genome_df=subset_genome_df,
+            combined_annotation_df=subset_annotation_df,
+            combined_annotation_quality_df=subset_annotation_quality_df,
+            combined_marker_df=subset_marker_df,
+            combined_reference_mode_df=subset_reference_mode_df,
+            combined_elemental_annotation_df=subset_elemental_annotation_df,
+            combined_elemental_mode_annotation_df=subset_elemental_mode_annotation_df,
+            combined_elemental_pathway_support_df=subset_elemental_pathway_support_df,
+            combined_elemental_mode_pathway_support_df=subset_elemental_mode_pathway_support_df,
+            combined_elemental_pathway_df=subset_elemental_pathway_df,
+            combined_elemental_mode_pathway_df=subset_elemental_mode_pathway_df,
+            combined_pathway_df=subset_pathway_df,
+            combined_pathway_orf_df=subset_pathway_orf_df,
+            combined_annotation_audit_df=subset_annotation_audit_df,
+        )
+        wrote_paths.extend(subset_paths)
+        plot_paths = run_combined_summary_plots(
+            output_dir=subset_dir,
+            prefix=subset_prefix,
+            combined_genome_df=subset_genome_df,
+            combined_pathway_df=subset_pathway_df,
+        )
+        wrote_paths.extend(plot_paths)
+        selected_count_plot_base = subset_dir / f"{subset_prefix}_selected_category_count_summary"
+        if plot_selected_category_counts(selected_count_df, str(selected_count_plot_base), category_column="category"):
+            wrote_paths.extend([Path(str(selected_count_plot_base) + ".png"), Path(str(selected_count_plot_base) + ".pdf")])
+        selection_pref_plot_base = subset_dir / f"{subset_prefix}_selection_preference_summary"
+        if plot_selection_preference_summary(
+            subset_selection_pref_df,
+            subset_selection_pairwise_df,
+            str(selection_pref_plot_base),
+            category_column="category",
+        ):
+            wrote_paths.extend([Path(str(selection_pref_plot_base) + ".png"), Path(str(selection_pref_plot_base) + ".pdf")])
+
+    if review_selection_overall_frames:
+        review_selection_overall_out = output_dir / "best_sets_review_selection_preference_by_category.tsv"
+        pd.concat(review_selection_overall_frames, ignore_index=True).to_csv(
+            review_selection_overall_out,
+            sep="\t",
+            index=False,
+        )
+        wrote_paths.append(review_selection_overall_out)
+    if review_selection_pairwise_frames:
+        review_selection_pairwise_out = output_dir / "best_sets_review_selection_preference_pairwise.tsv"
+        pd.concat(review_selection_pairwise_frames, ignore_index=True).to_csv(
+            review_selection_pairwise_out,
+            sep="\t",
+            index=False,
+        )
+        wrote_paths.append(review_selection_pairwise_out)
+    return [path for path in wrote_paths if path]
+
+
+def gunc_nonchimeric_mask(frame):
+    if frame.empty:
+        return pd.Series(dtype=bool)
+    for column in ["gunc_strict_assessment", "gunc_assessment"]:
+        if column in frame.columns:
+            cleaned = (
+                frame[column]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .replace({"nan": "", "none": "", "null": ""})
+            )
+            return ~cleaned.eq("credible_chimeric_signal")
+    for column in ["gunc_strict_chimera", "gunc_credible_chimeric_signal"]:
+        if column in frame.columns:
+            cleaned = frame[column].astype(str).str.strip().str.lower()
+            return ~cleaned.isin({"true", "1", "yes", "y"})
+    raise ValueError(
+        "Cannot build de novo phylogeny cohorts because no GUNC chimera-assessment column "
+        "was found in atlas-matched genomes."
+    )
+
+
+def prepare_denovo_phylogeny_candidates(matched_df):
+    if matched_df.empty:
+        return pd.DataFrame()
+    if "mimag_tier" not in matched_df.columns:
+        raise ValueError("Cannot build de novo phylogeny cohorts because 'mimag_tier' is missing.")
+
+    working = matched_df.copy().reset_index(drop=True)
+    working["_tier_norm"] = working["mimag_tier"].astype(str).str.strip().str.lower()
+    working["_gunc_nonchimeric"] = gunc_nonchimeric_mask(working)
+    working = working.loc[
+        working["_tier_norm"].isin({"high", "medium"})
+        & working["_gunc_nonchimeric"]
+    ].copy()
+    if working.empty:
+        return working
+
+    working["sample"] = working.apply(pair_sample_value, axis=1)
+    if "mp_category" in working.columns:
+        category_series = working["mp_category"]
+    elif "category" in working.columns:
+        category_series = working["category"]
+    else:
+        category_series = pd.Series("", index=working.index)
+    working["category"] = category_series.astype(str).str.strip().map(canonical_method_label)
+
+    if "mp_genome_id" in working.columns:
+        genome_series = working["mp_genome_id"]
+    elif "genome_id" in working.columns:
+        genome_series = working["genome_id"]
+    else:
+        genome_series = pd.Series("", index=working.index)
+    working["Genome_Id"] = genome_series.astype(str).str.strip()
+    working["genome_id"] = working["Genome_Id"]
+    working["atlas_genome_id"] = working["_atlas_genome_id"].astype(str).str.strip() if "_atlas_genome_id" in working.columns else ""
+    working["denovo_phylogeny_selection"] = np.where(
+        working["_tier_norm"].eq("high"),
+        "hq_nonchimeric",
+        "mq_nonchimeric",
+    )
+    working["denovo_phylogeny_selection_rule"] = (
+        "hq_nonchimeric: mimag_tier=high + not confirmed chimeric by GUNC; "
+        "mq_nonchimeric: mimag_tier in {medium,high} + not confirmed chimeric by GUNC; "
+        "best-representative subsets are also exported for each cohort; "
+        "keeps sample/category variants; removes exact duplicate selected rows"
+    )
+    working = working.loc[
+        working["sample"].astype(str).str.strip().ne("")
+        & working["category"].astype(str).str.strip().ne("")
+        & working["Genome_Id"].astype(str).str.strip().ne("")
+    ].copy()
+    return working
+
+
+def annotate_denovo_best_representatives(candidates, output_dir):
+    working = candidates.copy()
+    working["best_representative"] = "false"
+    if working.empty:
+        return working
+
+    best_table = Path(output_dir) / "best_of_best" / "selected_set" / "master.tsv"
+    if not best_table.exists():
+        return working
+
+    best_df = pd.read_csv(best_table, sep="\t", dtype=str).fillna("")
+    required = ["sample", "category", "Genome_Id"]
+    if not all(column in best_df.columns for column in required):
+        return working
+
+    best_keys = {
+        (
+            str(row["sample"]).strip().lower(),
+            canonical_method_label(str(row["category"]).strip()).lower(),
+            str(row["Genome_Id"]).strip().lower(),
+        )
+        for _, row in best_df.iterrows()
+    }
+    candidate_keys = zip(
+        working["sample"].astype(str).str.strip().str.lower(),
+        working["category"].astype(str).str.strip().map(canonical_method_label).str.lower(),
+        working["Genome_Id"].astype(str).str.strip().str.lower(),
+    )
+    working["best_representative"] = ["true" if key in best_keys else "false" for key in candidate_keys]
+    return working
+
+
+def build_denovo_phylogeny_sets(args, output_dir, combined_genome_df):
+    component_members_path, atlas_df = load_atlas_component_members(args)
+    if atlas_df.empty:
+        raise ValueError(f"Atlas component-member table is empty: {component_members_path}")
+    mp_df, exact_map, alias_map = build_metapathways_lookup(combined_genome_df)
+    match_audit_df, matched_df = match_atlas_genomes_to_metapathways(
+        atlas_df=atlas_df,
+        mp_df=mp_df,
+        exact_map=exact_map,
+        alias_map=alias_map,
+        args=args,
+    )
+    candidates = prepare_denovo_phylogeny_candidates(matched_df)
+    candidates = annotate_denovo_best_representatives(candidates, output_dir)
+
+    output_dir = Path(output_dir)
+    phylogeny_root = output_dir / "denovo_phylogeny"
+    phylogeny_root.mkdir(parents=True, exist_ok=True)
+    wrote_paths = []
+
+    audit_path = phylogeny_root / "atlas_match_audit.tsv"
+    match_audit_df.to_csv(audit_path, sep="\t", index=False)
+    wrote_paths.append(audit_path)
+
+    candidate_path = phylogeny_root / "denovo_phylogeny_candidates.tsv"
+    candidates.to_csv(candidate_path, sep="\t", index=False)
+    wrote_paths.append(candidate_path)
+
+    best_mask = candidates["best_representative"].astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y"})
+    hq_mask = candidates["_tier_norm"].eq("high")
+    mq_or_better_mask = candidates["_tier_norm"].isin({"medium", "high"})
+    cohort_filters = [
+        ("hq_nonchimeric", hq_mask),
+        ("hq_nonchimeric_best_representatives", hq_mask & best_mask),
+        ("mq_nonchimeric", mq_or_better_mask),
+        ("mq_nonchimeric_best_representatives", mq_or_better_mask & best_mask),
+    ]
+    for cohort_name, cohort_mask in cohort_filters:
+        cohort_dir = phylogeny_root / cohort_name
+        selected_set_dir = cohort_dir / "selected_set"
+        cohort_df = candidates.loc[cohort_mask].copy().reset_index(drop=True)
+        cohort_df = deduplicate_phylogeny_rows(cohort_df)
+        if cohort_df.empty:
+            cohort_dir.mkdir(parents=True, exist_ok=True)
+            empty_path = cohort_dir / "selected_genomes.tsv"
+            cohort_df.to_csv(empty_path, sep="\t", index=False)
+            wrote_paths.append(empty_path)
+            continue
+        cohort_df, fasta_paths = export_selected_set_fastas(cohort_df, selected_set_dir)
+        selected_out = cohort_dir / "selected_genomes.tsv"
+        cohort_df.to_csv(selected_out, sep="\t", index=False)
+        wrote_paths.extend([selected_out] + fasta_paths)
+
+    return [path for path in wrote_paths if path]
 
 
 def build_metapathways_lookup(genome_summary_df):
@@ -1085,7 +2149,7 @@ def build_metapathways_lookup(genome_summary_df):
         .map(canonical_method_label)
     )
     working["_genome_key"] = working["genome_id"].astype(str).str.strip()
-    working["_alias_set"] = working["_genome_key"].apply(id_aliases)
+    working["_alias_set"] = working["_genome_key"].apply(lambda value: set(matching_id_aliases(value)))
 
     exact_map = {}
     alias_map = {}
@@ -1110,7 +2174,15 @@ def match_atlas_genomes_to_metapathways(atlas_df, mp_df, exact_map, alias_map, a
     use_alias_fallback = not bool(args.atlas_disable_alias_fallback)
 
     atlas_alias_columns = [genome_id_column]
-    for optional_column in ["SAG_ID", "Bin Id", "genome_id", "fasta_path", "ani_record_id", "ani_fasta_path"]:
+    for optional_column in [
+        "SAG_ID",
+        "Bin Id",
+        "genome_id",
+        "fasta_path",
+        "ani_record_id",
+        "ani_fasta_path",
+        "pre_ani_bin_key",
+    ]:
         if optional_column in atlas_df.columns and optional_column not in atlas_alias_columns:
             atlas_alias_columns.append(optional_column)
 
@@ -1118,7 +2190,7 @@ def match_atlas_genomes_to_metapathways(atlas_df, mp_df, exact_map, alias_map, a
     matched_mp_indices = []
     for atlas_idx, row in atlas_df.reset_index(drop=True).iterrows():
         sample_key = str(row.get(sample_column, "")).strip()
-        category_key = str(row.get(compare_column, "")).strip()
+        category_key = canonical_method_label(str(row.get(compare_column, "")).strip())
         genome_key = str(row.get(genome_id_column, "")).strip()
         group_key = (sample_key, category_key)
         raw_identifiers = set()
@@ -1151,7 +2223,7 @@ def match_atlas_genomes_to_metapathways(atlas_df, mp_df, exact_map, alias_map, a
                 alias_candidates = set()
                 alias_pool = set()
                 for raw_identifier in raw_identifiers:
-                    alias_pool.update(id_aliases(raw_identifier))
+                    alias_pool.update(matching_id_aliases(raw_identifier))
                 for alias in alias_pool:
                     alias_candidates.update(alias_map.get((group_key, alias), set()))
                 if len(alias_candidates) == 1:
@@ -1196,7 +2268,7 @@ def match_atlas_genomes_to_metapathways(atlas_df, mp_df, exact_map, alias_map, a
 
 
 def pair_sample_value(row):
-    for column in ["mp_sample", "sample", "_atlas_sample"]:
+    for column in ["linked_sample", "mp_sample", "sample", "_atlas_sample"]:
         value = str(row.get(column, "")).strip()
         if value and value.lower() != "nan":
             return value
@@ -1215,281 +2287,15 @@ def taxonomy_species_is_informative(value):
     return True
 
 
-def resolve_species_label(row):
-    species_value = str(row.get("Species", "")).strip()
-    if taxonomy_species_is_informative(species_value):
-        return species_value
-
-    for rank_column, value_column in [
-        ("mp_taxonomy_display_rank", "mp_taxonomy_display_value"),
-        ("taxonomy_display_rank", "taxonomy_display_value"),
-    ]:
-        rank_value = str(row.get(rank_column, "")).strip().lower()
-        value = str(row.get(value_column, "")).strip()
-        if rank_value == "species" and taxonomy_species_is_informative(value):
-            return value
-    return ""
-
-
-def build_species_representative_table(matched_df, compare_column):
-    if matched_df.empty:
-        return pd.DataFrame()
-    required = {"mp_genome_id", compare_column}
-    if not required.issubset(set(matched_df.columns)):
-        return pd.DataFrame()
-
-    working = matched_df.copy()
-    working["_pair_sample"] = working.apply(pair_sample_value, axis=1)
-    working["_species_label"] = working.apply(resolve_species_label, axis=1)
-    working[compare_column] = working[compare_column].astype(str).str.strip()
-    working["mp_genome_id"] = working["mp_genome_id"].astype(str).str.strip()
-
-    working = working.loc[
-        working["_pair_sample"].ne("")
-        & working["_species_label"].ne("")
-        & working[compare_column].ne("")
-        & working["mp_genome_id"].ne("")
-    ].copy()
-    if working.empty:
-        return pd.DataFrame()
-
-    sort_columns = []
-    ascending = []
-    for column in [
-        "mimag_quality_index",
-        "integrity_score",
-        "recoverability_score",
-        "qscore",
-        "mp_informative_annotation_fraction",
-        "mp_total_pathways",
-        "mp_marker_supported_orfs",
-        "mp_reference_mode_supported_accessions",
-    ]:
-        if column in working.columns:
-            sort_columns.append(column)
-            ascending.append(False)
-    sort_columns.extend(["mp_genome_id"])
-    ascending.extend([True])
-    working = working.sort_values(by=sort_columns, ascending=ascending, kind="mergesort")
-
-    selected = (
-        working.groupby(["_pair_sample", compare_column, "_species_label"], as_index=False, sort=False)
-        .head(1)
-        .reset_index(drop=True)
-    )
-    selected["sample"] = selected["_pair_sample"].astype(str)
-    selected["taxonomy_species"] = selected["_species_label"].astype(str)
-    selected["component_id"] = selected["taxonomy_species"].astype(str)
-    selected["selection_scope"] = "sample_method_species"
-    selected = selected.drop(columns=["_pair_sample", "_species_label"])
-    return selected
-
-
-def build_paired_component_table(matched_df, compare_column):
-    if matched_df.empty:
-        return pd.DataFrame()
-
-    rows = []
-    metric_specs = []
-    for metric, label in PAIRED_QC_METRICS:
-        if metric in matched_df.columns:
-            metric_specs.append((metric, metric, label))
-    for metric, label in PAIRED_FUNCTION_METRICS:
-        prefixed = f"mp_{metric}"
-        if prefixed in matched_df.columns:
-            metric_specs.append((metric, prefixed, label))
-
-    for component_id, group in matched_df.groupby("component_id", dropna=False):
-        component_rows = group.dropna(subset=["mp_genome_id"]).copy()
-        if component_rows.empty:
-            continue
-        for left_row, right_row in itertools.combinations(component_rows.to_dict("records"), 2):
-            sample_left = pair_sample_value(left_row)
-            sample_right = pair_sample_value(right_row)
-            if sample_left and sample_right and sample_left != sample_right:
-                continue
-            pair_sample = sample_left or sample_right
-            if not pair_sample:
-                continue
-            cat_left = str(left_row.get(compare_column, ""))
-            cat_right = str(right_row.get(compare_column, ""))
-            if not cat_left or not cat_right or cat_left == cat_right:
-                continue
-            if method_sort_key(cat_left) <= method_sort_key(cat_right):
-                row_a = left_row
-                row_b = right_row
-            else:
-                row_a = right_row
-                row_b = left_row
-
-            row = {
-                "component_id": component_id,
-                "category_a": str(row_a.get(compare_column, "")),
-                "category_b": str(row_b.get(compare_column, "")),
-                "sample": pair_sample,
-                "sample_a": sample_left,
-                "sample_b": sample_right,
-                "atlas_genome_a": str(row_a.get("_atlas_genome_id", "")),
-                "atlas_genome_b": str(row_b.get("_atlas_genome_id", "")),
-                "metapathways_genome_a": str(row_a.get("mp_genome_id", "")),
-                "metapathways_genome_b": str(row_b.get("mp_genome_id", "")),
-                "metapathways_label_a": str(row_a.get("mp_genome_label", "")),
-                "metapathways_label_b": str(row_b.get("mp_genome_label", "")),
-            }
-            for metric_key, metric_column, _ in metric_specs:
-                value_a = pd.to_numeric(pd.Series([row_a.get(metric_column)]), errors="coerce").iat[0]
-                value_b = pd.to_numeric(pd.Series([row_b.get(metric_column)]), errors="coerce").iat[0]
-                row[f"{metric_key}_a"] = value_a
-                row[f"{metric_key}_b"] = value_b
-                row[f"{metric_key}_delta"] = (
-                    value_a - value_b if pd.notna(value_a) and pd.notna(value_b) else np.nan
-                )
-            rows.append(row)
-
-    paired_df = pd.DataFrame(rows)
-    if not paired_df.empty:
-        paired_df["category_pair"] = paired_df["category_a"] + " | " + paired_df["category_b"]
-    return paired_df
-
-
-def summarize_paired_deltas(paired_df):
-    if paired_df.empty:
-        return pd.DataFrame()
-    delta_columns = [column for column in paired_df.columns if column.endswith("_delta")]
-    rows = []
-    for category_pair, group in paired_df.groupby("category_pair", dropna=False):
-        for delta_column in delta_columns:
-            series = pd.to_numeric(group[delta_column], errors="coerce").dropna()
-            if series.empty:
-                continue
-            rows.append(
-                {
-                    "category_pair": category_pair,
-                    "metric": delta_column[: -len("_delta")],
-                    "n_pairs": int(series.size),
-                    "median_delta": float(series.median()),
-                    "mean_delta": float(series.mean()),
-                    "std_delta": float(series.std(ddof=1)) if series.size > 1 else 0.0,
-                    "positive_fraction": float((series > 0).mean()),
-                }
-            )
-    return pd.DataFrame(rows)
-
-
-def heatmap_text_color(value, vmax):
-    if vmax <= 0:
-        return "black"
-    return "white" if float(value) >= (0.6 * float(vmax)) else "black"
-
-
-def plot_pair_count_heatmap(paired_df, output_base):
-    ensure_plotting()
-    if paired_df.empty:
+def taxonomy_value_is_informative(value):
+    text = str(value).strip()
+    if not text:
         return False
-
-    categories = ordered_methods(
-        set(paired_df["category_a"].astype(str)).union(set(paired_df["category_b"].astype(str)))
-    )
-    matrix = pd.DataFrame(0, index=categories, columns=categories, dtype=float)
-    pair_counts = (
-        paired_df.groupby(["category_a", "category_b"], dropna=False)
-        .size()
-        .reset_index(name="pair_count")
-    )
-    for row in pair_counts.itertuples(index=False):
-        matrix.at[row.category_a, row.category_b] = float(row.pair_count)
-        matrix.at[row.category_b, row.category_a] = float(row.pair_count)
-
-    plt_local = ensure_plotting()
-    fig, ax = plt_local.subplots(figsize=(max(7, len(categories) * 0.8), max(6, len(categories) * 0.7)))
-    vmax = max(1.0, float(np.nanmax(matrix.values)))
-    image = ax.imshow(matrix.values, cmap="Greys", vmin=0, vmax=vmax, aspect="auto")
-    ax.set_xticks(np.arange(len(categories)))
-    ax.set_xticklabels(categories, rotation=90)
-    ax.set_yticks(np.arange(len(categories)))
-    ax.set_yticklabels(categories)
-    ax.set_xlabel("Category")
-    ax.set_ylabel("Category")
-    ax.set_title("Like-to-like shared-best pair counts")
-    for row_index in range(len(categories)):
-        for col_index in range(len(categories)):
-            value = int(round(float(matrix.iat[row_index, col_index])))
-            color = heatmap_text_color(value, vmax)
-            ax.text(col_index, row_index, str(value), ha="center", va="center", fontsize=8, color=color)
-    cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
-    cbar.set_label("Pair count")
-    fig.subplots_adjust(left=0.08, right=0.99, top=0.95, bottom=0.16)
-    save_figure(fig, output_base)
-    return True
-
-
-def plot_paired_delta_heatmaps(paired_df, output_base):
-    ensure_plotting()
-    if paired_df.empty:
+    lowered = text.lower()
+    if lowered in {"nan", "none", "na", "n/a", "null", "unknown"}:
         return False
-    delta_columns = [column for column in paired_df.columns if column.endswith("_delta")]
-    if not delta_columns:
+    if lowered.startswith("unclassified"):
         return False
-
-    categories = ordered_methods(
-        set(paired_df["category_a"].astype(str)).union(set(paired_df["category_b"].astype(str)))
-    )
-    metric_columns = []
-    for metric, _ in PAIRED_QC_METRICS + PAIRED_FUNCTION_METRICS:
-        column = f"{metric}_delta"
-        if column in delta_columns and pd.to_numeric(paired_df[column], errors="coerce").notna().any():
-            metric_columns.append(column)
-    if not metric_columns:
-        return False
-
-    n_cols = min(4, len(metric_columns))
-    n_rows = int(np.ceil(len(metric_columns) / float(n_cols)))
-    plt_local = ensure_plotting()
-    fig, axes = plt_local.subplots(
-        n_rows,
-        n_cols,
-        figsize=(max(14, n_cols * 4.0), max(5.2, n_rows * 3.6)),
-        squeeze=False,
-    )
-
-    label_lookup = {key: label for key, label in PAIRED_QC_METRICS + PAIRED_FUNCTION_METRICS}
-    for index, delta_column in enumerate(metric_columns):
-        row_index = index // n_cols
-        col_index = index % n_cols
-        ax = axes[row_index, col_index]
-        metric = delta_column[: -len("_delta")]
-        matrix = pd.DataFrame(np.nan, index=categories, columns=categories, dtype=float)
-        for pair_row in paired_df[["category_a", "category_b", delta_column]].dropna().itertuples(index=False):
-            matrix.at[pair_row.category_a, pair_row.category_b] = float(pair_row[2])
-            matrix.at[pair_row.category_b, pair_row.category_a] = -float(pair_row[2])
-        for category in categories:
-            matrix.at[category, category] = 0.0
-
-        finite = np.abs(matrix.values[np.isfinite(matrix.values)])
-        vmax = max(1e-9, float(np.nanmax(finite)) if finite.size else 1.0)
-        image = ax.imshow(matrix.values, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
-        ax.set_xticks(np.arange(len(categories)))
-        ax.set_xticklabels(categories, rotation=90)
-        ax.set_yticks(np.arange(len(categories)))
-        ax.set_yticklabels(categories)
-        ax.set_title(label_lookup.get(metric, metric))
-        for r in range(len(categories)):
-            for c in range(len(categories)):
-                value = matrix.iat[r, c]
-                if not np.isfinite(value):
-                    continue
-                ax.text(c, r, f"{value:.2f}", ha="center", va="center", fontsize=7)
-        cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
-        cbar.set_label("Median delta (row - column)")
-
-    for index in range(len(metric_columns), n_rows * n_cols):
-        row_index = index // n_cols
-        col_index = index % n_cols
-        axes[row_index, col_index].axis("off")
-
-    fig.suptitle("Like-to-like paired metric differences", fontsize=15, y=0.99)
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
-    save_figure(fig, output_base)
     return True
 
 
@@ -1506,1454 +2312,6 @@ def method_variant_flag(method_name):
     value = str(method_name).strip().lower()
     variant_tokens = ["xpg", "variant"]
     return any(token in value for token in variant_tokens)
-
-
-def select_focus_method_pairs(paired_df):
-    if paired_df.empty:
-        return pd.DataFrame()
-    required = {"category_a", "category_b"}
-    if not required.issubset(set(paired_df.columns)):
-        return pd.DataFrame()
-
-    pair_counts = (
-        paired_df.groupby(["category_a", "category_b"], dropna=False)
-        .size()
-        .reset_index(name="pair_count")
-    )
-    if pair_counts.empty:
-        return pd.DataFrame()
-
-    rows = []
-    for family in ["MAG", "SAG"]:
-        family_lower = family.lower()
-        family_pairs = pair_counts.loc[
-            pair_counts["category_a"].astype(str).str.lower().str.contains(family_lower)
-            & pair_counts["category_b"].astype(str).str.lower().str.contains(family_lower)
-        ].copy()
-        if family_pairs.empty:
-            continue
-        family_pairs["variant_a"] = family_pairs["category_a"].map(method_variant_flag)
-        family_pairs["variant_b"] = family_pairs["category_b"].map(method_variant_flag)
-        preferred = family_pairs.loc[
-            family_pairs["variant_a"].ne(family_pairs["variant_b"])
-        ].copy()
-        candidate = preferred if not preferred.empty else family_pairs
-        candidate = candidate.sort_values(
-            by=["pair_count", "category_a", "category_b"],
-            ascending=[False, True, True],
-            kind="mergesort",
-        ).reset_index(drop=True)
-        if candidate.empty:
-            continue
-        best = candidate.iloc[0]
-        rows.append(
-            {
-                "focus_family": family,
-                "category_a": str(best["category_a"]),
-                "category_b": str(best["category_b"]),
-                "pair_count": int(best["pair_count"]),
-                "selected_variant_contrast": bool(
-                    method_variant_flag(best["category_a"]) != method_variant_flag(best["category_b"])
-                ),
-                "category_pair": f"{best['category_a']} | {best['category_b']}",
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def plot_focus_pair_metric_scatter_grid(
-    paired_df,
-    metric_specs,
-    category_a,
-    category_b,
-    output_base,
-    title,
-):
-    ensure_plotting()
-    if paired_df.empty:
-        return False
-
-    available_specs = []
-    for metric, label in metric_specs:
-        col_a = f"{metric}_a"
-        col_b = f"{metric}_b"
-        if col_a in paired_df.columns and col_b in paired_df.columns:
-            series_a = pd.to_numeric(paired_df[col_a], errors="coerce")
-            series_b = pd.to_numeric(paired_df[col_b], errors="coerce")
-            if series_a.notna().any() and series_b.notna().any():
-                available_specs.append((metric, label))
-    if not available_specs:
-        return False
-
-    n_cols = min(3, len(available_specs))
-    n_rows = int(np.ceil(len(available_specs) / float(n_cols)))
-    plt_local = ensure_plotting()
-    fig, axes = plt_local.subplots(
-        n_rows,
-        n_cols,
-        figsize=(max(11, n_cols * 4.2), max(5.5, n_rows * 3.9)),
-        squeeze=False,
-    )
-
-    for index, (metric, metric_label) in enumerate(available_specs):
-        row_index = index // n_cols
-        col_index = index % n_cols
-        ax = axes[row_index, col_index]
-        col_a = f"{metric}_a"
-        col_b = f"{metric}_b"
-        plot_df = paired_df[[col_a, col_b]].copy()
-        plot_df[col_a] = pd.to_numeric(plot_df[col_a], errors="coerce")
-        plot_df[col_b] = pd.to_numeric(plot_df[col_b], errors="coerce")
-        plot_df = plot_df.dropna(subset=[col_a, col_b])
-        if plot_df.empty:
-            ax.axis("off")
-            continue
-
-        x_values = plot_df[col_a].values
-        y_values = plot_df[col_b].values
-        min_value = float(min(np.nanmin(x_values), np.nanmin(y_values)))
-        max_value = float(max(np.nanmax(x_values), np.nanmax(y_values)))
-        span = max(1e-9, max_value - min_value)
-        pad = span * 0.05
-        x_min = min_value - pad
-        x_max = max_value + pad
-
-        ax.scatter(
-            x_values,
-            y_values,
-            s=22,
-            color="#4d4d4d",
-            edgecolors="black",
-            linewidths=0.25,
-            alpha=0.85,
-        )
-        ax.plot([x_min, x_max], [x_min, x_max], linestyle="--", color="black", linewidth=0.9, alpha=0.8)
-        ax.set_xlim(x_min, x_max)
-        ax.set_ylim(x_min, x_max)
-        ax.set_xlabel(category_a)
-        ax.set_ylabel(category_b)
-        ax.set_title(metric_label)
-        ax.grid(color="#e5e5e5", linewidth=0.6, linestyle="-")
-
-        n_points = int(plot_df.shape[0])
-        median_delta = float(np.median(x_values - y_values))
-        ax.text(
-            0.02,
-            0.98,
-            f"n={n_points}; median delta={median_delta:.2f}",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=8,
-            bbox={"facecolor": "white", "edgecolor": "#999999", "alpha": 0.8, "pad": 2.0},
-        )
-
-    for index in range(len(available_specs), n_rows * n_cols):
-        row_index = index // n_cols
-        col_index = index % n_cols
-        axes[row_index, col_index].axis("off")
-
-    n_components = int(paired_df["component_id"].nunique()) if "component_id" in paired_df.columns else int(len(paired_df))
-    fig.suptitle(f"{title} (shared components={n_components})", fontsize=14, y=0.995)
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
-    save_figure(fig, output_base)
-    return True
-
-
-def build_focus_genome_axis_delta_table(focus_pair_df, category_a, category_b, metric_specs):
-    if focus_pair_df.empty:
-        return pd.DataFrame()
-
-    category_a_is_variant = method_variant_flag(category_a)
-    category_b_is_variant = method_variant_flag(category_b)
-    invert_sign = bool(category_a_is_variant and not category_b_is_variant)
-    baseline_category = category_b if invert_sign else category_a
-    contrast_category = category_a if invert_sign else category_b
-
-    rows = []
-    for row in focus_pair_df.to_dict("records"):
-        sample_value = str(row.get("sample", "")).strip()
-        component_id = str(row.get("component_id", "")).strip()
-        component_label = f"{sample_value} | {component_id}" if sample_value else component_id
-        out_row = {
-            "sample": sample_value,
-            "component_id": component_id,
-            "component_label": component_label,
-            "baseline_category": str(baseline_category),
-            "contrast_category": str(contrast_category),
-            "category_a": str(category_a),
-            "category_b": str(category_b),
-            "orientation": f"{baseline_category} - {contrast_category}",
-            "atlas_genome_baseline": str(row.get("atlas_genome_b" if invert_sign else "atlas_genome_a", "")),
-            "atlas_genome_contrast": str(row.get("atlas_genome_a" if invert_sign else "atlas_genome_b", "")),
-            "metapathways_genome_baseline": str(
-                row.get("metapathways_genome_b" if invert_sign else "metapathways_genome_a", "")
-            ),
-            "metapathways_genome_contrast": str(
-                row.get("metapathways_genome_a" if invert_sign else "metapathways_genome_b", "")
-            ),
-        }
-        for metric, _label in metric_specs:
-            delta_column = f"{metric}_delta"
-            delta_value = pd.to_numeric(pd.Series([row.get(delta_column)]), errors="coerce").iat[0]
-            if pd.notna(delta_value) and invert_sign:
-                delta_value = -float(delta_value)
-            out_row[f"{metric}_delta"] = delta_value
-        rows.append(out_row)
-
-    delta_df = pd.DataFrame(rows)
-    if delta_df.empty:
-        return delta_df
-    delta_df = delta_df.sort_values(by=["sample", "component_id"], ascending=[True, True], kind="mergesort").reset_index(drop=True)
-    return delta_df
-
-
-def plot_focus_genome_axis_delta_heatmap(delta_df, metric_specs, output_base, title):
-    ensure_plotting()
-    if delta_df.empty:
-        return False
-
-    metric_columns = []
-    metric_labels = []
-    for metric, label in metric_specs:
-        column = f"{metric}_delta"
-        if column in delta_df.columns and pd.to_numeric(delta_df[column], errors="coerce").notna().any():
-            metric_columns.append(column)
-            metric_labels.append(label)
-    if not metric_columns:
-        return False
-
-    matrix = delta_df[metric_columns].copy()
-    matrix = matrix.apply(pd.to_numeric, errors="coerce")
-    if matrix.empty:
-        return False
-    color_matrix = matrix.copy()
-    for column in color_matrix.columns:
-        series = pd.to_numeric(color_matrix[column], errors="coerce")
-        finite = np.abs(series.values[np.isfinite(series.values)])
-        column_max_abs = float(np.nanmax(finite)) if finite.size else 0.0
-        if column_max_abs <= 0:
-            color_matrix[column] = 0.0
-        else:
-            color_matrix[column] = series / column_max_abs
-
-    row_labels = delta_df["component_label"].astype(str).tolist()
-    n_rows = matrix.shape[0]
-    n_cols = matrix.shape[1]
-    y_font = 8 if n_rows <= 70 else 6 if n_rows <= 180 else 5
-    x_font = 9 if n_cols <= 6 else 8
-
-    vmax = 1.0
-
-    plt_local = ensure_plotting()
-    fig, ax = plt_local.subplots(
-        figsize=(max(10, n_cols * 1.8 + 3), max(6, n_rows * 0.22)),
-    )
-    image = ax.imshow(color_matrix.values, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
-    ax.set_xticks(np.arange(n_cols))
-    ax.set_xticklabels(metric_labels, rotation=90, fontsize=x_font)
-    ax.set_yticks(np.arange(n_rows))
-    ax.set_yticklabels(row_labels, fontsize=y_font)
-    ax.set_xlabel("Metric")
-    ax.set_ylabel("Sample | Genome component")
-    ax.set_title(title)
-
-    if n_rows <= 50 and n_cols <= 8:
-        for row_index in range(n_rows):
-            for col_index in range(n_cols):
-                value = matrix.iat[row_index, col_index]
-                if pd.isna(value):
-                    continue
-                scaled_value = color_matrix.iat[row_index, col_index]
-                ax.text(
-                    col_index,
-                    row_index,
-                    f"{float(value):.2f}",
-                    ha="center",
-                    va="center",
-                    fontsize=7,
-                    color=("white" if abs(float(scaled_value)) >= 0.6 else "black"),
-                )
-
-    cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
-    cbar.set_label("Column-scaled delta (baseline - contrast)")
-    fig.subplots_adjust(left=0.34, right=0.99, top=0.95, bottom=0.2)
-    save_figure(fig, output_base)
-    return True
-
-
-def _row_explicit_id_aliases(row):
-    alias_columns = [
-        "_atlas_genome_id",
-        "Genome_Id",
-        "SAG_ID",
-        "Bin Id",
-        "genome_id",
-        "mp_genome_id",
-        "mp_genome_label",
-        "fasta_path",
-        "ani_record_id",
-        "ani_fasta_path",
-    ]
-    aliases = set()
-    for column in alias_columns:
-        if column not in row:
-            continue
-        raw_value = str(row.get(column, "")).strip()
-        if not raw_value:
-            continue
-        if raw_value.lower() in {"nan", "none", "null", "na", "n/a"}:
-            continue
-        if column in {"fasta_path", "ani_fasta_path"}:
-            raw_value = Path(raw_value).name
-        aliases.update(id_aliases(raw_value))
-
-    cleaned = set()
-    for alias in aliases:
-        text = str(alias).strip()
-        if not text:
-            continue
-        if text.lower() in {"nan", "none", "null", "na", "n/a"}:
-            continue
-        if len(text) < 3:
-            continue
-        cleaned.add(text)
-    return cleaned
-
-
-def _preferred_alias_label(alias_set, fallback_value):
-    aliases = sorted(
-        list(alias_set),
-        key=lambda value: ("." in value, "/" in value, len(value), value),
-    )
-    if aliases:
-        return aliases[0]
-    return str(fallback_value).strip()
-
-
-def _metric_column_specs_for_pairing(frame):
-    specs = []
-    for metric, label in PAIRED_QC_METRICS:
-        if metric in frame.columns:
-            specs.append((metric, metric, label))
-    for metric, label in PAIRED_FUNCTION_METRICS:
-        mp_column = f"mp_{metric}"
-        if mp_column in frame.columns:
-            specs.append((metric, mp_column, label))
-    return specs
-
-
-def build_focus_explicit_id_pair_tables(source_df, compare_column, category_a, category_b):
-    if source_df.empty or compare_column not in source_df.columns:
-        return pd.DataFrame(), pd.DataFrame()
-
-    category_a = str(category_a).strip()
-    category_b = str(category_b).strip()
-    if not category_a or not category_b:
-        return pd.DataFrame(), pd.DataFrame()
-
-    category_a_is_variant = method_variant_flag(category_a)
-    category_b_is_variant = method_variant_flag(category_b)
-    invert_sign = bool(category_a_is_variant and not category_b_is_variant)
-    baseline_category = category_b if invert_sign else category_a
-    contrast_category = category_a if invert_sign else category_b
-
-    working = source_df.copy()
-    working["_sample_key"] = working.apply(pair_sample_value, axis=1)
-    working["_category_key"] = (
-        working[compare_column]
-        .astype(str)
-        .str.strip()
-        .map(canonical_method_label)
-    )
-    working = working.loc[
-        working["_sample_key"].ne("")
-        & working["_category_key"].isin([baseline_category, contrast_category])
-    ].copy()
-    if working.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    working["_mapping_aliases"] = working.apply(_row_explicit_id_aliases, axis=1)
-    working = working.loc[working["_mapping_aliases"].map(bool)].copy()
-    if working.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    metric_specs = _metric_column_specs_for_pairing(working)
-    baseline_df = working.loc[working["_category_key"].eq(baseline_category)].copy()
-    contrast_df = working.loc[working["_category_key"].eq(contrast_category)].copy()
-    if baseline_df.empty or contrast_df.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    audit_rows = []
-    pair_rows = []
-    for sample_value in sorted(set(baseline_df["_sample_key"]).union(set(contrast_df["_sample_key"]))):
-        baseline_sample = baseline_df.loc[baseline_df["_sample_key"].eq(sample_value)].copy().reset_index(drop=True)
-        contrast_sample = contrast_df.loc[contrast_df["_sample_key"].eq(sample_value)].copy().reset_index(drop=True)
-        if baseline_sample.empty or contrast_sample.empty:
-            continue
-
-        contrast_alias_index = {}
-        contrast_records = contrast_sample.to_dict("records")
-        for index, record in enumerate(contrast_records):
-            for alias in record.get("_mapping_aliases", set()):
-                contrast_alias_index.setdefault(alias, set()).add(index)
-
-        proposals = []
-        for baseline_index, baseline_record in enumerate(baseline_sample.to_dict("records")):
-            baseline_aliases = set(baseline_record.get("_mapping_aliases", set()))
-            candidate_indices = set()
-            for alias in baseline_aliases:
-                candidate_indices.update(contrast_alias_index.get(alias, set()))
-
-            base_id = str(baseline_record.get("_atlas_genome_id", "") or baseline_record.get("mp_genome_id", ""))
-            if not candidate_indices:
-                audit_rows.append(
-                    {
-                        "sample": sample_value,
-                        "baseline_category": baseline_category,
-                        "contrast_category": contrast_category,
-                        "baseline_genome": base_id,
-                        "status": "unmatched",
-                        "candidate_count": 0,
-                        "mapping_alias": "",
-                    }
-                )
-                continue
-
-            scored = []
-            for contrast_index in sorted(candidate_indices):
-                contrast_record = contrast_records[contrast_index]
-                overlap = baseline_aliases & set(contrast_record.get("_mapping_aliases", set()))
-                if not overlap:
-                    continue
-                scored.append((contrast_index, len(overlap), sorted(overlap)[0]))
-
-            if not scored:
-                audit_rows.append(
-                    {
-                        "sample": sample_value,
-                        "baseline_category": baseline_category,
-                        "contrast_category": contrast_category,
-                        "baseline_genome": base_id,
-                        "status": "unmatched",
-                        "candidate_count": 0,
-                        "mapping_alias": "",
-                    }
-                )
-                continue
-
-            max_overlap = max(item[1] for item in scored)
-            top_scored = [item for item in scored if item[1] == max_overlap]
-            if len(top_scored) > 1:
-                audit_rows.append(
-                    {
-                        "sample": sample_value,
-                        "baseline_category": baseline_category,
-                        "contrast_category": contrast_category,
-                        "baseline_genome": base_id,
-                        "status": "ambiguous",
-                        "candidate_count": int(len(top_scored)),
-                        "mapping_alias": "",
-                    }
-                )
-                continue
-
-            selected_index, overlap_count, alias_value = top_scored[0]
-            proposals.append(
-                {
-                    "baseline_index": baseline_index,
-                    "contrast_index": selected_index,
-                    "overlap_count": int(overlap_count),
-                    "mapping_alias": alias_value,
-                }
-            )
-
-        if not proposals:
-            continue
-
-        by_contrast_index = {}
-        for proposal in proposals:
-            by_contrast_index.setdefault(proposal["contrast_index"], []).append(proposal)
-
-        final_pairs = []
-        for contrast_index, grouped in by_contrast_index.items():
-            if len(grouped) == 1:
-                final_pairs.append(grouped[0])
-                continue
-            grouped = sorted(grouped, key=lambda item: (-item["overlap_count"], item["baseline_index"]))
-            winner = grouped[0]
-            final_pairs.append(winner)
-            for rejected in grouped[1:]:
-                rejected_row = baseline_sample.iloc[int(rejected["baseline_index"])]
-                rejected_id = str(rejected_row.get("_atlas_genome_id", "") or rejected_row.get("mp_genome_id", ""))
-                audit_rows.append(
-                    {
-                        "sample": sample_value,
-                        "baseline_category": baseline_category,
-                        "contrast_category": contrast_category,
-                        "baseline_genome": rejected_id,
-                        "status": "duplicate_conflict",
-                        "candidate_count": int(len(grouped)),
-                        "mapping_alias": str(rejected.get("mapping_alias", "")),
-                    }
-                )
-
-        for pair in final_pairs:
-            baseline_record = baseline_sample.iloc[int(pair["baseline_index"])].to_dict()
-            contrast_record = contrast_records[int(pair["contrast_index"])]
-            mapping_alias = str(pair.get("mapping_alias", "")).strip()
-            baseline_aliases = set(baseline_record.get("_mapping_aliases", set()))
-            contrast_aliases = set(contrast_record.get("_mapping_aliases", set()))
-            alias_for_label = _preferred_alias_label(
-                baseline_aliases & contrast_aliases,
-                mapping_alias or baseline_record.get("_atlas_genome_id", ""),
-            )
-            component_label = f"{sample_value} | {alias_for_label}" if sample_value else alias_for_label
-
-            row = {
-                "sample": sample_value,
-                "component_id": alias_for_label,
-                "component_label": component_label,
-                "mapping_alias": mapping_alias,
-                "overlap_count": int(pair.get("overlap_count", 0)),
-                "baseline_category": baseline_category,
-                "contrast_category": contrast_category,
-                "category_a": baseline_category,
-                "category_b": contrast_category,
-                "orientation": f"{baseline_category} - {contrast_category}",
-                "atlas_genome_baseline": str(
-                    baseline_record.get("_atlas_genome_id", "") or baseline_record.get("Genome_Id", "")
-                ),
-                "atlas_genome_contrast": str(
-                    contrast_record.get("_atlas_genome_id", "") or contrast_record.get("Genome_Id", "")
-                ),
-                "metapathways_genome_baseline": str(baseline_record.get("mp_genome_id", "")),
-                "metapathways_genome_contrast": str(contrast_record.get("mp_genome_id", "")),
-            }
-            for metric_key, metric_column, _metric_label in metric_specs:
-                value_baseline = pd.to_numeric(pd.Series([baseline_record.get(metric_column)]), errors="coerce").iat[0]
-                value_contrast = pd.to_numeric(pd.Series([contrast_record.get(metric_column)]), errors="coerce").iat[0]
-                row[f"{metric_key}_baseline"] = value_baseline
-                row[f"{metric_key}_contrast"] = value_contrast
-                row[f"{metric_key}_delta"] = (
-                    value_baseline - value_contrast
-                    if pd.notna(value_baseline) and pd.notna(value_contrast)
-                    else np.nan
-                )
-            pair_rows.append(row)
-            audit_rows.append(
-                {
-                    "sample": sample_value,
-                    "baseline_category": baseline_category,
-                    "contrast_category": contrast_category,
-                    "baseline_genome": row["atlas_genome_baseline"] or row["metapathways_genome_baseline"],
-                    "contrast_genome": row["atlas_genome_contrast"] or row["metapathways_genome_contrast"],
-                    "status": "matched",
-                    "candidate_count": 1,
-                    "mapping_alias": mapping_alias,
-                    "overlap_count": int(pair.get("overlap_count", 0)),
-                }
-            )
-
-    audit_df = pd.DataFrame(audit_rows)
-    pair_df = pd.DataFrame(pair_rows)
-    if not audit_df.empty:
-        audit_df = audit_df.sort_values(
-            by=["sample", "status", "baseline_genome"],
-            ascending=[True, True, True],
-            kind="mergesort",
-        ).reset_index(drop=True)
-    if not pair_df.empty:
-        pair_df = pair_df.sort_values(
-            by=["sample", "component_id"],
-            ascending=[True, True],
-            kind="mergesort",
-        ).reset_index(drop=True)
-    return audit_df, pair_df
-
-
-def plot_focus_before_after_lines(pair_df, metric_specs, output_base, title):
-    ensure_plotting()
-    if pair_df.empty:
-        return False
-
-    available = []
-    for metric, label in metric_specs:
-        baseline_col = f"{metric}_baseline"
-        contrast_col = f"{metric}_contrast"
-        if baseline_col in pair_df.columns and contrast_col in pair_df.columns:
-            baseline_series = pd.to_numeric(pair_df[baseline_col], errors="coerce")
-            contrast_series = pd.to_numeric(pair_df[contrast_col], errors="coerce")
-            if baseline_series.notna().any() and contrast_series.notna().any():
-                available.append((metric, label))
-    if not available:
-        return False
-
-    n_cols = min(3, len(available))
-    n_rows = int(np.ceil(len(available) / float(n_cols)))
-    baseline_label = str(pair_df["baseline_category"].iloc[0]) if "baseline_category" in pair_df.columns else "Before"
-    contrast_label = str(pair_df["contrast_category"].iloc[0]) if "contrast_category" in pair_df.columns else "After"
-    n_pairs = int(pair_df.shape[0])
-    alpha = 0.35 if n_pairs <= 200 else 0.2
-
-    plt_local = ensure_plotting()
-    fig, axes = plt_local.subplots(
-        n_rows,
-        n_cols,
-        figsize=(max(11, n_cols * 4.2), max(5.5, n_rows * 3.8)),
-        squeeze=False,
-    )
-    for index, (metric, metric_label) in enumerate(available):
-        row_index = index // n_cols
-        col_index = index % n_cols
-        ax = axes[row_index, col_index]
-        baseline_col = f"{metric}_baseline"
-        contrast_col = f"{metric}_contrast"
-        plotting = pair_df[[baseline_col, contrast_col]].copy()
-        plotting[baseline_col] = pd.to_numeric(plotting[baseline_col], errors="coerce")
-        plotting[contrast_col] = pd.to_numeric(plotting[contrast_col], errors="coerce")
-        plotting = plotting.dropna(subset=[baseline_col, contrast_col])
-        if plotting.empty:
-            ax.axis("off")
-            continue
-
-        x_values = np.array([0.0, 1.0], dtype=float)
-        for values in plotting[[baseline_col, contrast_col]].to_numpy():
-            ax.plot(
-                x_values,
-                values,
-                color="#7a7a7a",
-                linewidth=0.7,
-                alpha=alpha,
-                zorder=1,
-            )
-        ax.scatter(
-            np.zeros(len(plotting)),
-            plotting[baseline_col].values,
-            s=10,
-            color="#4d4d4d",
-            alpha=0.7,
-            zorder=2,
-        )
-        ax.scatter(
-            np.ones(len(plotting)),
-            plotting[contrast_col].values,
-            s=10,
-            color="#1f1f1f",
-            alpha=0.7,
-            zorder=2,
-        )
-        ax.set_xticks([0.0, 1.0])
-        ax.set_xticklabels([baseline_label, contrast_label], rotation=20)
-        ax.set_title(metric_label)
-        ax.grid(axis="y", color="#e5e5e5", linewidth=0.6)
-
-        median_delta = float(np.median(plotting[baseline_col].values - plotting[contrast_col].values))
-        ax.text(
-            0.02,
-            0.98,
-            f"n={int(plotting.shape[0])}; median delta={median_delta:.2f}",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=8,
-            bbox={"facecolor": "white", "edgecolor": "#999999", "alpha": 0.8, "pad": 2.0},
-        )
-
-    for index in range(len(available), n_rows * n_cols):
-        row_index = index // n_cols
-        col_index = index % n_cols
-        axes[row_index, col_index].axis("off")
-
-    fig.suptitle(f"{title} (mapped pairs={n_pairs})", fontsize=14, y=0.995)
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
-    save_figure(fig, output_base)
-    return True
-
-
-def summarize_idmap_sample_method_mean_deltas(pair_df, metric_specs, focus_family):
-    if pair_df.empty:
-        return pd.DataFrame()
-    required = {"sample", "baseline_category", "contrast_category", "orientation"}
-    if not required.issubset(set(pair_df.columns)):
-        return pd.DataFrame()
-
-    rows = []
-    group_columns = ["sample", "baseline_category", "contrast_category", "orientation"]
-    for group_values, group in pair_df.groupby(group_columns, dropna=False):
-        sample_value, baseline_category, contrast_category, orientation = group_values
-        for metric, metric_label in metric_specs:
-            delta_column = f"{metric}_delta"
-            if delta_column not in group.columns:
-                continue
-            series = pd.to_numeric(group[delta_column], errors="coerce").dropna()
-            if series.empty:
-                continue
-            rows.append(
-                {
-                    "focus_family": str(focus_family),
-                    "sample": str(sample_value),
-                    "baseline_category": str(baseline_category),
-                    "contrast_category": str(contrast_category),
-                    "orientation": str(orientation),
-                    "metric": str(metric),
-                    "metric_label": str(metric_label),
-                    "n_pairs": int(series.size),
-                    "mean_delta": float(series.mean()),
-                    "median_delta": float(series.median()),
-                }
-            )
-    summary_df = pd.DataFrame(rows)
-    if summary_df.empty:
-        return summary_df
-    summary_df["sample_method"] = summary_df.apply(
-        lambda row: f"{row['sample']} | {row['orientation']}",
-        axis=1,
-    )
-    return summary_df
-
-
-def plot_idmap_sample_method_delta_heatmap(summary_df, metric_specs, output_base, title):
-    ensure_plotting()
-    if summary_df.empty:
-        return False
-    required = {"sample_method", "metric", "metric_label", "mean_delta"}
-    if not required.issubset(set(summary_df.columns)):
-        return False
-
-    metric_order = []
-    metric_label_lookup = {}
-    for metric, label in metric_specs:
-        metric_order.append(metric)
-        metric_label_lookup[metric] = label
-    working = summary_df.copy()
-    working["metric"] = working["metric"].astype(str)
-    working["sample_method"] = working["sample_method"].astype(str)
-    working["mean_delta"] = pd.to_numeric(working["mean_delta"], errors="coerce")
-    working = working.dropna(subset=["mean_delta"])
-    if working.empty:
-        return False
-
-    row_order = (
-        working[["sample_method", "focus_family", "sample", "orientation"]]
-        .drop_duplicates()
-        .sort_values(by=["focus_family", "sample", "orientation"], ascending=[True, True, True], kind="mergesort")
-        ["sample_method"]
-        .tolist()
-    )
-    matrix = (
-        working.pivot_table(
-            index="sample_method",
-            columns="metric",
-            values="mean_delta",
-            aggfunc="mean",
-        )
-        .reindex(index=row_order)
-        .reindex(columns=metric_order)
-    )
-    matrix = matrix.rename(columns=metric_label_lookup)
-    if matrix.empty:
-        return False
-
-    color_matrix = matrix.copy()
-    for column in color_matrix.columns:
-        series = pd.to_numeric(color_matrix[column], errors="coerce")
-        finite = np.abs(series.values[np.isfinite(series.values)])
-        max_abs = float(np.nanmax(finite)) if finite.size else 0.0
-        if max_abs <= 0:
-            color_matrix[column] = 0.0
-        else:
-            color_matrix[column] = series / max_abs
-
-    n_rows = matrix.shape[0]
-    n_cols = matrix.shape[1]
-    y_font = 8 if n_rows <= 70 else 6 if n_rows <= 180 else 5
-    x_font = 9 if n_cols <= 7 else 8
-    plt_local = ensure_plotting()
-    fig, ax = plt_local.subplots(
-        figsize=(max(10, n_cols * 1.9 + 3), max(6, n_rows * 0.24)),
-    )
-    image = ax.imshow(color_matrix.values, cmap="RdBu_r", vmin=-1.0, vmax=1.0, aspect="auto")
-    ax.set_xticks(np.arange(n_cols))
-    ax.set_xticklabels(matrix.columns.astype(str).tolist(), rotation=90, fontsize=x_font)
-    ax.set_yticks(np.arange(n_rows))
-    ax.set_yticklabels(matrix.index.astype(str).tolist(), fontsize=y_font)
-    ax.set_xlabel("Metric")
-    ax.set_ylabel("Sample | Method delta")
-    ax.set_title(title)
-
-    if n_rows <= 60 and n_cols <= 8:
-        for row_index in range(n_rows):
-            for col_index in range(n_cols):
-                raw_value = matrix.iat[row_index, col_index]
-                if pd.isna(raw_value):
-                    continue
-                scaled_value = color_matrix.iat[row_index, col_index]
-                ax.text(
-                    col_index,
-                    row_index,
-                    f"{float(raw_value):.2f}",
-                    ha="center",
-                    va="center",
-                    fontsize=7,
-                    color=("white" if abs(float(scaled_value)) >= 0.6 else "black"),
-                )
-
-    cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
-    cbar.set_label("Column-scaled mean delta")
-    fig.subplots_adjust(left=0.34, right=0.99, top=0.95, bottom=0.2)
-    save_figure(fig, output_base)
-    return True
-
-
-def build_method_overlap_entities(matched_df, compare_column):
-    if matched_df.empty:
-        return pd.DataFrame(), []
-    required = {"component_id", compare_column}
-    if not required.issubset(set(matched_df.columns)):
-        return pd.DataFrame(), []
-
-    working = matched_df.copy()
-    working["_sample_key"] = working.apply(pair_sample_value, axis=1)
-    working["_category_key"] = (
-        working[compare_column]
-        .astype(str)
-        .str.strip()
-        .map(canonical_method_label)
-    )
-    working["component_id"] = working["component_id"].astype(str).str.strip()
-    working = working.loc[
-        working["_sample_key"].ne("") & working["_category_key"].ne("") & working["component_id"].ne("")
-    ].copy()
-    if working.empty:
-        return pd.DataFrame(), []
-
-    method_counts = working["_category_key"].value_counts(dropna=False).to_dict()
-    methods = ordered_methods(working["_category_key"].unique().tolist(), counts=method_counts)
-    rows = []
-    grouped = (
-        working.groupby(["_sample_key", "component_id"], dropna=False)["_category_key"]
-        .agg(lambda values: ordered_methods(set(values)))
-        .reset_index()
-    )
-    for row in grouped.to_dict("records"):
-        sample_value = str(row.get("_sample_key", ""))
-        component_id = str(row.get("component_id", ""))
-        present_methods = list(row.get("_category_key", []))
-        present_set = set(present_methods)
-        out_row = {
-            "sample": sample_value,
-            "component_id": component_id,
-            "entity_id": f"{sample_value}|{component_id}",
-            "present_methods": ";".join(present_methods),
-            "present_method_count": len(present_methods),
-        }
-        for method in methods:
-            out_row[f"is_{sanitize_label(method)}"] = int(method in present_set)
-        rows.append(out_row)
-
-    return pd.DataFrame(rows), methods
-
-
-def summarize_method_overlap_intersections(entity_df, methods):
-    if entity_df.empty or not methods:
-        return pd.DataFrame(), {}
-    method_columns = [f"is_{sanitize_label(method)}" for method in methods]
-    for column in method_columns:
-        if column not in entity_df.columns:
-            return pd.DataFrame(), {}
-
-    method_sizes = {}
-    for method, column in zip(methods, method_columns):
-        method_sizes[method] = int(pd.to_numeric(entity_df[column], errors="coerce").fillna(0).sum())
-
-    counts = {}
-    for row in entity_df.to_dict("records"):
-        present_methods = tuple(
-            method for method, column in zip(methods, method_columns)
-            if int(pd.to_numeric(pd.Series([row.get(column, 0)]), errors="coerce").fillna(0).iat[0]) > 0
-        )
-        if not present_methods:
-            continue
-        counts[present_methods] = counts.get(present_methods, 0) + 1
-
-    rows = []
-    for present_methods, count in counts.items():
-        row = {
-            "intersection_methods": ";".join(present_methods),
-            "intersection_size": int(len(present_methods)),
-            "entity_count": int(count),
-        }
-        for method in methods:
-            row[f"is_{sanitize_label(method)}"] = int(method in present_methods)
-        rows.append(row)
-
-    summary_df = pd.DataFrame(rows)
-    if summary_df.empty:
-        return summary_df, method_sizes
-    summary_df = summary_df.sort_values(
-        by=["entity_count", "intersection_size", "intersection_methods"],
-        ascending=[False, False, True],
-        kind="mergesort",
-    ).reset_index(drop=True)
-    return summary_df, method_sizes
-
-
-def plot_method_overlap_upset(intersections_df, methods, method_sizes, output_base, title):
-    ensure_plotting()
-    if intersections_df.empty or not methods:
-        return False
-
-    plot_df = intersections_df.copy().reset_index(drop=True)
-    x_positions = np.arange(len(plot_df))
-    method_columns = [f"is_{sanitize_label(method)}" for method in methods]
-    y_positions = np.arange(len(methods))
-
-    plt_local = ensure_plotting()
-    fig = plt_local.figure(figsize=(max(12, len(plot_df) * 0.5), max(7.5, len(methods) * 0.65 + 3.5)))
-    grid = fig.add_gridspec(
-        nrows=2,
-        ncols=2,
-        width_ratios=[1.8, 5.5],
-        height_ratios=[3.2, 2.2],
-        hspace=0.06,
-        wspace=0.08,
-    )
-    ax_blank = fig.add_subplot(grid[0, 0])
-    ax_top = fig.add_subplot(grid[0, 1])
-    ax_set = fig.add_subplot(grid[1, 0])
-    ax_matrix = fig.add_subplot(grid[1, 1], sharex=ax_top)
-    ax_blank.axis("off")
-
-    counts = pd.to_numeric(plot_df["entity_count"], errors="coerce").fillna(0.0)
-    ax_top.bar(x_positions, counts, color="#7f7f7f", edgecolor="black", linewidth=0.7)
-    for x, value in zip(x_positions, counts.tolist()):
-        ax_top.text(x, float(value), f"{int(round(float(value)))}", ha="center", va="bottom", fontsize=7)
-    ax_top.set_ylabel("Count")
-    ax_top.set_title(title)
-    ax_top.set_xticks([])
-    ax_top.tick_params(axis="x", which="both", bottom=False, top=False, labelbottom=False)
-    ax_top.grid(axis="y", color="#d9d9d9", linestyle="-", linewidth=0.6)
-
-    max_count = max(1.0, float(counts.max()))
-    ax_top.set_ylim(0, max_count * 1.15)
-
-    for index, row in plot_df.iterrows():
-        included = []
-        for method_index, column in enumerate(method_columns):
-            is_included = int(pd.to_numeric(pd.Series([row.get(column, 0)]), errors="coerce").fillna(0).iat[0]) > 0
-            color = "black" if is_included else "#c9c9c9"
-            ax_matrix.scatter(index, method_index, s=30, color=color, zorder=3)
-            if is_included:
-                included.append(method_index)
-        if len(included) >= 2:
-            ax_matrix.plot([index, index], [min(included), max(included)], color="black", linewidth=1.1, zorder=2)
-
-    ax_matrix.set_yticks(y_positions)
-    ax_matrix.set_yticklabels(methods)
-    ax_matrix.yaxis.tick_right()
-    ax_matrix.tick_params(axis="y", which="major", labelleft=False, labelright=True, pad=6)
-    ax_matrix.set_ylim(-0.5, len(methods) - 0.5)
-    ax_matrix.invert_yaxis()
-    ax_matrix.set_xlabel("")
-    ax_matrix.set_xticks([])
-    ax_matrix.tick_params(axis="x", which="both", bottom=False, top=False, labelbottom=False)
-    ax_matrix.grid(axis="x", color="#efefef", linestyle="-", linewidth=0.5)
-
-    set_sizes = [method_sizes.get(method, 0) for method in methods]
-    ax_set.barh(y_positions, set_sizes, color="#9c9c9c", edgecolor="black", linewidth=0.7)
-    for y, value in zip(y_positions, set_sizes):
-        ax_set.text(float(value), y, f"{int(value)}", va="center", ha="left", fontsize=7)
-    ax_set.set_yticks(y_positions)
-    ax_set.set_yticklabels([])
-    ax_set.invert_yaxis()
-    ax_set.set_xlabel("Set size")
-    ax_set.grid(axis="x", color="#efefef", linestyle="-", linewidth=0.5)
-
-    fig.subplots_adjust(left=0.08, right=0.995, top=0.95, bottom=0.14)
-    save_figure(fig, output_base)
-    return True
-
-
-def plot_species_method_presence_heatmap(entity_df, methods, output_base, title):
-    ensure_plotting()
-    if entity_df.empty or not methods:
-        return False
-
-    method_columns = [f"is_{sanitize_label(method)}" for method in methods]
-    if not all(column in entity_df.columns for column in method_columns):
-        return False
-
-    working = entity_df.copy()
-    for column in method_columns:
-        working[column] = pd.to_numeric(working[column], errors="coerce").fillna(0).astype(int).clip(lower=0, upper=1)
-    if "sample" in working.columns:
-        working["sample"] = working["sample"].astype(str).str.strip()
-    else:
-        working["sample"] = ""
-    if "component_id" in working.columns:
-        working["component_id"] = working["component_id"].astype(str).str.strip()
-    else:
-        working["component_id"] = working.get("entity_id", "").astype(str)
-    working["species_row_label"] = working.apply(
-        lambda row: f"{row['sample']} | {row['component_id']}" if str(row.get("sample", "")).strip() else str(row.get("component_id", "")),
-        axis=1,
-    )
-    working = working.sort_values(
-        by=["present_method_count", "sample", "component_id"],
-        ascending=[False, True, True],
-        kind="mergesort",
-    ).reset_index(drop=True)
-
-    matrix = working[method_columns].copy()
-    matrix.columns = methods
-    labels = working["species_row_label"].astype(str).tolist()
-    if matrix.empty:
-        return False
-
-    n_rows = matrix.shape[0]
-    n_cols = matrix.shape[1]
-    y_font = 8 if n_rows <= 60 else 6 if n_rows <= 140 else 5
-    plt_local = ensure_plotting()
-    fig, ax = plt_local.subplots(
-        figsize=(max(9, n_cols * 1.2), max(6, n_rows * 0.22)),
-    )
-    image = ax.imshow(matrix.values, cmap="Greys", vmin=0, vmax=1, aspect="auto")
-    ax.set_xticks(np.arange(n_cols))
-    ax.set_xticklabels(methods, rotation=90)
-    ax.set_yticks(np.arange(n_rows))
-    ax.set_yticklabels(labels, fontsize=y_font)
-    ax.set_xlabel("Method")
-    ax.set_ylabel("Sample | Species")
-    ax.set_title(title)
-    cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
-    cbar.set_label("Presence (1) / Absence (0)")
-    fig.subplots_adjust(left=0.36, right=0.99, top=0.95, bottom=0.12)
-    save_figure(fig, output_base)
-    return True
-
-
-def plot_taxonomy_rank_method_heatmaps(
-    genome_df,
-    output_base_prefix,
-    category_column="category",
-    genome_id_column="mp_genome_id",
-    ranks=None,
-):
-    ensure_plotting()
-    if genome_df.empty or category_column not in genome_df.columns:
-        return []
-    if genome_id_column not in genome_df.columns:
-        genome_id_column = "genome_id" if "genome_id" in genome_df.columns else None
-    if genome_id_column is None:
-        return []
-
-    if ranks is None:
-        ranks = ["Phylum", "Class", "Order", "Family", "Genus", "Species"]
-
-    wrote_paths = []
-    category_values = genome_df[category_column].astype(str).str.strip()
-    category_counts = category_values.loc[category_values.ne("")].value_counts(dropna=False).to_dict()
-    categories = ordered_methods(
-        category_values.loc[category_values.ne("")].unique().tolist(),
-        counts=category_counts,
-    )
-    if not categories:
-        return wrote_paths
-
-    for rank in ranks:
-        if rank not in genome_df.columns:
-            continue
-        working = genome_df[[rank, category_column, genome_id_column]].copy()
-        working[rank] = working[rank].astype(str).str.strip()
-        working[category_column] = working[category_column].astype(str).str.strip()
-        working[genome_id_column] = working[genome_id_column].astype(str).str.strip()
-        working = working.loc[
-            working[rank].ne("")
-            & working[category_column].ne("")
-            & working[genome_id_column].ne("")
-            & working[rank].str.lower().ne("nan")
-            & working[rank].str.lower().ne("none")
-        ].copy()
-        if working.empty:
-            continue
-
-        matrix = (
-            working.groupby([rank, category_column])[genome_id_column]
-            .nunique()
-            .reset_index(name="n_genomes")
-            .pivot_table(
-                index=rank,
-                columns=category_column,
-                values="n_genomes",
-                fill_value=0,
-                aggfunc="sum",
-            )
-            .reindex(columns=categories, fill_value=0)
-        )
-        if matrix.empty:
-            continue
-        row_order = matrix.sum(axis=1).sort_values(ascending=False).index.tolist()
-        matrix = matrix.reindex(index=row_order)
-
-        matrix_out = Path(f"{output_base_prefix}_{sanitize_label(rank)}_count_matrix.tsv")
-        matrix.reset_index().to_csv(matrix_out, sep="\t", index=False)
-        wrote_paths.append(matrix_out)
-
-        n_rows = matrix.shape[0]
-        n_cols = matrix.shape[1]
-        y_font = 8 if n_rows <= 80 else 6 if n_rows <= 220 else 5
-        plt_local = ensure_plotting()
-        fig, ax = plt_local.subplots(
-            figsize=(max(8, n_cols * 1.2 + 1.5), max(5, n_rows * 0.22)),
-        )
-        vmax = max(1.0, float(np.nanmax(matrix.values)))
-        image = ax.imshow(matrix.values, cmap="Greys", vmin=0, vmax=vmax, aspect="auto")
-        ax.set_xticks(np.arange(n_cols))
-        ax.set_xticklabels(matrix.columns.astype(str).tolist(), rotation=90)
-        ax.set_yticks(np.arange(n_rows))
-        ax.set_yticklabels(matrix.index.astype(str).tolist(), fontsize=y_font)
-        ax.set_xlabel("Method")
-        ax.set_ylabel(rank)
-        ax.set_title(f"{rank} genome counts by method")
-        for row_index in range(n_rows):
-            for col_index in range(n_cols):
-                value = int(round(float(matrix.iat[row_index, col_index])))
-                ax.text(
-                    col_index,
-                    row_index,
-                    str(value),
-                    ha="center",
-                    va="center",
-                    fontsize=7,
-                    color=heatmap_text_color(value, vmax),
-                )
-        cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
-        cbar.set_label("Genome count")
-        fig.subplots_adjust(left=0.36, right=0.99, top=0.95, bottom=0.14)
-        plot_base = Path(f"{output_base_prefix}_{sanitize_label(rank)}_count_heatmap")
-        save_figure(fig, plot_base)
-        wrote_paths.extend([Path(str(plot_base) + ".png"), Path(str(plot_base) + ".pdf")])
-    return wrote_paths
-
-
-def select_complete_shared_representatives(matched_df, compare_column):
-    if matched_df.empty or compare_column not in matched_df.columns:
-        return pd.DataFrame(), []
-    required = {"component_id", "mp_genome_id", compare_column}
-    if not required.issubset(set(matched_df.columns)):
-        return pd.DataFrame(), []
-
-    working = matched_df.copy()
-    working = working.dropna(subset=["component_id", "mp_genome_id"])
-    working["_pair_sample"] = working.apply(pair_sample_value, axis=1)
-    working = working.loc[working["_pair_sample"].astype(str).str.strip().ne("")].copy()
-    working[compare_column] = working[compare_column].astype(str).str.strip()
-    working = working.loc[working[compare_column].ne("")].copy()
-    category_counts = working[compare_column].astype(str).value_counts(dropna=False).to_dict()
-    categories = ordered_methods(
-        working[compare_column].dropna().astype(str).unique().tolist(),
-        counts=category_counts,
-    )
-    if not categories:
-        return pd.DataFrame(), []
-
-    expected_categories = len(categories)
-    component_category_counts = (
-        working.groupby(["_pair_sample", "component_id"])[compare_column]
-        .nunique()
-    )
-    full_keys = component_category_counts.loc[component_category_counts.eq(expected_categories)].index.tolist()
-    if not full_keys:
-        return pd.DataFrame(), categories
-
-    full_keys_set = set(full_keys)
-    full_df = working.loc[
-        working.apply(lambda row: (row["_pair_sample"], row["component_id"]) in full_keys_set, axis=1)
-    ].copy()
-    rank_columns = []
-    ascending = []
-    for column in [
-        "mimag_quality_index",
-        "integrity_score",
-        "recoverability_score",
-        "qscore",
-        "mp_informative_annotation_fraction",
-        "mp_total_pathways",
-        "mp_marker_supported_orfs",
-        "mp_reference_mode_supported_accessions",
-    ]:
-        if column in full_df.columns:
-            rank_columns.append(column)
-            ascending.append(False)
-    if "mp_genome_id" in full_df.columns:
-        rank_columns.append("mp_genome_id")
-        ascending.append(True)
-    if rank_columns:
-        full_df = full_df.sort_values(by=rank_columns, ascending=ascending, kind="mergesort")
-    selected = (
-        full_df.groupby(["_pair_sample", "component_id", compare_column], as_index=False, sort=False)
-        .head(1)
-        .reset_index(drop=True)
-    )
-    selected["sample"] = selected["_pair_sample"].astype(str)
-    selected = selected.drop(columns=["_pair_sample"])
-    return selected, categories
-
-
-def _metric_panel_matrix(frame, category_column, metric_specs):
-    available = [(column, label) for column, label in metric_specs if column in frame.columns]
-    if not available:
-        return pd.DataFrame()
-    matrix_rows = []
-    category_values = ordered_methods(frame[category_column].astype(str).unique().tolist())
-    for category in category_values:
-        subset = frame.loc[frame[category_column].astype(str).eq(category)]
-        row = {"category": category}
-        for column, label in available:
-            series = pd.to_numeric(subset[column], errors="coerce").dropna()
-            row[label] = float(series.median()) if not series.empty else np.nan
-        matrix_rows.append(row)
-    matrix = pd.DataFrame(matrix_rows).set_index("category")
-    return matrix
-
-
-def plot_complete_shared_summary_panel(complete_df, output_base, category_column="category"):
-    ensure_plotting()
-    if complete_df.empty or category_column not in complete_df.columns:
-        return False
-
-    quality_specs = [
-        ("qscore", "Qscore"),
-        ("integrity_score", "Integrity"),
-        ("recoverability_score", "Recoverability"),
-        ("mimag_quality_index", "MIMAG index"),
-    ]
-    function_specs = [
-        ("mp_informative_annotation_fraction", "Informative fraction"),
-        ("mp_total_pathways", "Inferred pathways"),
-        ("mp_marker_supported_orfs", "Marker-supported ORFs"),
-        ("mp_reference_mode_supported_accessions", "Reference-supported accessions"),
-    ]
-    quality_matrix = _metric_panel_matrix(complete_df, category_column, quality_specs)
-    function_matrix = _metric_panel_matrix(complete_df, category_column, function_specs)
-    if quality_matrix.empty and function_matrix.empty:
-        return False
-
-    n_components = int(complete_df["component_id"].nunique()) if "component_id" in complete_df.columns else int(len(complete_df))
-    plt_local = ensure_plotting()
-    fig, axes = plt_local.subplots(2, 1, figsize=(max(10, (quality_matrix.shape[1] if not quality_matrix.empty else 4) * 1.4), 10), squeeze=False)
-    axes = axes.ravel()
-    panels = [
-        ("Genome atlas quality summary (median by method)", quality_matrix),
-        ("MetaPathways functional summary (median by method)", function_matrix),
-    ]
-    for ax, (title, matrix) in zip(axes, panels):
-        if matrix.empty:
-            ax.axis("off")
-            continue
-        vmax = float(np.nanmax(matrix.values)) if np.isfinite(matrix.values).any() else 0.0
-        if vmax <= 0:
-            vmax = 1.0
-        image = ax.imshow(matrix.values, cmap="Greys", vmin=0, vmax=vmax, aspect="auto")
-        ax.set_xticks(np.arange(matrix.shape[1]))
-        ax.set_xticklabels(matrix.columns.astype(str).tolist(), rotation=90)
-        ax.set_yticks(np.arange(matrix.shape[0]))
-        ax.set_yticklabels(matrix.index.astype(str).tolist())
-        ax.set_title(title)
-        for row_index in range(matrix.shape[0]):
-            for col_index in range(matrix.shape[1]):
-                value = matrix.iat[row_index, col_index]
-                if pd.isna(value):
-                    continue
-                text = f"{float(value):.2f}" if float(value) < 10 else f"{float(value):.1f}"
-                ax.text(
-                    col_index,
-                    row_index,
-                    text,
-                    ha="center",
-                    va="center",
-                    fontsize=8,
-                    color=heatmap_text_color(float(value), vmax),
-                )
-        cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
-        cbar.set_label("Median value")
-    fig.suptitle(
-        f"Shared-across-all-methods representative panel (components={n_components})",
-        fontsize=15,
-        y=0.995,
-    )
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    save_figure(fig, output_base)
-    return True
-
-
-def build_pair_elemental_play_by_play(matched_df, compare_column):
-    if matched_df.empty or compare_column not in matched_df.columns:
-        return pd.DataFrame()
-    if "component_id" not in matched_df.columns:
-        return pd.DataFrame()
-
-    rows = []
-    for component_id, group in matched_df.groupby("component_id", dropna=False):
-        component_rows = group.dropna(subset=["mp_genome_id"]).copy()
-        if component_rows.empty:
-            continue
-        records = component_rows.to_dict("records")
-        for left_row, right_row in itertools.combinations(records, 2):
-            sample_left = pair_sample_value(left_row)
-            sample_right = pair_sample_value(right_row)
-            if sample_left and sample_right and sample_left != sample_right:
-                continue
-            pair_sample = sample_left or sample_right
-            if not pair_sample:
-                continue
-            category_left = str(left_row.get(compare_column, ""))
-            category_right = str(right_row.get(compare_column, ""))
-            if not category_left or not category_right or category_left == category_right:
-                continue
-            if method_sort_key(category_left) <= method_sort_key(category_right):
-                row_a, row_b = left_row, right_row
-            else:
-                row_a, row_b = right_row, left_row
-
-            category_pair = f"{row_a.get(compare_column, '')} | {row_b.get(compare_column, '')}"
-            for mode_id in ELEMENTAL_MODE_ORDER:
-                marker_col = f"mp_marker_{mode_id}_gene_count"
-                ref_col = f"mp_reference_mode_{mode_id}_accession_count"
-                marker_a = pd.to_numeric(pd.Series([row_a.get(marker_col)]), errors="coerce").iat[0]
-                marker_b = pd.to_numeric(pd.Series([row_b.get(marker_col)]), errors="coerce").iat[0]
-                ref_a = pd.to_numeric(pd.Series([row_a.get(ref_col)]), errors="coerce").iat[0]
-                ref_b = pd.to_numeric(pd.Series([row_b.get(ref_col)]), errors="coerce").iat[0]
-                rows.append(
-                    {
-                        "component_id": component_id,
-                        "sample": pair_sample,
-                        "sample_a": sample_left,
-                        "sample_b": sample_right,
-                        "category_a": str(row_a.get(compare_column, "")),
-                        "category_b": str(row_b.get(compare_column, "")),
-                        "category_pair": category_pair,
-                        "metapathways_genome_a": str(row_a.get("mp_genome_id", "")),
-                        "metapathways_genome_b": str(row_b.get("mp_genome_id", "")),
-                        "mode_id": mode_id,
-                        "mode_label": ELEMENTAL_MODE_LABELS.get(mode_id, mode_id),
-                        "marker_count_a": marker_a,
-                        "marker_count_b": marker_b,
-                        "marker_delta": marker_a - marker_b if pd.notna(marker_a) and pd.notna(marker_b) else np.nan,
-                        "reference_accession_count_a": ref_a,
-                        "reference_accession_count_b": ref_b,
-                        "reference_delta": ref_a - ref_b if pd.notna(ref_a) and pd.notna(ref_b) else np.nan,
-                    }
-                )
-    return pd.DataFrame(rows)
-
-
-def summarize_pair_elemental_play_by_play(play_df):
-    if play_df.empty:
-        return pd.DataFrame()
-    rows = []
-    group_columns = ["category_pair", "mode_id", "mode_label"]
-    include_sample = "sample" in play_df.columns
-    if include_sample:
-        group_columns = ["sample"] + group_columns
-    for group_values, group in play_df.groupby(group_columns, dropna=False):
-        if include_sample:
-            sample_value, category_pair, mode_id, mode_label = group_values
-        else:
-            category_pair, mode_id, mode_label = group_values
-            sample_value = ""
-        marker_series = pd.to_numeric(group["marker_delta"], errors="coerce").dropna()
-        ref_series = pd.to_numeric(group["reference_delta"], errors="coerce").dropna()
-        rows.append(
-            {
-                "sample": sample_value,
-                "category_pair": category_pair,
-                "mode_id": mode_id,
-                "mode_label": mode_label,
-                "n_pairs": int(len(group)),
-                "marker_median_delta": float(marker_series.median()) if not marker_series.empty else np.nan,
-                "marker_mean_delta": float(marker_series.mean()) if not marker_series.empty else np.nan,
-                "marker_positive_fraction": float((marker_series > 0).mean()) if not marker_series.empty else np.nan,
-                "reference_median_delta": float(ref_series.median()) if not ref_series.empty else np.nan,
-                "reference_mean_delta": float(ref_series.mean()) if not ref_series.empty else np.nan,
-                "reference_positive_fraction": float((ref_series > 0).mean()) if not ref_series.empty else np.nan,
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def plot_pair_elemental_play_by_play(play_df, output_base):
-    ensure_plotting()
-    if play_df.empty:
-        return False
-    summary_df = summarize_pair_elemental_play_by_play(play_df)
-    if summary_df.empty:
-        return False
-
-    mode_order = [ELEMENTAL_MODE_LABELS.get(mode_id, mode_id) for mode_id in ELEMENTAL_MODE_ORDER]
-    pair_order = (
-        play_df.groupby("category_pair")
-        .size()
-        .sort_values(ascending=False)
-        .index
-        .tolist()
-    )
-    marker_matrix = (
-        summary_df.pivot_table(
-            index="category_pair",
-            columns="mode_label",
-            values="marker_median_delta",
-            aggfunc="mean",
-        )
-        .reindex(index=pair_order)
-        .reindex(columns=mode_order, fill_value=np.nan)
-    )
-    ref_matrix = (
-        summary_df.pivot_table(
-            index="category_pair",
-            columns="mode_label",
-            values="reference_median_delta",
-            aggfunc="mean",
-        )
-        .reindex(index=pair_order)
-        .reindex(columns=mode_order, fill_value=np.nan)
-    )
-    if marker_matrix.empty and ref_matrix.empty:
-        return False
-
-    plt_local = ensure_plotting()
-    fig, axes = plt_local.subplots(2, 1, figsize=(max(12, len(mode_order) * 0.8), max(8, len(pair_order) * 0.5 + 5)), squeeze=False)
-    axes = axes.ravel()
-    panels = [
-        ("Elemental marker gene deltas (median; row - column)", marker_matrix),
-        ("Reference GO-accession deltas (median; row - column)", ref_matrix),
-    ]
-    for ax, (title, matrix) in zip(axes, panels):
-        if matrix.empty:
-            ax.axis("off")
-            continue
-        finite = np.abs(matrix.values[np.isfinite(matrix.values)])
-        vmax = float(np.nanmax(finite)) if finite.size else 1.0
-        vmax = max(1e-9, vmax)
-        image = ax.imshow(matrix.values, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
-        ax.set_xticks(np.arange(matrix.shape[1]))
-        ax.set_xticklabels(matrix.columns.astype(str).tolist(), rotation=90, fontsize=8)
-        ax.set_yticks(np.arange(matrix.shape[0]))
-        ax.set_yticklabels(matrix.index.astype(str).tolist())
-        ax.set_title(title)
-        for row_index in range(matrix.shape[0]):
-            for col_index in range(matrix.shape[1]):
-                value = matrix.iat[row_index, col_index]
-                if pd.isna(value):
-                    continue
-                ax.text(col_index, row_index, f"{float(value):.2f}", ha="center", va="center", fontsize=7)
-        cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
-        cbar.set_label("Median delta")
-    fig.suptitle("Method-paired elemental play-by-play panel", fontsize=15, y=0.995)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    save_figure(fig, output_base)
-    return True
 
 
 def category_order(frame, category_column="category"):
@@ -2979,6 +2337,1178 @@ def annotate_bar_values(ax, values, fmt="int"):
         else:
             label = f"{int(round(numeric))}"
         ax.text(index, numeric, label, ha="center", va="bottom", fontsize=8)
+
+
+def benjamini_hochberg_adjust(pvalues):
+    numeric = pd.to_numeric(pd.Series(pvalues), errors="coerce")
+    adjusted = pd.Series(np.nan, index=numeric.index, dtype=float)
+    valid = numeric.dropna()
+    if valid.empty:
+        return adjusted
+    order = valid.sort_values().index.tolist()
+    ordered = valid.loc[order].to_numpy(dtype=float)
+    n = float(len(ordered))
+    bh = np.empty(len(ordered), dtype=float)
+    running = 1.0
+    for reverse_index in range(len(ordered) - 1, -1, -1):
+        rank = reverse_index + 1.0
+        candidate = (ordered[reverse_index] * n) / rank
+        running = min(running, candidate)
+        bh[reverse_index] = min(1.0, running)
+    adjusted.loc[order] = bh
+    return adjusted
+
+
+def significance_stars(value):
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iat[0]
+    if pd.isna(numeric):
+        return ""
+    if numeric < 0.0001:
+        return "****"
+    if numeric < 0.001:
+        return "***"
+    if numeric < 0.01:
+        return "**"
+    if numeric < 0.05:
+        return "*"
+    return ""
+
+
+def exact_binomial_test_two_sided(k, n):
+    try:
+        n_int = int(n)
+        k_int = int(k)
+    except Exception:
+        return float("nan")
+    if n_int <= 0:
+        return float("nan")
+    pmf_obs = math.comb(n_int, k_int) / (2.0 ** n_int)
+    total = 0.0
+    for value in range(n_int + 1):
+        pmf_value = math.comb(n_int, value) / (2.0 ** n_int)
+        if pmf_value <= pmf_obs + 1e-15:
+            total += pmf_value
+    return min(float(total), 1.0)
+
+
+def build_compact_summary_stats(genome_df, category_column="category", sample_column="sample"):
+    if genome_df.empty or category_column not in genome_df.columns:
+        return pd.DataFrame()
+
+    try:
+        from scipy import stats
+    except ImportError:
+        return pd.DataFrame()
+
+    working = genome_df.copy()
+    working[category_column] = working[category_column].astype(str).str.strip().map(canonical_method_label)
+    order = category_order(working, category_column=category_column)
+    if len(order) < 2:
+        return pd.DataFrame()
+
+    informative_column = (
+        "informative_annotation_orfs"
+        if "informative_annotation_orfs" in working.columns
+        else "annotated_orfs"
+    )
+    metric_specs = [
+        ("genomes_per_sample", "Genomes per sample", "sample"),
+        ("total_orfs", "Total ORFs per genome", "genome"),
+        (informative_column, "Informative ORFs per genome", "genome"),
+        ("total_pathways", "Inferred pathways per genome", "genome"),
+        ("mimag_quality_index", "MIMAG quality index", "genome"),
+        ("integrity_score", "Integrity", "genome"),
+        ("recoverability_score", "Recoverability", "genome"),
+        ("qscore", "Qscore", "genome"),
+        ("informative_annotation_fraction", "Informative annotation fraction", "genome"),
+        ("pathway_input_fraction", "Pathway-input fraction", "genome"),
+        ("pathway_support_fraction", "Pathway-support fraction", "genome"),
+        ("marker_supported_orfs", "Marker-supported ORFs", "genome"),
+        ("reference_mode_supported_accessions", "Reference-supported accessions", "genome"),
+    ]
+    rows = []
+    for metric, metric_label, scope in metric_specs:
+        if scope == "sample":
+            required = {sample_column, "genome_id"}
+            if not required.issubset(set(working.columns)):
+                continue
+            metric_df = (
+                working.groupby([sample_column, category_column])["genome_id"]
+                .nunique()
+                .reset_index(name="value")
+            )
+        else:
+            if metric not in working.columns:
+                continue
+            metric_df = working[[category_column, metric]].copy().rename(columns={metric: "value"})
+            metric_df["value"] = pd.to_numeric(metric_df["value"], errors="coerce")
+            metric_df = metric_df.dropna(subset=["value"])
+        if metric_df.empty:
+            continue
+
+        present_categories = [
+            category
+            for category in order
+            if metric_df.loc[metric_df[category_column].astype(str).eq(category)].shape[0] > 0
+        ]
+        if len(present_categories) < 2:
+            continue
+
+        for group_a, group_b in itertools.combinations(present_categories, 2):
+            values_a = metric_df.loc[metric_df[category_column].astype(str).eq(group_a), "value"].astype(float)
+            values_b = metric_df.loc[metric_df[category_column].astype(str).eq(group_b), "value"].astype(float)
+            if values_a.empty or values_b.empty:
+                continue
+            try:
+                statistic, pvalue = stats.mannwhitneyu(values_a, values_b, alternative="two-sided")
+            except ValueError:
+                statistic, pvalue = np.nan, np.nan
+            median_a = float(values_a.median())
+            median_b = float(values_b.median())
+            rows.append(
+                {
+                    "analysis_scope": f"{scope}_metric_pairwise",
+                    "test": "Mann-Whitney U",
+                    "metric": metric,
+                    "metric_label": metric_label,
+                    "group_column": category_column,
+                    "group_a": group_a,
+                    "group_b": group_b,
+                    "n_a": int(values_a.size),
+                    "n_b": int(values_b.size),
+                    "group_a_median": median_a,
+                    "group_b_median": median_b,
+                    "median_difference_a_minus_b": median_a - median_b,
+                    "winner_by_median": group_a if median_a > median_b else group_b if median_b > median_a else "tie",
+                    "statistic": statistic,
+                    "pvalue": pvalue,
+                }
+            )
+
+        grouped_values = [
+            metric_df.loc[metric_df[category_column].astype(str).eq(category), "value"].astype(float).values
+            for category in present_categories
+        ]
+        if len(grouped_values) >= 2:
+            try:
+                statistic, pvalue = stats.kruskal(*grouped_values)
+            except ValueError:
+                statistic, pvalue = np.nan, np.nan
+            rows.append(
+                {
+                    "analysis_scope": f"{scope}_metric_global",
+                    "test": "Kruskal-Wallis",
+                    "metric": metric,
+                    "metric_label": metric_label,
+                    "group_column": category_column,
+                    "n_groups": int(len(present_categories)),
+                    "groups": ";".join(map(str, present_categories)),
+                    "statistic": statistic,
+                    "pvalue": pvalue,
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame()
+    stats_df = pd.DataFrame(rows)
+    stats_df["qvalue_bh"] = benjamini_hochberg_adjust(stats_df["pvalue"])
+    stats_df["significant_p05"] = pd.to_numeric(stats_df["pvalue"], errors="coerce").lt(0.05)
+    stats_df["significant_q05"] = pd.to_numeric(stats_df["qvalue_bh"], errors="coerce").lt(0.05)
+    stats_df["significance_stars"] = stats_df["qvalue_bh"].map(significance_stars)
+    return stats_df
+
+
+def add_significance_brackets(ax, metric_name, grouped_values, order, stats_df):
+    if stats_df is None or stats_df.empty:
+        return
+    subset = stats_df.loc[
+        stats_df["metric"].astype(str).eq(str(metric_name))
+        & stats_df["analysis_scope"].astype(str).str.endswith("_pairwise")
+        & stats_df["significant_q05"].fillna(False)
+    ].copy()
+    if subset.empty:
+        return
+
+    finite_values = []
+    for values in grouped_values:
+        if len(values) == 0:
+            continue
+        numeric = pd.to_numeric(pd.Series(values), errors="coerce").dropna().tolist()
+        finite_values.extend(numeric)
+    if not finite_values:
+        return
+
+    data_max = float(max(finite_values))
+    data_min = float(min(finite_values))
+    data_span = max(1e-9, data_max - data_min)
+    level_height = data_span * 0.09
+    line_height = data_span * 0.03
+    top_padding = data_span * 0.14
+    if data_max == data_min:
+        level_height = max(0.5, abs(data_max) * 0.1 if data_max != 0 else 0.5)
+        line_height = level_height * 0.35
+        top_padding = level_height * 1.2
+
+    position_map = {category: float(index + 1) for index, category in enumerate(order)}
+    occupied = []
+    brackets = []
+    subset["span"] = subset.apply(
+        lambda row: abs(position_map.get(str(row["group_b"]), 0.0) - position_map.get(str(row["group_a"]), 0.0)),
+        axis=1,
+    )
+    subset = subset.sort_values(by=["span", "qvalue_bh"], ascending=[True, True], kind="mergesort")
+
+    max_level = 0
+    for row in subset.to_dict("records"):
+        group_a = str(row.get("group_a", ""))
+        group_b = str(row.get("group_b", ""))
+        if group_a not in position_map or group_b not in position_map:
+            continue
+        x1 = position_map[group_a]
+        x2 = position_map[group_b]
+        if x1 == x2:
+            continue
+        if x1 > x2:
+            x1, x2 = x2, x1
+        level = 0
+        while any(not (x2 < start or x1 > end) and used_level == level for start, end, used_level in occupied):
+            level += 1
+        occupied.append((x1, x2, level))
+        max_level = max(max_level, level)
+        y = data_max + top_padding + (level * level_height)
+        star_label = str(row.get("significance_stars", "")).strip() or "*"
+        brackets.append((x1, x2, y, star_label))
+
+    for x1, x2, y, star_label in brackets:
+        ax.plot([x1, x1, x2, x2], [y, y + line_height, y + line_height, y], color="black", linewidth=0.9, zorder=4)
+        ax.text((x1 + x2) / 2.0, y + line_height, star_label, ha="center", va="bottom", fontsize=9, zorder=5)
+
+    current_bottom, current_top = ax.get_ylim()
+    required_top = data_max + top_padding + ((max_level + 1.9) * level_height)
+    ax.set_ylim(current_bottom, max(current_top, required_top))
+
+
+def compact_metric_grouped_values(genome_df, metric, order, category_column="category", sample_column="sample"):
+    working = genome_df.copy()
+    if metric == "genomes_per_sample":
+        if sample_column not in working.columns or "genome_id" not in working.columns:
+            return []
+        samples = (
+            working[sample_column]
+            .astype(str)
+            .str.strip()
+            .loc[lambda series: series.ne("")]
+            .unique()
+            .tolist()
+        )
+        return [
+            (
+                working.loc[working[category_column].astype(str).eq(category)]
+                .groupby(sample_column)["genome_id"]
+                .nunique()
+                .reindex(samples, fill_value=0)
+                .values
+                .astype(float)
+            )
+            for category in order
+        ]
+    if metric not in working.columns:
+        return []
+    return [
+        (
+            pd.to_numeric(
+                working.loc[working[category_column].astype(str).eq(category), metric],
+                errors="coerce",
+            )
+            .dropna()
+            .values
+            .astype(float)
+        )
+        for category in order
+    ]
+
+
+def draw_compact_metric_axis(ax, grouped_values, order, metric, title, stats_df=None, rng=None):
+    if not any(len(values) for values in grouped_values):
+        ax.axis("off")
+        return False
+    rng = rng or np.random.default_rng(42)
+    box = ax.boxplot(grouped_values, patch_artist=True, labels=order, showfliers=False)
+    for patch in box["boxes"]:
+        patch.set_facecolor("#c0c0c0")
+        patch.set_edgecolor("black")
+        patch.set_linewidth(1.0)
+    for median in box["medians"]:
+        median.set_color("black")
+        median.set_linewidth(1.3)
+    for whisker in box["whiskers"]:
+        whisker.set_color("black")
+        whisker.set_linewidth(0.9)
+    for cap in box["caps"]:
+        cap.set_color("black")
+        cap.set_linewidth(0.9)
+    for idx, values in enumerate(grouped_values, start=1):
+        if len(values) == 0:
+            continue
+        jitter = rng.uniform(-0.14, 0.14, size=len(values))
+        ax.scatter(
+            np.full(len(values), float(idx)) + jitter,
+            np.asarray(values, dtype=float),
+            s=18,
+            color="#c7c7c7",
+            edgecolors="none",
+            alpha=0.7,
+            zorder=1,
+        )
+    ax.set_title(title)
+    ax.set_ylabel(title)
+    ax.set_xticklabels(order, rotation=90)
+    ax.grid(axis="y", color="#d9d9d9", linestyle="-", linewidth=0.6)
+    add_significance_brackets(ax, metric, grouped_values, order, stats_df)
+    return True
+
+
+def metapathways_single_metric_specs(genome_df):
+    informative_column = (
+        "informative_annotation_orfs"
+        if "informative_annotation_orfs" in genome_df.columns
+        else "annotated_orfs"
+    )
+    specs = [
+        ("genomes_per_sample", "Genomes per sample"),
+        ("total_orfs", "Total ORFs per genome"),
+        (informative_column, "Informative ORFs per genome"),
+        ("total_pathways", "Inferred pathways per genome"),
+        ("mimag_quality_index", "MIMAG quality index"),
+        ("integrity_score", "Integrity"),
+        ("recoverability_score", "Recoverability"),
+        ("qscore", "Qscore"),
+        ("informative_annotation_fraction", "Informative annotation fraction"),
+        ("pathway_input_fraction", "Pathway-input fraction"),
+        ("pathway_support_fraction", "Pathway-support fraction"),
+        ("marker_supported_orfs", "Marker-supported ORFs"),
+        ("reference_mode_supported_accessions", "Reference-supported accessions"),
+    ]
+    seen = set()
+    available = []
+    for metric, title in specs:
+        if metric in seen:
+            continue
+        seen.add(metric)
+        if metric == "genomes_per_sample" or metric in genome_df.columns:
+            available.append((metric, title))
+    return available
+
+
+def plot_single_compact_metric(genome_df, metric, title, output_base, category_column="category", sample_column="sample", stats_df=None):
+    ensure_plotting()
+    if genome_df.empty or category_column not in genome_df.columns:
+        return False
+    order = category_order(genome_df, category_column=category_column)
+    if not order:
+        return False
+    grouped_values = compact_metric_grouped_values(
+        genome_df,
+        metric,
+        order,
+        category_column=category_column,
+        sample_column=sample_column,
+    )
+    if not grouped_values or not any(len(values) for values in grouped_values):
+        return False
+    plt_local = ensure_plotting()
+    fig, ax = plt_local.subplots(figsize=(max(7.5, len(order) * 1.45), 6.5))
+    drew = draw_compact_metric_axis(
+        ax,
+        grouped_values,
+        order,
+        metric,
+        title,
+        stats_df=stats_df,
+        rng=np.random.default_rng(42),
+    )
+    if not drew:
+        plt_local.close(fig)
+        return False
+    if metric == "genomes_per_sample":
+        ax.set_ylim(bottom=0)
+    fig.tight_layout()
+    Path(output_base).parent.mkdir(parents=True, exist_ok=True)
+    save_figure(fig, output_base)
+    return True
+
+
+def build_sample_category_summary(genome_df, category_column="category", sample_column="sample"):
+    required = {category_column, sample_column, "genome_id"}
+    if genome_df.empty or not required.issubset(set(genome_df.columns)):
+        return pd.DataFrame()
+
+    working = genome_df.copy()
+    numeric_columns = [
+        "total_orfs",
+        "annotated_orfs",
+        "annotation_fraction",
+        "informative_annotation_orfs",
+        "informative_annotation_fraction",
+        "total_pathways",
+        "pathway_support_fraction",
+        "marker_supported_orfs",
+        "reference_mode_supported_accessions",
+    ]
+    for column in numeric_columns:
+        if column in working.columns:
+            working[column] = pd.to_numeric(working[column], errors="coerce")
+
+    agg_spec = {"n_genomes": ("genome_id", "nunique")}
+    median_metrics = [
+        "total_orfs",
+        "annotated_orfs",
+        "annotation_fraction",
+        "informative_annotation_orfs",
+        "informative_annotation_fraction",
+        "total_pathways",
+        "pathway_support_fraction",
+        "marker_supported_orfs",
+        "reference_mode_supported_accessions",
+    ]
+    for column in median_metrics:
+        if column in working.columns:
+            agg_spec[f"median_{column}"] = (column, "median")
+
+    summary = (
+        working.groupby([sample_column, category_column], dropna=False)
+        .agg(**agg_spec)
+        .reset_index()
+    )
+    summary[sample_column] = summary[sample_column].astype(str).str.strip()
+    summary[category_column] = summary[category_column].astype(str).str.strip().map(canonical_method_label)
+    summary["method_family"] = summary[category_column].map(method_family_label)
+    summary["is_variant"] = summary[category_column].map(method_variant_flag)
+    return summary
+
+
+def detect_base_variant_method_pairs(sample_summary_df, category_column="category"):
+    if sample_summary_df.empty or category_column not in sample_summary_df.columns:
+        return pd.DataFrame()
+
+    categories = ordered_methods(sample_summary_df[category_column].astype(str).unique().tolist())
+    rows = []
+    for family in ["SAG", "MAG"]:
+        family_categories = [
+            category
+            for category in categories
+            if method_family_label(category) == family
+        ]
+        if not family_categories:
+            continue
+        base_category = next((category for category in family_categories if not method_variant_flag(category)), "")
+        variant_category = next((category for category in family_categories if method_variant_flag(category)), "")
+        if not base_category or not variant_category:
+            continue
+        rows.append(
+            {
+                "method_family": family,
+                "base_category": str(base_category),
+                "variant_category": str(variant_category),
+                "category_pair": f"{base_category} -> {variant_category}",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_variant_improvement_tables(sample_summary_df, category_column="category", sample_column="sample"):
+    if sample_summary_df.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    pair_df = detect_base_variant_method_pairs(sample_summary_df, category_column=category_column)
+    if pair_df.empty:
+        return sample_summary_df.copy(), pd.DataFrame(), pd.DataFrame()
+
+    metric_specs = [
+        ("n_genomes", "Genome count", "int"),
+        ("median_total_orfs", "Median total ORFs", "int"),
+        ("median_annotated_orfs", "Median annotated ORFs", "int"),
+        ("median_annotation_fraction", "Median annotation fraction", "float2"),
+        ("median_informative_annotation_orfs", "Median informative ORFs", "int"),
+        ("median_informative_annotation_fraction", "Median informative fraction", "float2"),
+        ("median_total_pathways", "Median inferred pathways", "float1"),
+        ("median_pathway_support_fraction", "Median pathway-support fraction", "float2"),
+        ("median_marker_supported_orfs", "Median marker-supported ORFs", "int"),
+        ("median_reference_mode_supported_accessions", "Median ref-supported accessions", "int"),
+    ]
+    available_specs = [
+        (metric_id, metric_label, fmt)
+        for metric_id, metric_label, fmt in metric_specs
+        if metric_id in sample_summary_df.columns
+    ]
+    if not available_specs:
+        return sample_summary_df.copy(), pd.DataFrame(), pd.DataFrame()
+
+    rows = []
+    for pair_row in pair_df.to_dict("records"):
+        family = str(pair_row.get("method_family", "")).strip()
+        base_category = str(pair_row.get("base_category", "")).strip()
+        variant_category = str(pair_row.get("variant_category", "")).strip()
+        if not family or not base_category or not variant_category:
+            continue
+
+        base_df = sample_summary_df.loc[
+            sample_summary_df[category_column].astype(str).eq(base_category)
+        ].copy()
+        variant_df = sample_summary_df.loc[
+            sample_summary_df[category_column].astype(str).eq(variant_category)
+        ].copy()
+        if base_df.empty or variant_df.empty:
+            continue
+
+        merged = base_df.merge(
+            variant_df,
+            on=sample_column,
+            how="inner",
+            suffixes=("_base", "_variant"),
+        )
+        if merged.empty:
+            continue
+
+        for merged_row in merged.to_dict("records"):
+            sample_value = str(merged_row.get(sample_column, "")).strip()
+            for metric_id, metric_label, fmt in available_specs:
+                base_value = pd.to_numeric(pd.Series([merged_row.get(f"{metric_id}_base")]), errors="coerce").iat[0]
+                variant_value = pd.to_numeric(pd.Series([merged_row.get(f"{metric_id}_variant")]), errors="coerce").iat[0]
+                if pd.isna(base_value) or pd.isna(variant_value):
+                    continue
+                delta = float(variant_value) - float(base_value)
+                pct_delta = np.nan
+                if float(base_value) != 0.0:
+                    pct_delta = (delta / float(base_value)) * 100.0
+                rows.append(
+                    {
+                        "sample": sample_value,
+                        "method_family": family,
+                        "base_category": base_category,
+                        "variant_category": variant_category,
+                        "category_pair": f"{base_category} -> {variant_category}",
+                        "metric_id": metric_id,
+                        "metric_label": metric_label,
+                        "metric_format": fmt,
+                        "base_value": float(base_value),
+                        "variant_value": float(variant_value),
+                        "delta": delta,
+                        "percent_delta": pct_delta,
+                    }
+                )
+
+    by_sample_df = pd.DataFrame(rows)
+    if by_sample_df.empty:
+        return sample_summary_df.copy(), by_sample_df, pd.DataFrame()
+
+    summary_df = (
+        by_sample_df.groupby(
+            ["method_family", "base_category", "variant_category", "category_pair", "metric_id", "metric_label", "metric_format"],
+            dropna=False,
+        )
+        .agg(
+            n_samples=("sample", "nunique"),
+            median_base=("base_value", "median"),
+            median_variant=("variant_value", "median"),
+            median_delta=("delta", "median"),
+            mean_delta=("delta", "mean"),
+            positive_sample_fraction=("delta", lambda values: float((pd.Series(values) > 0).mean()) if len(values) else np.nan),
+            nonnegative_sample_fraction=("delta", lambda values: float((pd.Series(values) >= 0).mean()) if len(values) else np.nan),
+        )
+        .reset_index()
+    )
+    return sample_summary_df.copy(), by_sample_df, summary_df
+
+
+def _format_metric_value(value, fmt):
+    if pd.isna(value):
+        return "NA"
+    numeric = float(value)
+    if fmt == "float2":
+        return f"{numeric:.2f}"
+    if fmt == "float1":
+        return f"{numeric:.1f}"
+    return f"{int(round(numeric))}"
+
+
+def _ordered_variant_improvement_entities(by_sample_df):
+    sample_order = sorted(by_sample_df["sample"].astype(str).unique().tolist())
+    family_order = ["SAG", "MAG"]
+    rows = []
+    for family in family_order:
+        family_samples = [
+            sample
+            for sample in sample_order
+            if by_sample_df.loc[
+                by_sample_df["method_family"].astype(str).eq(family)
+                & by_sample_df["sample"].astype(str).eq(sample)
+            ].shape[0]
+            > 0
+        ]
+        for sample in family_samples:
+            rows.append((family, sample))
+    return rows
+
+
+def plot_variant_improvement_deltas(by_sample_df, output_base):
+    ensure_plotting()
+    if by_sample_df.empty:
+        return False
+
+    metric_order = by_sample_df[["metric_id", "metric_label", "metric_format"]].drop_duplicates().to_dict("records")
+    if not metric_order:
+        return False
+    entity_order = _ordered_variant_improvement_entities(by_sample_df)
+    if not entity_order:
+        return False
+    entity_labels = [f"{family} | {sample}" for family, sample in entity_order]
+    entity_positions = {label: index for index, label in enumerate(entity_labels)}
+    family_colors = {"SAG": "#4d4d4d", "MAG": "#8c8c8c"}
+
+    n_cols = min(3, len(metric_order))
+    n_rows = int(np.ceil(len(metric_order) / float(n_cols)))
+    plt_local = ensure_plotting()
+    fig, axes = plt_local.subplots(
+        n_rows,
+        n_cols,
+        figsize=(max(14, n_cols * 5.0), max(6.5, n_rows * 3.8)),
+        squeeze=False,
+    )
+    axes = axes.ravel()
+
+    for ax, metric_row in zip(axes, metric_order):
+        metric_id = str(metric_row["metric_id"])
+        metric_label = str(metric_row["metric_label"])
+        fmt = str(metric_row["metric_format"])
+        subset = by_sample_df.loc[by_sample_df["metric_id"].astype(str).eq(metric_id)].copy()
+        if subset.empty:
+            ax.axis("off")
+            continue
+        subset["entity_label"] = subset.apply(
+            lambda row: f"{row['method_family']} | {row['sample']}",
+            axis=1,
+        )
+        subset = subset.loc[subset["entity_label"].isin(entity_labels)].copy()
+        if subset.empty:
+            ax.axis("off")
+            continue
+        subset["y_pos"] = subset["entity_label"].map(entity_positions)
+        ax.axvline(0.0, color="black", linestyle="--", linewidth=0.9, alpha=0.9)
+        for family, family_df in subset.groupby("method_family", dropna=False):
+            ax.scatter(
+                family_df["delta"].astype(float).values,
+                family_df["y_pos"].astype(float).values,
+                s=40,
+                color=family_colors.get(str(family), "#666666"),
+                edgecolors="black",
+                linewidths=0.35,
+                alpha=0.9,
+                zorder=3,
+            )
+        ax.set_yticks(np.arange(len(entity_labels)))
+        ax.set_yticklabels(entity_labels, fontsize=8)
+        ax.set_title(metric_label)
+        ax.set_xlabel("Variant - base")
+        ax.grid(axis="x", color="#dddddd", linestyle="-", linewidth=0.6)
+        finite = subset["delta"].replace([np.inf, -np.inf], np.nan).dropna()
+        if finite.empty:
+            summary_label = "n=0"
+        else:
+            summary_label = (
+                f"n={int(finite.shape[0])}; median={_format_metric_value(finite.median(), fmt)}; "
+                f"positive={float((finite > 0).mean()):.2f}"
+            )
+        ax.text(
+            0.02,
+            0.02,
+            summary_label,
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=8,
+            bbox={"facecolor": "white", "edgecolor": "#999999", "alpha": 0.85, "pad": 2.0},
+        )
+
+    for index in range(len(metric_order), len(axes)):
+        axes[index].axis("off")
+
+    fig.suptitle("Base-to-variant MetaPathways improvement deltas by sample", fontsize=16, y=0.995)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    save_figure(fig, output_base)
+    return True
+
+
+def plot_variant_improvement_before_after(by_sample_df, output_base):
+    ensure_plotting()
+    if by_sample_df.empty:
+        return False
+
+    metric_order = by_sample_df[["metric_id", "metric_label", "metric_format"]].drop_duplicates().to_dict("records")
+    if not metric_order:
+        return False
+    entity_order = _ordered_variant_improvement_entities(by_sample_df)
+    if not entity_order:
+        return False
+    entity_labels = [f"{family} | {sample}" for family, sample in entity_order]
+    entity_positions = {label: index for index, label in enumerate(entity_labels)}
+    base_color = "#bdbdbd"
+    variant_color = "#525252"
+
+    n_cols = min(3, len(metric_order))
+    n_rows = int(np.ceil(len(metric_order) / float(n_cols)))
+    plt_local = ensure_plotting()
+    fig, axes = plt_local.subplots(
+        n_rows,
+        n_cols,
+        figsize=(max(14, n_cols * 5.0), max(6.5, n_rows * 3.8)),
+        squeeze=False,
+    )
+    axes = axes.ravel()
+
+    for ax, metric_row in zip(axes, metric_order):
+        metric_id = str(metric_row["metric_id"])
+        metric_label = str(metric_row["metric_label"])
+        fmt = str(metric_row["metric_format"])
+        subset = by_sample_df.loc[by_sample_df["metric_id"].astype(str).eq(metric_id)].copy()
+        if subset.empty:
+            ax.axis("off")
+            continue
+        subset["entity_label"] = subset.apply(
+            lambda row: f"{row['method_family']} | {row['sample']}",
+            axis=1,
+        )
+        subset = subset.loc[subset["entity_label"].isin(entity_labels)].copy()
+        if subset.empty:
+            ax.axis("off")
+            continue
+        subset["y_pos"] = subset["entity_label"].map(entity_positions)
+        for row in subset.to_dict("records"):
+            y_pos = float(row["y_pos"])
+            base_value = float(row["base_value"])
+            variant_value = float(row["variant_value"])
+            ax.plot([base_value, variant_value], [y_pos, y_pos], color="#b3b3b3", linewidth=1.4, zorder=1)
+            ax.scatter(base_value, y_pos, s=34, color=base_color, edgecolors="black", linewidths=0.3, zorder=2)
+            ax.scatter(variant_value, y_pos, s=34, color=variant_color, edgecolors="black", linewidths=0.3, zorder=3)
+        ax.set_yticks(np.arange(len(entity_labels)))
+        ax.set_yticklabels(entity_labels, fontsize=8)
+        ax.set_title(metric_label)
+        ax.set_xlabel("Per-sample median" if metric_id != "n_genomes" else "Per-sample count")
+        ax.grid(axis="x", color="#dddddd", linestyle="-", linewidth=0.6)
+        median_base = subset["base_value"].median()
+        median_variant = subset["variant_value"].median()
+        ax.text(
+            0.02,
+            0.02,
+            f"base={_format_metric_value(median_base, fmt)}; variant={_format_metric_value(median_variant, fmt)}",
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=8,
+            bbox={"facecolor": "white", "edgecolor": "#999999", "alpha": 0.85, "pad": 2.0},
+        )
+
+    for index in range(len(metric_order), len(axes)):
+        axes[index].axis("off")
+
+    fig.suptitle("Base-versus-variant MetaPathways sample summaries", fontsize=16, y=0.995)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    save_figure(fig, output_base)
+    return True
+
+
+def summarize_selected_category_counts(selected_df, category_column="category"):
+    if selected_df is None or selected_df.empty or category_column not in selected_df.columns:
+        return pd.DataFrame()
+
+    working = selected_df.copy()
+    working[category_column] = working[category_column].astype(str).str.strip().map(canonical_method_label)
+    if "mimag_tier" in working.columns:
+        working["_tier_norm"] = working["mimag_tier"].astype(str).str.lower().str.strip()
+    else:
+        working["_tier_norm"] = ""
+    count_column = "Genome_Id" if "Genome_Id" in working.columns else "genome_id" if "genome_id" in working.columns else category_column
+
+    summary = (
+        working.groupby(category_column, dropna=False)
+        .agg(
+            n_selected_genomes=(count_column, "nunique"),
+            n_selected_hq=("_tier_norm", lambda values: int((pd.Series(values) == "high").sum())),
+            n_selected_mq=("_tier_norm", lambda values: int((pd.Series(values) == "medium").sum())),
+            n_selected_lq=("_tier_norm", lambda values: int((pd.Series(values) == "low").sum())),
+        )
+        .reset_index()
+    )
+    order = ordered_methods(summary[category_column].astype(str).tolist(), counts=dict(zip(summary[category_column], summary["n_selected_genomes"])))
+    summary[category_column] = summary[category_column].astype(str)
+    summary = summary.set_index(category_column).reindex(order).reset_index()
+    return summary
+
+
+def valid_path_text(value):
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null", "na", "n/a"}:
+        return ""
+    return text
+
+
+def best_set_fasta_source(row):
+    for column in ["copied_fasta_path", "fasta_path", "mp_fasta_path", "ani_fasta_path"]:
+        if column not in row.index:
+            continue
+        text = valid_path_text(row.get(column, ""))
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if path.exists():
+            return column, path
+    return "", None
+
+
+def phylogeny_duplicate_source_key(row):
+    for column in ["fasta_export_source_path", "fasta_path", "mp_fasta_path", "ani_fasta_path", "copied_fasta_path"]:
+        if column not in row.index:
+            continue
+        text = valid_path_text(row.get(column, ""))
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        return str(path.resolve()) if path.exists() else str(path)
+    return ""
+
+
+def deduplicate_phylogeny_rows(selected_df):
+    if selected_df is None or selected_df.empty:
+        return selected_df.copy() if isinstance(selected_df, pd.DataFrame) else selected_df
+
+    working = selected_df.copy().reset_index(drop=True)
+    dedupe_keys = []
+    for _index, row in working.iterrows():
+        source_key = phylogeny_duplicate_source_key(row)
+        genome_id = str(row.get("Genome_Id", row.get("genome_id", row.get("mp_genome_id", "")))).strip()
+        sample = str(row.get("sample", row.get("mp_sample", ""))).strip()
+        category = canonical_method_label(str(row.get("category", row.get("mp_category", ""))).strip())
+        dedupe_keys.append((sample, category, genome_id, source_key))
+    working["_phylogeny_exact_duplicate_key"] = dedupe_keys
+    working = (
+        working.drop_duplicates(subset=["_phylogeny_exact_duplicate_key"], keep="first")
+        .drop(columns=["_phylogeny_exact_duplicate_key"])
+        .reset_index(drop=True)
+    )
+    return working
+
+
+def export_selected_set_fastas(selected_df, selected_set_dir):
+    selected_set_path = Path(selected_set_dir)
+    fasta_dir = selected_set_path / "fasta"
+    fasta_dir.mkdir(parents=True, exist_ok=True)
+    selected_set_path.mkdir(parents=True, exist_ok=True)
+    for existing_fasta in list(fasta_dir.iterdir()):
+        if existing_fasta.is_file() and existing_fasta.name.lower().endswith(
+            (".fasta", ".fa", ".fna", ".fasta.gz", ".fa.gz", ".fna.gz")
+        ):
+            existing_fasta.unlink()
+
+    working = deduplicate_phylogeny_rows(selected_df)
+
+    copied_paths = []
+    fasta_statuses = []
+    fasta_source_columns = []
+    fasta_source_paths = []
+    audit_rows = []
+    for index, row in working.iterrows():
+        source_column, source = best_set_fasta_source(row)
+        fallback_stem = source.stem if source is not None else f"row_{index}"
+        genome_id = str(row.get("Genome_Id", row.get("genome_id", row.get("mp_genome_id", fallback_stem)))).strip()
+        sample = str(row.get("sample", row.get("mp_sample", ""))).strip()
+        category = canonical_method_label(str(row.get("category", row.get("mp_category", ""))).strip())
+
+        if source is None:
+            copied_paths.append("")
+            fasta_statuses.append("missing")
+            fasta_source_columns.append("")
+            fasta_source_paths.append("")
+            audit_rows.append(
+                {
+                    "row_index": int(index),
+                    "sample": sample,
+                    "category": category,
+                    "Genome_Id": genome_id,
+                    "status": "missing",
+                    "source_column": "",
+                    "source_path": "",
+                    "copied_fasta_path": "",
+                }
+            )
+            continue
+
+        stem_parts = [part for part in [sample, category, genome_id] if part and part.lower() != "nan"]
+        target_stem = sanitize_label("__".join(stem_parts) if stem_parts else source.stem)
+        target_name = f"{target_stem}.fasta"
+        destination = fasta_dir / target_name
+        if destination.exists():
+            source_hash = hashlib.sha1(str(source).encode("utf-8")).hexdigest()[:10]
+            destination = fasta_dir / f"{target_stem}__source_{source_hash}.fasta"
+            counter = 2
+            while destination.exists():
+                destination = fasta_dir / f"{target_stem}__source_{source_hash}_{counter}.fasta"
+                counter += 1
+        shutil.copy2(source, destination)
+        copied_paths.append(str(destination))
+        fasta_statuses.append("copied")
+        fasta_source_columns.append(source_column)
+        fasta_source_paths.append(str(source))
+        audit_rows.append(
+            {
+                "row_index": int(index),
+                "sample": sample,
+                "category": category,
+                "Genome_Id": genome_id,
+                "status": "copied",
+                "source_column": source_column,
+                "source_path": str(source),
+                "copied_fasta_path": str(destination),
+            }
+        )
+
+    working["copied_fasta_path"] = copied_paths
+    working["fasta_export_status"] = fasta_statuses
+    working["fasta_export_source_column"] = fasta_source_columns
+    working["fasta_export_source_path"] = fasta_source_paths
+    master_path = selected_set_path / "master.tsv"
+    audit_path = selected_set_path / "fasta_export_audit.tsv"
+    working.to_csv(master_path, sep="\t", index=False)
+    pd.DataFrame(audit_rows).to_csv(audit_path, sep="\t", index=False)
+    copied_file_paths = [Path(path) for path in copied_paths if path]
+    return working, [master_path, audit_path, fasta_dir] + copied_file_paths
+
+
+def summarize_selection_preferences(review_df, category_column="category"):
+    columns_by_category = [
+        category_column,
+        "n_components_present_total",
+        "n_components_competing",
+        "n_components_singleton",
+        "n_components_won_when_competing",
+        "win_fraction_when_competing",
+    ]
+    pairwise_columns = [
+        "category_a",
+        "category_b",
+        "n_components_both_present",
+        "n_decisive_components",
+        "n_components_won_a",
+        "n_components_won_b",
+        "n_components_won_other",
+        "win_fraction_a_over_b",
+        "preferred_category",
+        "pvalue_binom",
+        "qvalue_bh",
+        "significance",
+    ]
+    if review_df is None or review_df.empty or category_column not in review_df.columns or "component_id" not in review_df.columns:
+        return pd.DataFrame(columns=columns_by_category), pd.DataFrame(columns=pairwise_columns)
+
+    working = review_df.copy()
+    working[category_column] = working[category_column].astype(str).str.strip().map(canonical_method_label)
+    working["component_id"] = working["component_id"].astype(str).str.strip()
+    working = working.loc[working[category_column].ne("") & working["component_id"].ne("")].copy()
+    if working.empty:
+        return pd.DataFrame(columns=columns_by_category), pd.DataFrame(columns=pairwise_columns)
+
+    present_df = working.loc[:, ["component_id", category_column]].drop_duplicates()
+    categories = ordered_methods(present_df[category_column].tolist())
+    component_categories = (
+        present_df.groupby("component_id")[category_column]
+        .agg(lambda values: sorted(set(values.astype(str))))
+        .to_dict()
+    )
+    selected_df = working.loc[working["selected"].fillna(False), ["component_id", category_column]].drop_duplicates(subset=["component_id"])
+    winner_map = selected_df.set_index("component_id")[category_column].to_dict()
+
+    overall_rows = []
+    for category in categories:
+        present_components = [component_id for component_id, values in component_categories.items() if category in values]
+        competing_components = [component_id for component_id in present_components if len(component_categories.get(component_id, [])) > 1]
+        singleton_components = [component_id for component_id in present_components if len(component_categories.get(component_id, [])) == 1]
+        wins_competing = sum(1 for component_id in competing_components if winner_map.get(component_id) == category)
+        overall_rows.append(
+            {
+                category_column: category,
+                "n_components_present_total": int(len(present_components)),
+                "n_components_competing": int(len(competing_components)),
+                "n_components_singleton": int(len(singleton_components)),
+                "n_components_won_when_competing": int(wins_competing),
+                "win_fraction_when_competing": (
+                    float(wins_competing) / float(len(competing_components))
+                    if competing_components else float("nan")
+                ),
+            }
+        )
+    overall_df = pd.DataFrame(overall_rows)
+
+    pairwise_rows = []
+    pvalues = []
+    for idx_a, category_a in enumerate(categories):
+        for category_b in categories[idx_a + 1:]:
+            both_components = [
+                component_id
+                for component_id, values in component_categories.items()
+                if category_a in values and category_b in values
+            ]
+            wins_a = sum(1 for component_id in both_components if winner_map.get(component_id) == category_a)
+            wins_b = sum(1 for component_id in both_components if winner_map.get(component_id) == category_b)
+            wins_other = int(len(both_components) - wins_a - wins_b)
+            decisive = int(wins_a + wins_b)
+            pvalue = exact_binomial_test_two_sided(wins_a, decisive) if decisive > 0 else float("nan")
+            pvalues.append(pvalue)
+            preferred = ""
+            if wins_a > wins_b:
+                preferred = category_a
+            elif wins_b > wins_a:
+                preferred = category_b
+            pairwise_rows.append(
+                {
+                    "category_a": category_a,
+                    "category_b": category_b,
+                    "n_components_both_present": int(len(both_components)),
+                    "n_decisive_components": decisive,
+                    "n_components_won_a": int(wins_a),
+                    "n_components_won_b": int(wins_b),
+                    "n_components_won_other": wins_other,
+                    "win_fraction_a_over_b": (float(wins_a) / float(decisive)) if decisive > 0 else float("nan"),
+                    "preferred_category": preferred,
+                    "pvalue_binom": pvalue,
+                }
+            )
+    pairwise_df = pd.DataFrame(pairwise_rows)
+    if not pairwise_df.empty:
+        pairwise_df["qvalue_bh"] = benjamini_hochberg_adjust(pairwise_df["pvalue_binom"]).to_numpy(dtype=float)
+        pairwise_df["significance"] = pairwise_df["qvalue_bh"].map(significance_stars)
+        pairwise_df = pairwise_df.sort_values(by=["category_a", "category_b"], kind="mergesort").reset_index(drop=True)
+    else:
+        pairwise_df = pd.DataFrame(columns=pairwise_columns)
+
+    if not overall_df.empty:
+        counts = dict(zip(overall_df[category_column].astype(str), overall_df["n_components_won_when_competing"]))
+        order = ordered_methods(overall_df[category_column].astype(str).tolist(), counts=counts)
+        overall_df[category_column] = overall_df[category_column].astype(str)
+        overall_df = overall_df.set_index(category_column).reindex(order).reset_index()
+    return overall_df, pairwise_df
+
+
+def plot_selection_preference_summary(overall_df, pairwise_df, output_base, category_column="category"):
+    ensure_plotting()
+    if overall_df is None or overall_df.empty or category_column not in overall_df.columns:
+        return False
+
+    plt_local = ensure_plotting()
+    order = overall_df[category_column].astype(str).tolist()
+    fig, axes = plt_local.subplots(1, 2, figsize=(16, 7), gridspec_kw={"width_ratios": [1.0, 1.15]})
+
+    bar_df = overall_df.copy()
+    x = np.arange(len(order))
+    values = pd.to_numeric(bar_df["win_fraction_when_competing"], errors="coerce")
+    axes[0].bar(x, values.fillna(0.0).to_numpy(dtype=float), color="#7f7f7f", edgecolor="black", linewidth=0.7)
+    axes[0].set_ylim(0, 1.0)
+    axes[0].axhline(0.5, color="#4d4d4d", linestyle="--", linewidth=0.8, alpha=0.7)
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(order, rotation=90)
+    axes[0].set_title("Win rate when categories compete")
+    axes[0].set_xlabel(category_column)
+    axes[0].set_ylabel("Selected fraction")
+    axes[0].grid(axis="y", color="#dddddd", linestyle="-", linewidth=0.6)
+    for index, category in enumerate(order):
+        row = bar_df.loc[bar_df[category_column].astype(str).eq(category)].head(1)
+        if row.empty:
+            continue
+        wins = int(row["n_components_won_when_competing"].iloc[0])
+        competing = int(row["n_components_competing"].iloc[0])
+        fraction = pd.to_numeric(row["win_fraction_when_competing"], errors="coerce").iloc[0]
+        if pd.isna(fraction):
+            continue
+        axes[0].text(index, float(fraction), f"{wins}/{competing}", ha="center", va="bottom", fontsize=8)
+
+    heatmap_matrix = pd.DataFrame(np.nan, index=order, columns=order)
+    annotation_matrix = pd.DataFrame("", index=order, columns=order)
+    if pairwise_df is not None and not pairwise_df.empty:
+        for row in pairwise_df.to_dict("records"):
+            category_a = str(row.get("category_a", "")).strip()
+            category_b = str(row.get("category_b", "")).strip()
+            if category_a not in heatmap_matrix.index or category_b not in heatmap_matrix.columns:
+                continue
+            wins_a = int(row.get("n_components_won_a", 0))
+            wins_b = int(row.get("n_components_won_b", 0))
+            decisive = int(row.get("n_decisive_components", 0))
+            frac_a = row.get("win_fraction_a_over_b", float("nan"))
+            frac_b = (float(wins_b) / float(decisive)) if decisive > 0 else float("nan")
+            sig = str(row.get("significance", "") or "")
+            heatmap_matrix.loc[category_a, category_b] = frac_a
+            heatmap_matrix.loc[category_b, category_a] = frac_b
+            annotation_matrix.loc[category_a, category_b] = f"{wins_a}-{wins_b}\n{sig}" if decisive > 0 else "0-0"
+            annotation_matrix.loc[category_b, category_a] = f"{wins_b}-{wins_a}\n{sig}" if decisive > 0 else "0-0"
+    image = axes[1].imshow(heatmap_matrix.values, cmap="Greys", vmin=0, vmax=1, aspect="auto")
+    axes[1].set_xticks(np.arange(len(order)))
+    axes[1].set_xticklabels(order, rotation=90)
+    axes[1].set_yticks(np.arange(len(order)))
+    axes[1].set_yticklabels(order)
+    axes[1].set_title("Pairwise preference when both categories are present")
+    axes[1].set_xlabel("Compared against")
+    axes[1].set_ylabel("Preferred row category")
+    for row_index, row_category in enumerate(order):
+        for col_index, col_category in enumerate(order):
+            text = annotation_matrix.loc[row_category, col_category]
+            value = heatmap_matrix.loc[row_category, col_category]
+            if pd.isna(value):
+                continue
+            color = "white" if float(value) >= 0.55 else "black"
+            axes[1].text(col_index, row_index, text, ha="center", va="center", fontsize=8, color=color)
+    cbar = fig.colorbar(image, ax=axes[1], fraction=0.03, pad=0.02)
+    cbar.set_label("Row category win fraction")
+
+    fig.suptitle("Category selection preference across competing components", fontsize=16, y=0.98)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    save_figure(fig, output_base)
+    return True
+
+
+def plot_selected_category_counts(summary_df, output_base, category_column="category"):
+    ensure_plotting()
+    if summary_df is None or summary_df.empty or category_column not in summary_df.columns:
+        return False
+
+    plt_local = ensure_plotting()
+    plot_df = summary_df.copy()
+    order = plot_df[category_column].astype(str).tolist()
+    metrics = [
+        ("n_selected_genomes", "Total selected genomes"),
+        ("n_selected_hq", "Selected HQ genomes"),
+        ("n_selected_mq", "Selected MQ genomes"),
+        ("n_selected_lq", "Selected LQ genomes"),
+    ]
+    fig, axes = plt_local.subplots(2, 2, figsize=(15, 11), sharex=False, squeeze=False)
+    axes = axes.ravel()
+    x = np.arange(len(order))
+    for ax, (metric, title) in zip(axes, metrics):
+        if metric not in plot_df.columns:
+            ax.axis("off")
+            continue
+        values = pd.to_numeric(plot_df[metric], errors="coerce").fillna(0.0).to_numpy()
+        ax.bar(x, values, color="#7f7f7f", edgecolor="black", linewidth=0.6)
+        ax.set_title(title)
+        ax.set_xlabel(category_column)
+        ax.set_ylabel("Genome count")
+        ax.set_xticks(x)
+        ax.set_xticklabels(order, rotation=90)
+        for index, value in enumerate(values.tolist()):
+            ax.text(index, float(value), f"{int(round(value))}", ha="center", va="bottom", fontsize=8)
+        ax.grid(axis="y", color="#dddddd", linestyle="-", linewidth=0.6)
+    fig.suptitle("Final selected genomes by category", fontsize=16, y=0.995)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    save_figure(fig, output_base)
+    return True
 
 
 def build_compact_category_summary(genome_df, category_column="category"):
@@ -3016,6 +3546,7 @@ def plot_combined_category_compact_summary(
     output_base,
     category_column="category",
     sample_column="sample",
+    stats_df=None,
 ):
     ensure_plotting()
     if genome_df.empty or category_column not in genome_df.columns:
@@ -3049,59 +3580,26 @@ def plot_combined_category_compact_summary(
         if sample_column in working.columns
         else []
     )
+    rng = np.random.default_rng(42)
 
     for ax, (metric, title) in zip(axes, metrics):
-        grouped_values = []
-        if metric == "genomes_per_sample":
-            if not samples:
-                ax.axis("off")
-                continue
-            for category in order:
-                subset = (
-                    working.loc[working[category_column].astype(str).eq(category)]
-                    .groupby(sample_column)["genome_id"]
-                    .nunique()
-                    .reindex(samples, fill_value=0)
-                )
-                grouped_values.append(subset.values.astype(float))
-        else:
-            if metric not in working.columns:
-                ax.axis("off")
-                continue
-            for category in order:
-                series = (
-                    pd.to_numeric(
-                        working.loc[working[category_column].astype(str).eq(category), metric],
-                        errors="coerce",
-                    )
-                    .dropna()
-                )
-                grouped_values.append(series.values.astype(float))
-
-        if not any(len(values) for values in grouped_values):
+        if metric == "genomes_per_sample" and not samples:
             ax.axis("off")
             continue
-
-        box = ax.boxplot(grouped_values, patch_artist=True, labels=order, showfliers=False)
-        for patch in box["boxes"]:
-            patch.set_facecolor("#c0c0c0")
-            patch.set_edgecolor("black")
-        for median in box["medians"]:
-            median.set_color("black")
-            median.set_linewidth(1.3)
-        for whisker in box["whiskers"]:
-            whisker.set_color("black")
-        for cap in box["caps"]:
-            cap.set_color("black")
-        ax.set_title(title)
-        ax.set_ylabel(title)
-        ax.set_xticklabels(order, rotation=90)
-        ax.grid(axis="y", color="#d9d9d9", linestyle="-", linewidth=0.6)
+        grouped_values = compact_metric_grouped_values(
+            working,
+            metric,
+            order,
+            category_column=category_column,
+            sample_column=sample_column,
+        )
+        if not draw_compact_metric_axis(ax, grouped_values, order, metric, title, stats_df=stats_df, rng=rng):
+            continue
         if metric == "genomes_per_sample":
             ax.set_ylim(bottom=0)
 
     n_samples = int(working[sample_column].astype(str).nunique()) if sample_column in working.columns else int(working.shape[0])
-    dedup_note = "species-deduplicated within sample-method"
+    dedup_note = "all genomes"
     fig.suptitle(
         f"MetaPathways compact summary ({dedup_note}; samples={n_samples})",
         fontsize=16,
@@ -3112,7 +3610,7 @@ def plot_combined_category_compact_summary(
     return True
 
 
-def plot_combined_category_distributions(genome_df, output_base, category_column="category"):
+def plot_combined_category_distributions(genome_df, output_base, category_column="category", stats_df=None):
     ensure_plotting()
     if genome_df.empty or category_column not in genome_df.columns:
         return False
@@ -3164,16 +3662,15 @@ def plot_combined_category_distributions(genome_df, output_base, category_column
         if not any(len(values) for values in grouped):
             ax.axis("off")
             continue
-        box = ax.boxplot(grouped, patch_artist=True, labels=order)
-        for patch in box["boxes"]:
-            patch.set_facecolor("#c0c0c0")
-            patch.set_edgecolor("black")
-        for median in box["medians"]:
-            median.set_color("black")
-            median.set_linewidth(1.2)
-        ax.set_title(title)
-        ax.set_xticklabels(order, rotation=90)
-        ax.grid(axis="y", color="#d9d9d9", linestyle="-", linewidth=0.6)
+        draw_compact_metric_axis(
+            ax,
+            grouped,
+            order,
+            metric,
+            title,
+            stats_df=stats_df,
+            rng=np.random.default_rng(42),
+        )
         if metric.endswith("_fraction") or metric in {"integrity_score", "recoverability_score", "mimag_quality_index"}:
             ax.set_ylim(0, 1.02)
         wrote_any = True
@@ -3220,7 +3717,7 @@ def plot_sample_category_count_heatmap(genome_df, output_base, category_column="
         return False
 
     plt_local = ensure_plotting()
-    fig, ax = plt_local.subplots(figsize=(max(8, matrix.shape[1] * 0.9), max(5, matrix.shape[0] * 0.55)))
+    fig, ax = plt_local.subplots(figsize=(max(9, matrix.shape[1] * 1.0), max(5.5, matrix.shape[0] * 0.65)))
     vmax = max(1.0, float(np.nanmax(matrix.values)))
     image = ax.imshow(matrix.values, cmap="Greys", vmin=0, vmax=vmax, aspect="auto")
     ax.set_xticks(np.arange(matrix.shape[1]))
@@ -3286,7 +3783,7 @@ def plot_category_mode_support_heatmaps(genome_df, output_base, category_column=
     fig, axes = plt_local.subplots(
         1,
         len(panels),
-        figsize=(max(10, len(panels) * 9), max(5.5, max(panel[1].shape[0] for panel in panels) * 0.5)),
+        figsize=(max(11, len(panels) * 9.5), max(6.0, max(panel[1].shape[0] for panel in panels) * 0.62)),
         squeeze=False,
     )
     axes = axes.ravel()
@@ -3368,7 +3865,7 @@ def plot_category_pathway_presence_heatmap(pathway_df, genome_df, output_base, c
 
     plt_local = ensure_plotting()
     fig, ax = plt_local.subplots(
-        figsize=(max(10, len(top_pathways) * 0.33), max(5, fraction_matrix.shape[0] * 0.6))
+        figsize=(max(11, len(top_pathways) * 0.36), max(5.5, fraction_matrix.shape[0] * 0.7))
     )
     vmax = max(1.0, float(np.nanmax(fraction_matrix.values)))
     image = ax.imshow(fraction_matrix.values, cmap="Greys", vmin=0, vmax=vmax, aspect="auto")
@@ -3408,6 +3905,7 @@ def compute_functional_evidence_scores(genome_df):
         "qscore",
     ]
     function_metrics = [
+        "informative_annotation_orfs",
         "informative_annotation_fraction",
         "total_pathways",
         "marker_supported_orfs",
@@ -3454,12 +3952,12 @@ def representative_sort_spec(frame):
         "mimag_quality_index",
         "integrity_score",
         "recoverability_score",
-        "qscore",
-        "functional_evidence_score",
         "informative_annotation_fraction",
-        "total_pathways",
+        "informative_annotation_orfs",
         "marker_supported_orfs",
         "reference_mode_supported_accessions",
+        "total_pathways",
+        "qscore",
         "genome_id",
     ]
     sort_columns = []
@@ -3482,6 +3980,412 @@ def dedup_species_key(row):
     if display_rank == "species" and taxonomy_species_is_informative(display_value):
         return display_value
     return np.nan
+
+
+def species_lineage_label(row):
+    lineage_values = []
+    for rank in SPECIES_LINEAGE_RANKS:
+        value = str(row.get(rank, "")).strip()
+        if taxonomy_value_is_informative(value):
+            lineage_values.append(value)
+    if lineage_values:
+        return "; ".join(lineage_values)
+    for column in ["taxonomy_display_label", "taxonomy_display_value", "Species", "genome_display_label", "genome_id"]:
+        value = str(row.get(column, "")).strip()
+        if taxonomy_value_is_informative(value):
+            return value
+    return ""
+
+
+def species_lineage_depth(row):
+    depth = 0
+    for rank in SPECIES_LINEAGE_RANKS:
+        value = str(row.get(rank, "")).strip()
+        if taxonomy_value_is_informative(value):
+            depth += 1
+    return depth
+
+
+def prepare_species_comparison_frame(genome_df, category_column="category", sample_column="sample"):
+    required = {category_column, sample_column, "genome_id"}
+    if genome_df.empty or not required.issubset(set(genome_df.columns)):
+        return pd.DataFrame()
+
+    working = genome_df.copy()
+    working[category_column] = working[category_column].astype(str).str.strip().map(canonical_method_label)
+    working[sample_column] = working[sample_column].astype(str).str.strip()
+    working["genome_id"] = working["genome_id"].astype(str).str.strip()
+    working = working.loc[
+        working[category_column].ne("")
+        & working[sample_column].ne("")
+        & working["genome_id"].ne("")
+    ].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    working["species_key"] = working.apply(dedup_species_key, axis=1)
+    working["species_lineage_label"] = working.apply(species_lineage_label, axis=1)
+    working["species_lineage_depth"] = working.apply(species_lineage_depth, axis=1)
+    working = working.loc[working["species_key"].notna()].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    sort_columns, ascending = representative_sort_spec(working)
+    if sort_columns:
+        working = working.sort_values(by=sort_columns, ascending=ascending, kind="mergesort")
+    return working.reset_index(drop=True)
+
+
+def select_species_category_best_genomes(genome_df, category_column="category", sample_column="sample"):
+    working = prepare_species_comparison_frame(
+        genome_df,
+        category_column=category_column,
+        sample_column=sample_column,
+    )
+    if working.empty:
+        return pd.DataFrame()
+    best = (
+        working.groupby(["species_key", category_column], as_index=False, sort=False)
+        .head(1)
+        .reset_index(drop=True)
+    )
+    return best
+
+
+def select_species_sample_category_best_genomes(genome_df, category_column="category", sample_column="sample"):
+    working = prepare_species_comparison_frame(
+        genome_df,
+        category_column=category_column,
+        sample_column=sample_column,
+    )
+    if working.empty:
+        return pd.DataFrame()
+    best = (
+        working.groupby(["species_key", sample_column, category_column], as_index=False, sort=False)
+        .head(1)
+        .reset_index(drop=True)
+    )
+    return best
+
+
+def _species_label_lookup(frame):
+    if frame.empty or "species_key" not in frame.columns:
+        return pd.DataFrame(columns=["species_key", "species_lineage_label"])
+    working = frame.copy()
+    if "species_lineage_depth" not in working.columns:
+        working["species_lineage_depth"] = working.apply(species_lineage_depth, axis=1)
+    if "species_lineage_label" not in working.columns:
+        working["species_lineage_label"] = working.apply(species_lineage_label, axis=1)
+    working["__label_length"] = working["species_lineage_label"].astype(str).map(len)
+    ranked = working.sort_values(
+        by=["species_lineage_depth", "__label_length", "species_lineage_label"],
+        ascending=[False, False, True],
+        kind="mergesort",
+    )
+    labels = (
+        ranked.groupby("species_key", as_index=False, sort=False)
+        .head(1)[["species_key", "species_lineage_label"]]
+        .reset_index(drop=True)
+    )
+    return labels
+
+
+def build_species_category_best_marker_table(genome_df, category_column="category", sample_column="sample"):
+    best_df = select_species_category_best_genomes(
+        genome_df,
+        category_column=category_column,
+        sample_column=sample_column,
+    )
+    if best_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    label_df = _species_label_lookup(best_df)
+    rows = []
+    for row in best_df.to_dict("records"):
+        species_key = str(row.get("species_key", "")).strip()
+        species_label = str(row.get("species_lineage_label", "")).strip()
+        category_value = str(row.get(category_column, "")).strip()
+        for support_class in ["specific", "generic"]:
+            observed_suffix = f"{support_class}_gene_count"
+            possible_suffix = f"possible_{support_class}_gene_count"
+            for mode_id in ELEMENTAL_MODE_ORDER:
+                observed_column = f"marker_{mode_id}_{observed_suffix}"
+                possible_column = f"marker_{mode_id}_{possible_suffix}"
+                if observed_column not in best_df.columns:
+                    continue
+                observed = pd.to_numeric(pd.Series([row.get(observed_column)]), errors="coerce").iat[0]
+                possible = pd.to_numeric(pd.Series([row.get(possible_column)]), errors="coerce").iat[0] if possible_column in best_df.columns else np.nan
+                fraction = np.nan
+                if pd.notna(observed) and pd.notna(possible) and float(possible) > 0.0:
+                    fraction = float(observed) / float(possible)
+                rows.append(
+                    {
+                        "species_key": species_key,
+                        "species_lineage_label": species_label,
+                        category_column: category_value,
+                        "genome_id": str(row.get("genome_id", "")).strip(),
+                        "mode_id": mode_id,
+                        "mode_label": ELEMENTAL_MODE_LABELS.get(mode_id, mode_id),
+                        "support_class": support_class,
+                        "observed_count": float(observed) if pd.notna(observed) else np.nan,
+                        "possible_count": float(possible) if pd.notna(possible) else np.nan,
+                        "support_fraction": fraction,
+                        "cell_text": (
+                            f"{int(round(float(observed)))}/{int(round(float(possible)))}"
+                            if pd.notna(observed) and pd.notna(possible) and float(possible) > 0.0
+                            else ""
+                        ),
+                    }
+                )
+    long_df = pd.DataFrame(rows)
+    if long_df.empty:
+        return best_df, long_df
+    long_df = long_df.merge(label_df, on="species_key", how="left", suffixes=("", "_best"))
+    long_df["species_lineage_label"] = (
+        long_df["species_lineage_label_best"].fillna(long_df["species_lineage_label"]).astype(str)
+    )
+    long_df = long_df.drop(columns=["species_lineage_label_best"], errors="ignore")
+    return best_df, long_df
+
+
+def build_species_category_breadth_marker_table(genome_df, category_column="category", sample_column="sample"):
+    sample_best_df = select_species_sample_category_best_genomes(
+        genome_df,
+        category_column=category_column,
+        sample_column=sample_column,
+    )
+    if sample_best_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    label_df = _species_label_lookup(sample_best_df)
+    group_columns = ["species_key", category_column]
+    base_df = (
+        sample_best_df.groupby(group_columns, dropna=False)
+        .agg(samples_with_species=(sample_column, "nunique"))
+        .reset_index()
+    )
+    base_df = base_df.merge(label_df, on="species_key", how="left")
+
+    rows = []
+    for base_row in base_df.to_dict("records"):
+        species_key = str(base_row.get("species_key", "")).strip()
+        species_label = str(base_row.get("species_lineage_label", "")).strip()
+        category_value = str(base_row.get(category_column, "")).strip()
+        species_samples = int(base_row.get("samples_with_species", 0) or 0)
+        subset = sample_best_df.loc[
+            sample_best_df["species_key"].astype(str).eq(species_key)
+            & sample_best_df[category_column].astype(str).eq(category_value)
+        ].copy()
+        for support_class in ["specific", "generic"]:
+            observed_suffix = f"{support_class}_gene_count"
+            for mode_id in ELEMENTAL_MODE_ORDER:
+                observed_column = f"marker_{mode_id}_{observed_suffix}"
+                if observed_column not in subset.columns:
+                    continue
+                values = pd.to_numeric(subset[observed_column], errors="coerce").fillna(0.0)
+                support_samples = int(values.gt(0).sum())
+                fraction = np.nan
+                if species_samples > 0:
+                    fraction = float(support_samples) / float(species_samples)
+                rows.append(
+                    {
+                        "species_key": species_key,
+                        "species_lineage_label": species_label,
+                        category_column: category_value,
+                        "mode_id": mode_id,
+                        "mode_label": ELEMENTAL_MODE_LABELS.get(mode_id, mode_id),
+                        "support_class": support_class,
+                        "samples_with_species": species_samples,
+                        "samples_with_support": support_samples,
+                        "support_fraction": fraction,
+                        "cell_text": f"{support_samples}/{species_samples}" if species_samples > 0 else "",
+                    }
+                )
+    long_df = pd.DataFrame(rows)
+    return sample_best_df, long_df
+
+
+def plot_species_category_marker_heatmap(
+    summary_df,
+    output_base,
+    plot_title,
+    colorbar_label,
+    footer_note,
+    category_column="category",
+):
+    ensure_plotting()
+    required = {"species_key", "species_lineage_label", "mode_id", "support_fraction", "cell_text", category_column}
+    if summary_df.empty or not required.issubset(set(summary_df.columns)):
+        return False
+
+    species_order = (
+        summary_df[["species_key", "species_lineage_label"]]
+        .drop_duplicates()
+        .sort_values(by=["species_lineage_label", "species_key"], kind="mergesort")
+    )
+    ordered_species = species_order.to_dict("records")
+    ordered_categories = ordered_methods(summary_df[category_column].astype(str).tolist())
+    mode_ids = [
+        mode_id
+        for mode_id in ELEMENTAL_MODE_ORDER
+        if summary_df["mode_id"].astype(str).eq(mode_id).any()
+    ]
+    if not ordered_species or not ordered_categories or not mode_ids:
+        return False
+
+    column_keys = [(mode_id, category) for mode_id in mode_ids for category in ordered_categories]
+    value_matrix = np.full((len(ordered_species), len(column_keys)), np.nan, dtype=float)
+    text_matrix = np.full((len(ordered_species), len(column_keys)), "", dtype=object)
+    lookup = {}
+    for row in summary_df.to_dict("records"):
+        species_key = str(row.get("species_key", "")).strip()
+        species_label = str(row.get("species_lineage_label", "")).strip()
+        mode_id = str(row.get("mode_id", "")).strip()
+        category_value = str(row.get(category_column, "")).strip()
+        if not species_key or not species_label or not mode_id or not category_value:
+            continue
+        lookup[(species_key, mode_id, category_value)] = row
+
+    for row_index, species_row in enumerate(ordered_species):
+        species_key = str(species_row.get("species_key", "")).strip()
+        for col_index, (mode_id, category_value) in enumerate(column_keys):
+            row = lookup.get((species_key, mode_id, category_value))
+            if row is None:
+                continue
+            value = pd.to_numeric(pd.Series([row.get("support_fraction")]), errors="coerce").iat[0]
+            if pd.notna(value):
+                value_matrix[row_index, col_index] = float(value)
+            text_matrix[row_index, col_index] = str(row.get("cell_text", "")).strip()
+
+    plt_local = ensure_plotting()
+    fig, ax = plt_local.subplots(
+        figsize=(max(16, len(column_keys) * 0.72), max(7.0, len(ordered_species) * 0.34))
+    )
+    if hasattr(plt_local, "colormaps"):
+        cmap = plt_local.colormaps["Greys"].copy()
+    else:
+        cmap = plt_local.cm.get_cmap("Greys").copy()
+    cmap.set_bad(color="#ffffff")
+    image = ax.imshow(value_matrix, cmap=cmap, vmin=0.0, vmax=1.0, aspect="auto")
+    ax.set_xticks(np.arange(len(column_keys)))
+    ax.set_xticklabels(
+        [f"{ELEMENTAL_MODE_LABELS.get(mode_id, mode_id)}\n{category}" for mode_id, category in column_keys],
+        rotation=90,
+        fontsize=8,
+    )
+    ax.set_yticks(np.arange(len(ordered_species)))
+    ax.set_yticklabels([str(row.get("species_lineage_label", "")).strip() for row in ordered_species], fontsize=7)
+    ax.set_xlabel("Mode and category")
+    ax.set_ylabel("Species lineage")
+    ax.set_title(plot_title)
+
+    for separator_index in range(1, len(mode_ids)):
+        ax.axvline((separator_index * len(ordered_categories)) - 0.5, color="#9a9a9a", linewidth=0.8)
+
+    for row_index in range(value_matrix.shape[0]):
+        for col_index in range(value_matrix.shape[1]):
+            if np.isnan(value_matrix[row_index, col_index]):
+                continue
+            value = float(value_matrix[row_index, col_index])
+            text = str(text_matrix[row_index, col_index]).strip()
+            ax.text(
+                col_index,
+                row_index,
+                text,
+                ha="center",
+                va="center",
+                fontsize=7,
+                color=_heatmap_text_color(value, 1.0),
+            )
+
+    cbar = fig.colorbar(image, ax=ax, fraction=0.025, pad=0.02)
+    cbar.set_label(colorbar_label)
+    fig.text(0.5, 0.012, footer_note, ha="center", va="bottom", fontsize=9)
+    fig.tight_layout(rect=[0, 0.03, 1, 1])
+    save_figure(fig, output_base)
+    return True
+
+
+def write_species_category_marker_comparisons(
+    output_dir,
+    prefix,
+    combined_genome_df,
+    category_column="category",
+    sample_column="sample",
+):
+    output_dir = Path(output_dir)
+    root_dir = output_dir / "species_category_comparison"
+    best_dir = root_dir / "best_vs_best"
+    breadth_dir = root_dir / "cross_sample_breadth"
+    best_dir.mkdir(parents=True, exist_ok=True)
+    breadth_dir.mkdir(parents=True, exist_ok=True)
+
+    wrote_paths = []
+    best_genomes_df, best_long_df = build_species_category_best_marker_table(
+        combined_genome_df,
+        category_column=category_column,
+        sample_column=sample_column,
+    )
+    breadth_genomes_df, breadth_long_df = build_species_category_breadth_marker_table(
+        combined_genome_df,
+        category_column=category_column,
+        sample_column=sample_column,
+    )
+
+    outputs = [
+        (best_dir / f"{sanitize_label(prefix)}_species_category_best_genomes.tsv", best_genomes_df),
+        (best_dir / f"{sanitize_label(prefix)}_species_category_best_marker_long.tsv", best_long_df),
+        (breadth_dir / f"{sanitize_label(prefix)}_species_category_sample_best_genomes.tsv", breadth_genomes_df),
+        (breadth_dir / f"{sanitize_label(prefix)}_species_category_cross_sample_marker_long.tsv", breadth_long_df),
+    ]
+    for path, frame in outputs:
+        frame.to_csv(path, sep="\t", index=False)
+        wrote_paths.append(path)
+
+    plot_specs = [
+        (
+            best_long_df.loc[best_long_df["support_class"].astype(str).eq("specific")].copy(),
+            best_dir / f"{sanitize_label(prefix)}_species_category_best_marker_heatmap_specific",
+            "Best-vs-best specific marker recovery by species and category",
+            "Best representative fraction of possible specific markers recovered",
+            "Cell text = observed specific markers / possible specific markers for the best representative in that species-category combination.",
+        ),
+        (
+            best_long_df.loc[best_long_df["support_class"].astype(str).eq("generic")].copy(),
+            best_dir / f"{sanitize_label(prefix)}_species_category_best_marker_heatmap_generic",
+            "Best-vs-best generic marker recovery by species and category",
+            "Best representative fraction of possible generic markers recovered",
+            "Cell text = observed generic markers / possible generic markers for the best representative in that species-category combination.",
+        ),
+        (
+            breadth_long_df.loc[breadth_long_df["support_class"].astype(str).eq("specific")].copy(),
+            breadth_dir / f"{sanitize_label(prefix)}_species_category_cross_sample_marker_heatmap_specific",
+            "Cross-sample breadth of specific marker recovery by species and category",
+            "Fraction of species-positive samples with specific marker support",
+            "Cell text = samples with specific support / samples where that species was recovered for the category.",
+        ),
+        (
+            breadth_long_df.loc[breadth_long_df["support_class"].astype(str).eq("generic")].copy(),
+            breadth_dir / f"{sanitize_label(prefix)}_species_category_cross_sample_marker_heatmap_generic",
+            "Cross-sample breadth of generic marker recovery by species and category",
+            "Fraction of species-positive samples with generic marker support",
+            "Cell text = samples with generic support / samples where that species was recovered for the category.",
+        ),
+    ]
+    for plot_df, plot_base, title, colorbar_label, footer_note in plot_specs:
+        wrote = bool(
+            plot_species_category_marker_heatmap(
+                plot_df,
+                str(plot_base),
+                title,
+                colorbar_label,
+                footer_note,
+                category_column=category_column,
+            )
+        )
+        if wrote:
+            wrote_paths.extend([Path(str(plot_base) + ".png"), Path(str(plot_base) + ".pdf")])
+    return wrote_paths
 
 
 def select_sample_method_deduplicated_genomes(genome_df, category_column="category", sample_column="sample"):
@@ -3741,7 +4645,7 @@ def plot_method_effectiveness_panel(summary_df, output_base, category_column="ca
     fig, axes = plt_local.subplots(
         n_rows,
         n_cols,
-        figsize=(max(15, len(order) * 1.0), max(8.5, n_rows * 3.8)),
+        figsize=(max(16, len(order) * 1.1), max(9.0, n_rows * 3.95)),
         sharex=False,
         squeeze=False,
     )
@@ -3775,398 +4679,81 @@ def run_combined_summary_plots(output_dir, prefix, combined_genome_df, combined_
     scored_df, score_metrics = compute_functional_evidence_scores(combined_genome_df)
     representative_df = select_sample_representatives(scored_df)
     compact_df = select_sample_method_deduplicated_genomes(scored_df)
-    compact_summary_df, _compact_informative_column = build_compact_category_summary(compact_df)
+    compact_summary_df, _compact_informative_column = build_compact_category_summary(scored_df)
     method_summary_df = build_method_effectiveness_summary(scored_df, representative_df)
+    sample_category_summary_df, variant_improvement_by_sample_df, variant_improvement_summary_df = build_variant_improvement_tables(scored_df)
+    compact_summary_stats_df = build_compact_summary_stats(scored_df)
     representatives_out = Path(str(base) + "_sample_representatives.tsv")
     compact_set_out = Path(str(base) + "_compact_deduplicated_genomes.tsv")
     compact_summary_out = Path(str(base) + "_compact_summary_table.tsv")
+    compact_summary_stats_out = Path(str(base) + "_compact_summary_stats.tsv")
     method_summary_out = Path(str(base) + "_method_effectiveness_summary.tsv")
+    sample_category_summary_out = Path(str(base) + "_sample_category_summary.tsv")
+    variant_improvement_by_sample_out = Path(str(base) + "_variant_improvement_by_sample.tsv")
+    variant_improvement_summary_out = Path(str(base) + "_variant_improvement_summary.tsv")
     representative_df.to_csv(representatives_out, sep="\t", index=False)
     compact_df.to_csv(compact_set_out, sep="\t", index=False)
     compact_summary_df.to_csv(compact_summary_out, sep="\t", index=False)
+    compact_summary_stats_df.to_csv(compact_summary_stats_out, sep="\t", index=False)
     method_summary_df.to_csv(method_summary_out, sep="\t", index=False)
-    wrote_paths.extend([representatives_out, compact_set_out, compact_summary_out, method_summary_out])
+    sample_category_summary_df.to_csv(sample_category_summary_out, sep="\t", index=False)
+    variant_improvement_by_sample_df.to_csv(variant_improvement_by_sample_out, sep="\t", index=False)
+    variant_improvement_summary_df.to_csv(variant_improvement_summary_out, sep="\t", index=False)
+    wrote_paths.extend(
+        [
+            representatives_out,
+            compact_set_out,
+            compact_summary_out,
+            compact_summary_stats_out,
+            method_summary_out,
+            sample_category_summary_out,
+            variant_improvement_by_sample_out,
+            variant_improvement_summary_out,
+        ]
+    )
 
     plot_specs = [
         (
             "compact_summary",
             lambda: plot_combined_category_compact_summary(
-                compact_df,
+                scored_df,
                 str(base) + "_compact_summary",
+                stats_df=compact_summary_stats_df,
             ),
         ),
-        ("distribution_facets", lambda: plot_combined_category_distributions(scored_df, str(base) + "_distribution_facets")),
+        ("distribution_facets", lambda: plot_combined_category_distributions(scored_df, str(base) + "_distribution_facets", stats_df=compact_summary_stats_df)),
         ("sample_count_heatmap", lambda: plot_sample_category_count_heatmap(scored_df, str(base) + "_sample_count_heatmap")),
         ("mode_support_heatmaps", lambda: plot_category_mode_support_heatmaps(scored_df, str(base) + "_mode_support_heatmaps")),
         ("pathway_presence_heatmap", lambda: plot_category_pathway_presence_heatmap(combined_pathway_df, scored_df, str(base) + "_pathway_presence_heatmap")),
         ("sample_representative_heatmap", lambda: plot_sample_representative_heatmap(representative_df, str(base) + "_sample_representative_heatmap")),
         ("method_effectiveness_panel", lambda: plot_method_effectiveness_panel(method_summary_df, str(base) + "_method_effectiveness_panel")),
+        ("variant_improvement_before_after", lambda: plot_variant_improvement_before_after(variant_improvement_by_sample_df, str(base) + "_variant_improvement_before_after")),
+        ("variant_improvement_deltas", lambda: plot_variant_improvement_deltas(variant_improvement_by_sample_df, str(base) + "_variant_improvement_deltas")),
     ]
     for label, plotter in plot_specs:
         wrote = bool(plotter())
         if wrote:
             plot_base = Path(str(base) + f"_{label}")
             wrote_paths.extend([Path(str(plot_base) + ".png"), Path(str(plot_base) + ".pdf")])
-    return wrote_paths
-
-
-def run_atlas_linked_comparisons(args, output_dir, combined_genome_df, prefix_override=None):
-    shared_best_path, annotated_path, shared_best_df, annotated_df = load_atlas_inputs(args)
-    atlas_df, _atlas_source = prepare_atlas_species_source(shared_best_df, annotated_df, args)
-    mp_df, exact_map, alias_map = build_metapathways_lookup(combined_genome_df)
-    atlas_match_audit_df, matched_df = match_atlas_genomes_to_metapathways(
-        atlas_df=atlas_df,
-        mp_df=mp_df,
-        exact_map=exact_map,
-        alias_map=alias_map,
-        args=args,
+    single_metric_dir = output_dir / "single_metric_plots"
+    single_metric_dir.mkdir(parents=True, exist_ok=True)
+    for metric, title in metapathways_single_metric_specs(scored_df):
+        plot_base = single_metric_dir / f"{sanitize_label(prefix)}_compare_category_{sanitize_label(metric)}"
+        if plot_single_compact_metric(
+            scored_df,
+            metric,
+            title,
+            str(plot_base),
+            stats_df=compact_summary_stats_df,
+        ):
+            wrote_paths.extend([Path(str(plot_base) + ".png"), Path(str(plot_base) + ".pdf")])
+    wrote_paths.extend(
+        write_species_category_marker_comparisons(
+            output_dir,
+            prefix,
+            scored_df,
+        )
     )
-    if args.min_mimag_tier:
-        tier_order = {"low": 0, "medium": 1, "high": 2}
-        min_value = tier_order[str(args.min_mimag_tier).strip().lower()]
-        if "mimag_tier" not in matched_df.columns:
-            raise ValueError(
-                "--min-mimag-tier was provided, but 'mimag_tier' is missing from atlas-linked matched genomes."
-            )
-        matched_df["_mimag_tier_norm"] = matched_df["mimag_tier"].astype(str).str.lower().str.strip()
-        matched_df["_mimag_tier_value"] = matched_df["_mimag_tier_norm"].map(tier_order)
-        matched_df = matched_df.loc[matched_df["_mimag_tier_value"].fillna(-1).ge(min_value)].copy()
-        if matched_df.empty:
-            raise ValueError(
-                f"No atlas-linked genomes remain after applying --min-mimag-tier {args.min_mimag_tier}."
-            )
-        matched_df = matched_df.drop(columns=["_mimag_tier_norm", "_mimag_tier_value"], errors="ignore")
-
-    compare_label = sanitize_label(args.atlas_compare_column)
-    paired_prefix = sanitize_label(prefix_override) if prefix_override else sanitize_label(args.prefix)
-    paired_base = output_dir / f"{paired_prefix}_atlas_paired_{compare_label}"
-    matched_out = Path(str(paired_base) + "_matched_genomes.tsv")
-    audit_out = Path(str(paired_base) + "_match_audit.tsv")
-    species_representatives_out = Path(str(paired_base) + "_species_representatives.tsv")
-    pairs_out = Path(str(paired_base) + "_pairs.tsv")
-    pair_summary_out = Path(str(paired_base) + "_pair_delta_summary.tsv")
-
-    matched_df.to_csv(matched_out, sep="\t", index=False)
-    atlas_match_audit_df.to_csv(audit_out, sep="\t", index=False)
-    species_representatives_df = build_species_representative_table(
-        matched_df=matched_df,
-        compare_column=args.atlas_compare_column,
-    )
-    if species_representatives_df.empty:
-        raise ValueError(
-            "No species-classified genomes remained after species representative selection. "
-            "Ensure GTDB Species annotations are present and informative."
-        )
-    species_representatives_df.to_csv(species_representatives_out, sep="\t", index=False)
-
-    paired_df = build_paired_component_table(species_representatives_df, args.atlas_compare_column)
-    paired_df.to_csv(pairs_out, sep="\t", index=False)
-    pair_summary_df = summarize_paired_deltas(paired_df)
-    pair_summary_df.to_csv(pair_summary_out, sep="\t", index=False)
-
-    overlap_entities_df, overlap_methods = build_method_overlap_entities(
-        matched_df=species_representatives_df,
-        compare_column=args.atlas_compare_column,
-    )
-    overlap_intersections_df, overlap_method_sizes = summarize_method_overlap_intersections(
-        entity_df=overlap_entities_df,
-        methods=overlap_methods,
-    )
-    overlap_entities_out = Path(str(paired_base) + "_method_overlap_entities.tsv")
-    overlap_intersections_out = Path(str(paired_base) + "_method_overlap_intersections.tsv")
-    species_presence_matrix_out = Path(str(paired_base) + "_species_method_presence_matrix.tsv")
-    overlap_entities_df.to_csv(overlap_entities_out, sep="\t", index=False)
-    overlap_intersections_df.to_csv(overlap_intersections_out, sep="\t", index=False)
-    overlap_entities_df.to_csv(species_presence_matrix_out, sep="\t", index=False)
-    taxonomy_heatmap_paths = plot_taxonomy_rank_method_heatmaps(
-        genome_df=species_representatives_df,
-        output_base_prefix=str(paired_base) + "_taxonomy_rank",
-        category_column=args.atlas_compare_column,
-        genome_id_column="mp_genome_id",
-        ranks=["Phylum", "Class", "Order", "Family", "Genus", "Species"],
-    )
-
-    complete_shared_df, _expected_categories = select_complete_shared_representatives(
-        matched_df=species_representatives_df,
-        compare_column=args.atlas_compare_column,
-    )
-    complete_shared_out = Path(str(paired_base) + "_complete_shared_representatives.tsv")
-    complete_shared_df.to_csv(complete_shared_out, sep="\t", index=False)
-
-    elemental_play_by_play_df = build_pair_elemental_play_by_play(
-        matched_df=species_representatives_df,
-        compare_column=args.atlas_compare_column,
-    )
-    elemental_play_by_play_out = Path(str(paired_base) + "_elemental_play_by_play.tsv")
-    elemental_play_by_play_df.to_csv(elemental_play_by_play_out, sep="\t", index=False)
-    elemental_play_by_play_summary_df = summarize_pair_elemental_play_by_play(elemental_play_by_play_df)
-    elemental_play_by_play_summary_out = Path(str(paired_base) + "_elemental_play_by_play_summary.tsv")
-    elemental_play_by_play_summary_df.to_csv(elemental_play_by_play_summary_out, sep="\t", index=False)
-    focused_pairs_df = select_focus_method_pairs(paired_df)
-    focused_pairs_out = Path(str(paired_base) + "_focus_method_pairs.tsv")
-    focused_pairs_df.to_csv(focused_pairs_out, sep="\t", index=False)
-
-    wrote_paths = [
-        shared_best_path,
-        matched_out,
-        audit_out,
-        species_representatives_out,
-        pairs_out,
-        pair_summary_out,
-        overlap_entities_out,
-        overlap_intersections_out,
-        species_presence_matrix_out,
-        *taxonomy_heatmap_paths,
-        complete_shared_out,
-        elemental_play_by_play_out,
-        elemental_play_by_play_summary_out,
-        focused_pairs_out,
-    ]
-    if annotated_path:
-        wrote_paths.append(annotated_path)
-
-    count_plot_base = Path(str(paired_base) + "_count_heatmap")
-    delta_plot_base = Path(str(paired_base) + "_delta_heatmaps")
-    complete_panel_base = Path(str(paired_base) + "_complete_shared_panel")
-    elemental_panel_base = Path(str(paired_base) + "_elemental_play_by_play_panel")
-    overlap_panel_base = Path(str(paired_base) + "_method_overlap_upset")
-    species_presence_plot_base = Path(str(paired_base) + "_species_method_presence")
-    wrote_count = plot_pair_count_heatmap(paired_df, count_plot_base)
-    wrote_delta = plot_paired_delta_heatmaps(paired_df, delta_plot_base)
-    wrote_overlap = plot_method_overlap_upset(
-        intersections_df=overlap_intersections_df,
-        methods=overlap_methods,
-        method_sizes=overlap_method_sizes,
-        output_base=overlap_panel_base,
-        title="Method overlap (sample-qualified species representatives)",
-    )
-    wrote_species_presence = plot_species_method_presence_heatmap(
-        entity_df=overlap_entities_df,
-        methods=overlap_methods,
-        output_base=species_presence_plot_base,
-        title="Species presence/absence across methods (sample-qualified)",
-    )
-    wrote_complete = plot_complete_shared_summary_panel(
-        complete_df=complete_shared_df,
-        output_base=complete_panel_base,
-        category_column=args.atlas_compare_column,
-    )
-    wrote_elemental = plot_pair_elemental_play_by_play(
-        play_df=elemental_play_by_play_df,
-        output_base=elemental_panel_base,
-    )
-    if wrote_count:
-        wrote_paths.extend([Path(str(count_plot_base) + ".png"), Path(str(count_plot_base) + ".pdf")])
-    if wrote_delta:
-        wrote_paths.extend([Path(str(delta_plot_base) + ".png"), Path(str(delta_plot_base) + ".pdf")])
-    if wrote_overlap:
-        wrote_paths.extend([Path(str(overlap_panel_base) + ".png"), Path(str(overlap_panel_base) + ".pdf")])
-    if wrote_species_presence:
-        wrote_paths.extend([Path(str(species_presence_plot_base) + ".png"), Path(str(species_presence_plot_base) + ".pdf")])
-    if wrote_complete:
-        wrote_paths.extend([Path(str(complete_panel_base) + ".png"), Path(str(complete_panel_base) + ".pdf")])
-    if wrote_elemental:
-        wrote_paths.extend([Path(str(elemental_panel_base) + ".png"), Path(str(elemental_panel_base) + ".pdf")])
-
-    idmap_sample_method_atlas_summaries = []
-    idmap_sample_method_metapathways_summaries = []
-
-    for focus_row in focused_pairs_df.to_dict("records"):
-        focus_family = str(focus_row.get("focus_family", "")).strip()
-        category_a = str(focus_row.get("category_a", "")).strip()
-        category_b = str(focus_row.get("category_b", "")).strip()
-        if not focus_family or not category_a or not category_b:
-            continue
-        focus_pair_df = paired_df.loc[
-            paired_df["category_a"].astype(str).eq(category_a)
-            & paired_df["category_b"].astype(str).eq(category_b)
-        ].copy()
-        if focus_pair_df.empty:
-            continue
-        focus_slug = sanitize_label(focus_family)
-        focus_pairs_out = Path(str(paired_base) + f"_focus_{focus_slug}_pairs.tsv")
-        focus_pair_df.to_csv(focus_pairs_out, sep="\t", index=False)
-        wrote_paths.append(focus_pairs_out)
-
-        idmap_audit_df, idmap_pair_df = build_focus_explicit_id_pair_tables(
-            source_df=matched_df,
-            compare_column=args.atlas_compare_column,
-            category_a=category_a,
-            category_b=category_b,
-        )
-        idmap_audit_out = Path(str(paired_base) + f"_focus_{focus_slug}_idmap_audit.tsv")
-        idmap_pairs_out = Path(str(paired_base) + f"_focus_{focus_slug}_idmap_pairs.tsv")
-        idmap_audit_df.to_csv(idmap_audit_out, sep="\t", index=False)
-        idmap_pair_df.to_csv(idmap_pairs_out, sep="\t", index=False)
-        wrote_paths.extend([idmap_audit_out, idmap_pairs_out])
-        atlas_sample_method_summary_df = summarize_idmap_sample_method_mean_deltas(
-            pair_df=idmap_pair_df,
-            metric_specs=PAIRED_QC_METRICS,
-            focus_family=focus_family,
-        )
-        metapathways_sample_method_summary_df = summarize_idmap_sample_method_mean_deltas(
-            pair_df=idmap_pair_df,
-            metric_specs=PAIRED_FUNCTION_METRICS,
-            focus_family=focus_family,
-        )
-        focus_summary_out = Path(str(paired_base) + f"_focus_{focus_slug}_idmap_sample_method_mean_delta_summary.tsv")
-        pd.concat(
-            [atlas_sample_method_summary_df, metapathways_sample_method_summary_df],
-            ignore_index=True,
-        ).to_csv(focus_summary_out, sep="\t", index=False)
-        wrote_paths.append(focus_summary_out)
-        if not atlas_sample_method_summary_df.empty:
-            idmap_sample_method_atlas_summaries.append(atlas_sample_method_summary_df)
-        if not metapathways_sample_method_summary_df.empty:
-            idmap_sample_method_metapathways_summaries.append(metapathways_sample_method_summary_df)
-
-        focus_delta_df = build_focus_genome_axis_delta_table(
-            focus_pair_df=focus_pair_df,
-            category_a=category_a,
-            category_b=category_b,
-            metric_specs=PAIRED_QC_METRICS + PAIRED_FUNCTION_METRICS,
-        )
-        focus_delta_out = Path(str(paired_base) + f"_focus_{focus_slug}_genome_axis_deltas.tsv")
-        focus_delta_df.to_csv(focus_delta_out, sep="\t", index=False)
-        wrote_paths.append(focus_delta_out)
-
-        atlas_focus_base = Path(str(paired_base) + f"_focus_{focus_slug}_genome_x_genome_atlas")
-        metapathways_focus_base = Path(str(paired_base) + f"_focus_{focus_slug}_genome_x_genome_metapathways")
-        atlas_genome_axis_delta_base = Path(str(paired_base) + f"_focus_{focus_slug}_genome_axis_delta_atlas")
-        metapathways_genome_axis_delta_base = Path(
-            str(paired_base) + f"_focus_{focus_slug}_genome_axis_delta_metapathways"
-        )
-        idmap_delta_atlas_base = Path(str(paired_base) + f"_focus_{focus_slug}_idmap_genome_axis_delta_atlas")
-        idmap_delta_metapathways_base = Path(
-            str(paired_base) + f"_focus_{focus_slug}_idmap_genome_axis_delta_metapathways"
-        )
-        idmap_before_after_atlas_base = Path(str(paired_base) + f"_focus_{focus_slug}_idmap_before_after_atlas")
-        idmap_before_after_metapathways_base = Path(
-            str(paired_base) + f"_focus_{focus_slug}_idmap_before_after_metapathways"
-        )
-        wrote_atlas_focus = plot_focus_pair_metric_scatter_grid(
-            paired_df=focus_pair_df,
-            metric_specs=PAIRED_QC_METRICS,
-            category_a=category_a,
-            category_b=category_b,
-            output_base=atlas_focus_base,
-            title=f"{focus_family} shared genomes: atlas genome-vs-genome comparison",
-        )
-        wrote_metapathways_focus = plot_focus_pair_metric_scatter_grid(
-            paired_df=focus_pair_df,
-            metric_specs=PAIRED_FUNCTION_METRICS,
-            category_a=category_a,
-            category_b=category_b,
-            output_base=metapathways_focus_base,
-            title=f"{focus_family} shared genomes: MetaPathways genome-vs-genome comparison",
-        )
-        wrote_atlas_genome_axis_delta = plot_focus_genome_axis_delta_heatmap(
-            delta_df=focus_delta_df,
-            metric_specs=PAIRED_QC_METRICS,
-            output_base=atlas_genome_axis_delta_base,
-            title=f"{focus_family} shared genomes: atlas deltas by genome ({focus_delta_df['orientation'].iloc[0] if not focus_delta_df.empty else ''})",
-        )
-        wrote_metapathways_genome_axis_delta = plot_focus_genome_axis_delta_heatmap(
-            delta_df=focus_delta_df,
-            metric_specs=PAIRED_FUNCTION_METRICS,
-            output_base=metapathways_genome_axis_delta_base,
-            title=f"{focus_family} shared genomes: MetaPathways deltas by genome ({focus_delta_df['orientation'].iloc[0] if not focus_delta_df.empty else ''})",
-        )
-        wrote_idmap_atlas_delta = plot_focus_genome_axis_delta_heatmap(
-            delta_df=idmap_pair_df,
-            metric_specs=PAIRED_QC_METRICS,
-            output_base=idmap_delta_atlas_base,
-            title=f"{focus_family} explicit ID-mapped deltas by genome ({idmap_pair_df['orientation'].iloc[0] if not idmap_pair_df.empty else ''})",
-        )
-        wrote_idmap_metapathways_delta = plot_focus_genome_axis_delta_heatmap(
-            delta_df=idmap_pair_df,
-            metric_specs=PAIRED_FUNCTION_METRICS,
-            output_base=idmap_delta_metapathways_base,
-            title=f"{focus_family} explicit ID-mapped MetaPathways deltas ({idmap_pair_df['orientation'].iloc[0] if not idmap_pair_df.empty else ''})",
-        )
-        wrote_idmap_atlas_before_after = plot_focus_before_after_lines(
-            pair_df=idmap_pair_df,
-            metric_specs=PAIRED_QC_METRICS,
-            output_base=idmap_before_after_atlas_base,
-            title=f"{focus_family} explicit ID-mapped before/after (atlas)",
-        )
-        wrote_idmap_metapathways_before_after = plot_focus_before_after_lines(
-            pair_df=idmap_pair_df,
-            metric_specs=PAIRED_FUNCTION_METRICS,
-            output_base=idmap_before_after_metapathways_base,
-            title=f"{focus_family} explicit ID-mapped before/after (MetaPathways)",
-        )
-        if wrote_atlas_focus:
-            wrote_paths.extend([Path(str(atlas_focus_base) + ".png"), Path(str(atlas_focus_base) + ".pdf")])
-        if wrote_metapathways_focus:
-            wrote_paths.extend([Path(str(metapathways_focus_base) + ".png"), Path(str(metapathways_focus_base) + ".pdf")])
-        if wrote_atlas_genome_axis_delta:
-            wrote_paths.extend(
-                [Path(str(atlas_genome_axis_delta_base) + ".png"), Path(str(atlas_genome_axis_delta_base) + ".pdf")]
-            )
-        if wrote_metapathways_genome_axis_delta:
-            wrote_paths.extend(
-                [
-                    Path(str(metapathways_genome_axis_delta_base) + ".png"),
-                    Path(str(metapathways_genome_axis_delta_base) + ".pdf"),
-                ]
-            )
-        if wrote_idmap_atlas_delta:
-            wrote_paths.extend([Path(str(idmap_delta_atlas_base) + ".png"), Path(str(idmap_delta_atlas_base) + ".pdf")])
-        if wrote_idmap_metapathways_delta:
-            wrote_paths.extend(
-                [Path(str(idmap_delta_metapathways_base) + ".png"), Path(str(idmap_delta_metapathways_base) + ".pdf")]
-            )
-        if wrote_idmap_atlas_before_after:
-            wrote_paths.extend(
-                [Path(str(idmap_before_after_atlas_base) + ".png"), Path(str(idmap_before_after_atlas_base) + ".pdf")]
-            )
-        if wrote_idmap_metapathways_before_after:
-            wrote_paths.extend(
-                [
-                    Path(str(idmap_before_after_metapathways_base) + ".png"),
-                    Path(str(idmap_before_after_metapathways_base) + ".pdf"),
-                ]
-            )
-
-    if idmap_sample_method_atlas_summaries or idmap_sample_method_metapathways_summaries:
-        atlas_summary_all_df = (
-            pd.concat(idmap_sample_method_atlas_summaries, ignore_index=True)
-            if idmap_sample_method_atlas_summaries else pd.DataFrame()
-        )
-        metapathways_summary_all_df = (
-            pd.concat(idmap_sample_method_metapathways_summaries, ignore_index=True)
-            if idmap_sample_method_metapathways_summaries else pd.DataFrame()
-        )
-        all_summary_df = pd.concat(
-            [atlas_summary_all_df, metapathways_summary_all_df],
-            ignore_index=True,
-        )
-        idmap_sample_method_summary_out = Path(str(paired_base) + "_idmap_sample_method_mean_delta_summary.tsv")
-        all_summary_df.to_csv(idmap_sample_method_summary_out, sep="\t", index=False)
-        wrote_paths.append(idmap_sample_method_summary_out)
-
-        atlas_summary_plot_base = Path(str(paired_base) + "_idmap_sample_method_mean_delta_atlas")
-        metapathways_summary_plot_base = Path(str(paired_base) + "_idmap_sample_method_mean_delta_metapathways")
-        wrote_atlas_summary_plot = plot_idmap_sample_method_delta_heatmap(
-            summary_df=atlas_summary_all_df,
-            metric_specs=PAIRED_QC_METRICS,
-            output_base=atlas_summary_plot_base,
-            title="Explicit ID-mapped sample/method mean deltas (atlas)",
-        )
-        wrote_metapathways_summary_plot = plot_idmap_sample_method_delta_heatmap(
-            summary_df=metapathways_summary_all_df,
-            metric_specs=PAIRED_FUNCTION_METRICS,
-            output_base=metapathways_summary_plot_base,
-            title="Explicit ID-mapped sample/method mean deltas (MetaPathways)",
-        )
-        if wrote_atlas_summary_plot:
-            wrote_paths.extend([Path(str(atlas_summary_plot_base) + ".png"), Path(str(atlas_summary_plot_base) + ".pdf")])
-        if wrote_metapathways_summary_plot:
-            wrote_paths.extend(
-                [Path(str(metapathways_summary_plot_base) + ".png"), Path(str(metapathways_summary_plot_base) + ".pdf")]
-            )
-
     return wrote_paths
 
 
@@ -4187,6 +4774,7 @@ def write_combined_tables(
     combined_elemental_mode_pathway_df,
     combined_pathway_df,
     combined_pathway_orf_df,
+    combined_annotation_audit_df=None,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -4204,6 +4792,7 @@ def write_combined_tables(
     elemental_mode_pathway_out = output_dir / f"{prefix}_elemental_mode_pathway_summary.tsv"
     pathway_out = output_dir / f"{prefix}_pathway_long.tsv"
     pathway_orf_out = output_dir / f"{prefix}_pathway_orf_long.tsv"
+    annotation_audit_out = output_dir / f"{prefix}_elemental_annotation_audit.tsv"
     presence_out = output_dir / f"{prefix}_pathway_presence_matrix.tsv"
     score_out = output_dir / f"{prefix}_pathway_score_matrix.tsv"
     coverage_out = output_dir / f"{prefix}_pathway_coverage_matrix.tsv"
@@ -4222,6 +4811,9 @@ def write_combined_tables(
     combined_elemental_mode_pathway_df.to_csv(elemental_mode_pathway_out, sep="\t", index=False)
     combined_pathway_df.to_csv(pathway_out, sep="\t", index=False)
     combined_pathway_orf_df.to_csv(pathway_orf_out, sep="\t", index=False)
+    if combined_annotation_audit_df is None:
+        combined_annotation_audit_df = pd.DataFrame()
+    combined_annotation_audit_df.to_csv(annotation_audit_out, sep="\t", index=False)
     build_combined_pathway_matrix(
         combined_pathway_df.assign(pathway_present=1),
         "pathway_present",
@@ -4247,6 +4839,7 @@ def write_combined_tables(
         elemental_mode_pathway_out,
         pathway_out,
         pathway_orf_out,
+        annotation_audit_out,
         presence_out,
         score_out,
         coverage_out,
@@ -4255,7 +4848,10 @@ def write_combined_tables(
 
 def main():
     args = build_parser().parse_args()
-    manifest = expand_manifest_inputs(read_manifest(args.manifest_tsv))
+    python_exe = sys.executable or shutil.which("python3") or shutil.which("python")
+    if not python_exe:
+        raise RuntimeError("Could not determine a Python executable for running the phylogeny helper")
+    manifest = read_manifest(args.manifest_tsv)
     manifest_path = Path(args.manifest_tsv).expanduser().resolve()
     output_dir = (
         Path(args.output_dir).expanduser().resolve()
@@ -4264,21 +4860,23 @@ def main():
     )
     prefix = sanitize_label(args.prefix)
     organize_roots = {str(output_dir)}
+    worker_count, prep_worker_count = effective_worker_settings(args)
 
-    if (not args.disable_auto_atlas) and (not args.genome_atlas_dir) and (not args.atlas_shared_best_tsv):
+    if (not args.disable_auto_atlas) and (not args.genome_atlas_dir):
         detected_atlas_dir = auto_detect_atlas_dir(manifest_path, output_dir, manifest)
         if detected_atlas_dir is not None:
             args.genome_atlas_dir = str(detected_atlas_dir)
             print(f"[done] auto-detected genome atlas dir: {detected_atlas_dir}")
         else:
             print(
-                "[warn] no genome atlas directory auto-detected; atlas-linked and best-ANI subset "
-                "comparisons require --genome-atlas-dir (or explicit atlas TSV flags)."
+                "[warn] no genome atlas directory auto-detected; MetaPathways best-of and "
+                "best-ANI subset outputs require --genome-atlas-dir."
             )
 
     combined_genome = []
     combined_annotation = []
     combined_annotation_quality = []
+    combined_annotation_audit = []
     combined_marker = []
     combined_reference_mode = []
     combined_elemental_annotation = []
@@ -4289,97 +4887,150 @@ def main():
     combined_elemental_mode_pathway = []
     combined_pathway = []
     combined_pathway_orf = []
-    marker_manifest = (
-        load_marker_manifest(Path(args.marker_manifest).expanduser().resolve())
-        if args.marker_manifest
-        else None
-    )
+    skipped_inputs = []
+    built_metapathways_best_sets = False
+    marker_manifest_path = resolve_optional_path_arg(args.marker_manifest)
+    marker_manifest = load_marker_manifest(marker_manifest_path) if marker_manifest_path else None
 
     print(f"[start] manifest rows: {len(manifest)}")
     for index, row in manifest.reset_index(drop=True).iterrows():
         sample = row["sample"]
         category = row["category"]
-        input_mode, input_dir = detect_input_mode(row["input_dir"])
-        individual_output_dir = input_dir / args.individual_subdir
+        input_paths = resolve_manifest_row_inputs(row)
+        row_filter_context = build_row_filter_context(args, row)
+        if row_filter_context["allowed_genomes"] is not None:
+            print(
+                f"[done] ({index + 1}/{len(manifest)}) loaded genome filter: "
+                f"ids={len(row_filter_context['allowed_genomes']):,} via {row_filter_context['filter_tsv']}"
+            )
+        if row_filter_context["taxonomy_lookup"] is not None:
+            print(
+                f"[done] ({index + 1}/{len(manifest)}) loaded taxonomy labels: "
+                f"aliases={len(row_filter_context['taxonomy_lookup']):,} "
+                f"ambiguous={int(row_filter_context['taxonomy_ambiguous_alias_count']):,} "
+                f"via {row_filter_context['taxonomy_tsv']}"
+            )
+        input_modes = []
+        for input_path in input_paths:
+            input_mode, _resolved_input = detect_input_mode(input_path)
+            input_modes.append(input_mode)
+        if len(set(input_modes)) != 1:
+            raise ValueError(
+                f"Manifest row mixes raw results and summary directories, which is not supported: {row['input_dir']}"
+            )
+        input_mode = input_modes[0]
+        display_input = str(input_paths[0]) if len(input_paths) == 1 else f"{input_paths[0]} ... ({len(input_paths)} inputs)"
         print(
             f"[start] ({index + 1}/{len(manifest)}) sample '{sample}' "
-            f"category '{category}' from {input_dir} [{input_mode}]"
+            f"category '{category}' from {display_input} [{input_mode}]"
         )
         if input_mode == "results":
-            (
-                genome_summary,
-                pathway_long,
-                pathway_orf_long,
-                annotation_audit_long,
-                pathway_audit_long,
-                marker_audit_long,
-                reference_mode_audit_long,
-            ) = build_summary_tables(
-                results_dir=input_dir,
-                high_conf_threshold=args.high_confidence_threshold,
-                marker_manifest=marker_manifest,
-                reference_mappings_dir=args.reference_mappings_dir,
-            )
-            annotation_summary = build_annotation_source_table(genome_summary)
-            annotation_quality_summary = build_annotation_quality_table(genome_summary)
-            marker_summary = build_marker_summary_table(genome_summary)
-            reference_mode_summary = genome_summary[
-                [
-                    column for column in genome_summary.columns
-                    if column == "genome_id" or column.startswith("reference_mode_")
-                ]
-            ].copy()
-            elemental_annotation_summary = build_elemental_summary_table(genome_summary, "annotation", "total_orfs", "orfs")
-            elemental_mode_annotation_summary = build_elemental_mode_summary_table(genome_summary, "annotation", "total_orfs", "orfs")
-            elemental_pathway_support_summary = build_elemental_summary_table(genome_summary, "pathway_support", "pathway_support_orfs", "orfs")
-            elemental_mode_pathway_support_summary = build_elemental_mode_summary_table(genome_summary, "pathway_support", "pathway_support_orfs", "orfs")
-            elemental_pathway_summary = build_elemental_summary_table(genome_summary, "pathway", "total_pathways", "count", assigned_unit_label="pathways")
-            elemental_mode_pathway_summary = build_elemental_mode_summary_table(genome_summary, "pathway", "total_pathways", "count", assigned_unit_label="pathways")
-            write_outputs(
-                output_dir=individual_output_dir,
-                prefix=prefix,
-                genome_summary=genome_summary,
-                pathway_long=pathway_long,
-                pathway_orf_long=pathway_orf_long,
-                annotation_audit_long=annotation_audit_long,
-                pathway_audit_long=pathway_audit_long,
-                marker_audit_long=marker_audit_long,
-                reference_mode_audit_long=reference_mode_audit_long,
-                marker_manifest=marker_manifest,
-            )
-            organize_roots.add(str(individual_output_dir))
-            print(f"[done] ({index + 1}/{len(manifest)}) outputs in: {individual_output_dir}")
-        else:
-            (
-                genome_summary,
-                annotation_summary,
-                annotation_quality_summary,
-                marker_summary,
-                reference_mode_summary,
-                elemental_annotation_summary,
-                elemental_mode_annotation_summary,
-                elemental_pathway_support_summary,
-                elemental_mode_pathway_support_summary,
-                elemental_pathway_summary,
-                elemental_mode_pathway_summary,
-                pathway_long,
-                pathway_orf_long,
-            ) = load_existing_summary(input_dir)
-            print(f"[done] ({index + 1}/{len(manifest)}) loaded existing summary: {input_dir}")
+            group_output_dir = resolve_row_output_dir(row, input_paths, args)
+            try:
+                result_bundle = summarize_results_group(
+                    input_dirs=input_paths,
+                    group_output_dir=group_output_dir,
+                    prefix=prefix,
+                    row_filter_context=row_filter_context,
+                    marker_manifest=marker_manifest,
+                    args=args,
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                skipped_inputs.append(
+                    {
+                        "sample": sample,
+                        "category": category,
+                        "input_dir": str(row["input_dir"]),
+                        "input_mode": input_mode,
+                        "error_type": exc.__class__.__name__,
+                        "error_message": str(exc),
+                    }
+                )
+                print(
+                    f"[warn] ({index + 1}/{len(manifest)}) skipping '{sample}' '{category}' from {row['input_dir']}: {exc}"
+                )
+                continue
 
-        combined_genome.append(add_context_columns(genome_summary, sample, category, input_dir))
-        combined_annotation.append(add_context_columns(annotation_summary, sample, category, input_dir))
-        combined_annotation_quality.append(add_context_columns(annotation_quality_summary, sample, category, input_dir))
-        combined_marker.append(add_context_columns(marker_summary, sample, category, input_dir))
-        combined_reference_mode.append(add_context_columns(reference_mode_summary, sample, category, input_dir))
-        combined_elemental_annotation.append(add_context_columns(elemental_annotation_summary, sample, category, input_dir))
-        combined_elemental_mode_annotation.append(add_context_columns(elemental_mode_annotation_summary, sample, category, input_dir))
-        combined_elemental_pathway_support.append(add_context_columns(elemental_pathway_support_summary, sample, category, input_dir))
-        combined_elemental_mode_pathway_support.append(add_context_columns(elemental_mode_pathway_support_summary, sample, category, input_dir))
-        combined_elemental_pathway.append(add_context_columns(elemental_pathway_summary, sample, category, input_dir))
-        combined_elemental_mode_pathway.append(add_context_columns(elemental_mode_pathway_summary, sample, category, input_dir))
-        combined_pathway.append(add_context_columns(pathway_long, sample, category, input_dir))
-        combined_pathway_orf.append(add_context_columns(pathway_orf_long, sample, category, input_dir))
+            genome_summary = result_bundle["genome_summary"]
+            annotation_summary = result_bundle["annotation_summary"]
+            annotation_quality_summary = result_bundle["annotation_quality_summary"]
+            marker_summary = result_bundle["marker_summary"]
+            reference_mode_summary = result_bundle["reference_mode_summary"]
+            elemental_annotation_summary = result_bundle["elemental_annotation_summary"]
+            elemental_mode_annotation_summary = result_bundle["elemental_mode_annotation_summary"]
+            elemental_pathway_support_summary = result_bundle["elemental_pathway_support_summary"]
+            elemental_mode_pathway_support_summary = result_bundle["elemental_mode_pathway_support_summary"]
+            elemental_pathway_summary = result_bundle["elemental_pathway_summary"]
+            elemental_mode_pathway_summary = result_bundle["elemental_mode_pathway_summary"]
+            pathway_long = result_bundle["pathway_long"]
+            pathway_orf_long = result_bundle["pathway_orf_long"]
+            annotation_audit_long = result_bundle["annotation_audit_long"]
+            organize_roots.add(str(group_output_dir))
+            for input_path in input_paths:
+                organize_roots.add(str(input_path / args.individual_subdir))
+            if result_bundle["skipped_inputs"]:
+                for skipped in result_bundle["skipped_inputs"]:
+                    skipped_inputs.append(
+                        {
+                            "sample": sample,
+                            "category": category,
+                            "input_dir": skipped["input_dir"],
+                            "input_mode": input_mode,
+                            "error_type": skipped["error_type"],
+                            "error_message": skipped["error_message"],
+                        }
+                    )
+        else:
+            summary_parts = []
+            for input_path in input_paths:
+                summary_parts.append(load_existing_summary(input_path, marker_manifest=marker_manifest))
+            (
+                genome_parts,
+                annotation_parts,
+                annotation_quality_parts,
+                marker_parts,
+                reference_mode_parts,
+                elemental_annotation_parts,
+                elemental_mode_annotation_parts,
+                elemental_pathway_support_parts,
+                elemental_mode_pathway_support_parts,
+                elemental_pathway_parts,
+                elemental_mode_pathway_parts,
+                pathway_parts,
+                pathway_orf_parts,
+                annotation_audit_parts,
+            ) = map(list, zip(*summary_parts))
+            genome_summary = pd.concat(genome_parts, ignore_index=True)
+            annotation_summary = pd.concat(annotation_parts, ignore_index=True)
+            annotation_quality_summary = pd.concat(annotation_quality_parts, ignore_index=True)
+            marker_summary = pd.concat(marker_parts, ignore_index=True)
+            reference_mode_summary = pd.concat(reference_mode_parts, ignore_index=True)
+            elemental_annotation_summary = pd.concat(elemental_annotation_parts, ignore_index=True)
+            elemental_mode_annotation_summary = pd.concat(elemental_mode_annotation_parts, ignore_index=True)
+            elemental_pathway_support_summary = pd.concat(elemental_pathway_support_parts, ignore_index=True)
+            elemental_mode_pathway_support_summary = pd.concat(elemental_mode_pathway_support_parts, ignore_index=True)
+            elemental_pathway_summary = pd.concat(elemental_pathway_parts, ignore_index=True)
+            elemental_mode_pathway_summary = pd.concat(elemental_mode_pathway_parts, ignore_index=True)
+            pathway_long = pd.concat(pathway_parts, ignore_index=True)
+            pathway_orf_long = pd.concat(pathway_orf_parts, ignore_index=True)
+            annotation_audit_long = pd.concat(annotation_audit_parts, ignore_index=True)
+            print(f"[done] ({index + 1}/{len(manifest)}) loaded existing summary inputs: {len(input_paths)}")
+
+        input_dir_value = str(group_output_dir) if input_mode == "results" else str(row["input_dir"])
+        combined_genome.append(add_context_columns(genome_summary, sample, category, input_dir_value))
+        combined_annotation.append(add_context_columns(annotation_summary, sample, category, input_dir_value))
+        combined_annotation_quality.append(add_context_columns(annotation_quality_summary, sample, category, input_dir_value))
+        combined_annotation_audit.append(add_context_columns(annotation_audit_long, sample, category, input_dir_value))
+        combined_marker.append(add_context_columns(marker_summary, sample, category, input_dir_value))
+        combined_reference_mode.append(add_context_columns(reference_mode_summary, sample, category, input_dir_value))
+        combined_elemental_annotation.append(add_context_columns(elemental_annotation_summary, sample, category, input_dir_value))
+        combined_elemental_mode_annotation.append(add_context_columns(elemental_mode_annotation_summary, sample, category, input_dir_value))
+        combined_elemental_pathway_support.append(add_context_columns(elemental_pathway_support_summary, sample, category, input_dir_value))
+        combined_elemental_mode_pathway_support.append(add_context_columns(elemental_mode_pathway_support_summary, sample, category, input_dir_value))
+        combined_elemental_pathway.append(add_context_columns(elemental_pathway_summary, sample, category, input_dir_value))
+        combined_elemental_mode_pathway.append(add_context_columns(elemental_mode_pathway_summary, sample, category, input_dir_value))
+        combined_pathway.append(add_context_columns(pathway_long, sample, category, input_dir_value))
+        combined_pathway_orf.append(add_context_columns(pathway_orf_long, sample, category, input_dir_value))
 
     combined_genome_df = (
         pd.concat(combined_genome, ignore_index=True)
@@ -4394,6 +5045,11 @@ def main():
     combined_annotation_quality_df = (
         pd.concat(combined_annotation_quality, ignore_index=True)
         if combined_annotation_quality
+        else pd.DataFrame()
+    )
+    combined_annotation_audit_df = (
+        pd.concat(combined_annotation_audit, ignore_index=True)
+        if combined_annotation_audit
         else pd.DataFrame()
     )
     combined_marker_df = (
@@ -4448,7 +5104,47 @@ def main():
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    written_paths = write_combined_tables(
+    written_paths = []
+    if skipped_inputs:
+        skipped_path = output_dir / f"{prefix}_skipped_inputs.tsv"
+        pd.DataFrame(skipped_inputs).to_csv(skipped_path, sep="	", index=False)
+        written_paths.append(str(skipped_path))
+        print(f"[done] skipped inputs table: {skipped_path} (n={len(skipped_inputs)})")
+
+    pathway_status_columns = [
+        "sample",
+        "category",
+        "input_dir",
+        "genome_id",
+        "results_mode",
+        "genome_dir",
+        "broad_orf_source",
+        "pathway_status",
+        "pathway_missing_reason",
+        "pathway_table_present",
+        "pathway_orf_table_present",
+    ]
+    if not combined_genome_df.empty and "pathway_status" in combined_genome_df.columns:
+        available_columns = [
+            column for column in pathway_status_columns
+            if column in combined_genome_df.columns
+        ]
+        pathway_status_path = output_dir / f"{prefix}_pathway_availability.tsv"
+        combined_genome_df.loc[:, available_columns].to_csv(
+            pathway_status_path,
+            sep="\t",
+            index=False,
+        )
+        written_paths.append(str(pathway_status_path))
+        print(f"[done] pathway availability table: {pathway_status_path}")
+
+    if combined_genome_df.empty:
+        raise ValueError(
+            "No valid MetaPathways summaries were produced from the manifest inputs. "
+            "Check the skipped inputs table for failures."
+        )
+
+    written_paths.extend(write_combined_tables(
         output_dir=output_dir,
         prefix=prefix,
         manifest_df=manifest,
@@ -4465,7 +5161,8 @@ def main():
         combined_elemental_mode_pathway_df=combined_elemental_mode_pathway_df,
         combined_pathway_df=combined_pathway_df,
         combined_pathway_orf_df=combined_pathway_orf_df,
-    )
+        combined_annotation_audit_df=combined_annotation_audit_df,
+    ))
 
     print("[start] combined category summary/comparison plots")
     combined_plot_paths = run_combined_summary_plots(
@@ -4477,25 +5174,45 @@ def main():
     written_paths.extend(combined_plot_paths)
     print(f"[done] combined category plots: {len(combined_plot_paths)} files")
 
-    atlas_ready = has_atlas_shared_best(args)
-    if args.skip_atlas_linked:
-        print("[skip] atlas-linked paired comparisons skipped by --skip-atlas-linked")
-    elif atlas_ready:
-        print("[start] atlas-linked paired comparisons")
-        atlas_paths = run_atlas_linked_comparisons(
+    atlas_best_ready = has_atlas_component_members(args)
+    metapathways_best_set_paths = []
+
+    if atlas_best_ready:
+        print("[start] MetaPathways best-of-sample / best-of-best selection")
+        metapathways_best_set_paths = run_metapathways_best_sets(
             args=args,
             output_dir=output_dir,
+            prefix=prefix,
+            manifest_df=manifest,
             combined_genome_df=combined_genome_df,
+            combined_annotation_df=combined_annotation_df,
+            combined_annotation_quality_df=combined_annotation_quality_df,
+            combined_marker_df=combined_marker_df,
+            combined_reference_mode_df=combined_reference_mode_df,
+            combined_elemental_annotation_df=combined_elemental_annotation_df,
+            combined_elemental_mode_annotation_df=combined_elemental_mode_annotation_df,
+            combined_elemental_pathway_support_df=combined_elemental_pathway_support_df,
+            combined_elemental_mode_pathway_support_df=combined_elemental_mode_pathway_support_df,
+            combined_elemental_pathway_df=combined_elemental_pathway_df,
+            combined_elemental_mode_pathway_df=combined_elemental_mode_pathway_df,
+            combined_pathway_df=combined_pathway_df,
+            combined_pathway_orf_df=combined_pathway_orf_df,
+            combined_annotation_audit_df=combined_annotation_audit_df,
         )
-        written_paths.extend(atlas_paths)
-        print(f"[done] atlas-linked paired outputs: {len(atlas_paths)} files")
+        written_paths.extend(metapathways_best_set_paths)
+        built_metapathways_best_sets = True
+        print(f"[done] MetaPathways best sets: {len(metapathways_best_set_paths)} files")
     else:
         print(
-            "[warn] atlas-linked paired comparisons not run; no shared-best atlas TSV was found. "
-            "Provide --genome-atlas-dir or --atlas-shared-best-tsv."
+            "[warn] MetaPathways best-of-sample / best-of-best selection not run; "
+            "no atlas component-member TSV was found. Provide --genome-atlas-dir containing "
+            "tables/components/best_sets_review_component_members.tsv."
         )
 
     subset_path, subset_table = (None, pd.DataFrame())
+    subset_prefix = sanitize_label(f"{prefix}_bestani")
+    subset_genome_df = pd.DataFrame()
+    subset_annotation_audit_df = pd.DataFrame()
     if args.skip_best_subset:
         print("[skip] best-ANI subset comparisons skipped by --skip-best-subset")
     else:
@@ -4506,6 +5223,7 @@ def main():
         subset_genome_df = filter_frame_by_best_subset(combined_genome_df, subset_lookup)
         subset_annotation_df = filter_frame_by_best_subset(combined_annotation_df, subset_lookup)
         subset_annotation_quality_df = filter_frame_by_best_subset(combined_annotation_quality_df, subset_lookup)
+        subset_annotation_audit_df = filter_frame_by_best_subset(combined_annotation_audit_df, subset_lookup)
         subset_marker_df = filter_frame_by_best_subset(combined_marker_df, subset_lookup)
         subset_reference_mode_df = filter_frame_by_best_subset(combined_reference_mode_df, subset_lookup)
         subset_elemental_annotation_df = filter_frame_by_best_subset(combined_elemental_annotation_df, subset_lookup)
@@ -4525,7 +5243,6 @@ def main():
                 "Best-ANI subset selection produced zero genomes in combined MetaPathways outputs."
             )
 
-        subset_prefix = sanitize_label(f"{prefix}_bestani")
         subset_paths = write_combined_tables(
             output_dir=output_dir,
             prefix=subset_prefix,
@@ -4543,6 +5260,7 @@ def main():
             combined_elemental_mode_pathway_df=subset_elemental_mode_pathway_df,
             combined_pathway_df=subset_pathway_df,
             combined_pathway_orf_df=subset_pathway_orf_df,
+            combined_annotation_audit_df=subset_annotation_audit_df,
         )
         written_paths.extend(subset_paths)
         print(f"[done] best-ANI subset tables: {len(subset_paths)} files; genomes={len(subset_genome_df)}")
@@ -4556,21 +5274,70 @@ def main():
         )
         written_paths.extend(subset_plot_paths)
         print(f"[done] best-ANI subset category plots: {len(subset_plot_paths)} files")
-
-        if atlas_ready and (not args.skip_atlas_linked):
-            print("[start] best-ANI subset atlas-linked paired comparisons")
-            subset_atlas_paths = run_atlas_linked_comparisons(
-                args=args,
-                output_dir=output_dir,
-                combined_genome_df=subset_genome_df,
-                prefix_override=subset_prefix,
-            )
-            written_paths.extend(subset_atlas_paths)
-            print(f"[done] best-ANI subset atlas-linked outputs: {len(subset_atlas_paths)} files")
     elif not args.skip_best_subset:
         print(
             "[warn] best-ANI subset comparisons not run; no best-set table was found. "
             "Provide --best-subset-tsv or --genome-atlas-dir containing best_sets_review_selected_genomes.tsv."
+        )
+
+    if args.skip_atlas_linked:
+        print("[skip] atlas-linked category comparisons skipped by --skip-atlas-linked")
+    elif args.genome_atlas_dir:
+        from metapathways_atlas_linked_core import (
+            has_atlas_annotated,
+            has_atlas_shared_best,
+            run_atlas_linked_comparisons,
+        )
+
+        atlas_ready = has_atlas_annotated(args) if args.atlas_linkage_mode == "species_all" else has_atlas_shared_best(args)
+        if atlas_ready:
+            atlas_args = build_atlas_linked_args(args, prefix)
+            atlas_annotation_df = (
+                pd.DataFrame()
+                if args.skip_atlas_linked_annotation_presence
+                else combined_annotation_audit_df
+            )
+            print(
+                f"[start] atlas-linked category comparisons: mode={args.atlas_linkage_mode} "
+                f"workers={worker_count}"
+            )
+            atlas_paths = run_atlas_linked_comparisons(
+                args=atlas_args,
+                output_dir=output_dir,
+                combined_genome_df=combined_genome_df,
+                combined_annotation_audit_df=atlas_annotation_df,
+            )
+            written_paths.extend(atlas_paths)
+            print(f"[done] atlas-linked category comparisons: {len(atlas_paths)} files")
+
+            if subset_path is not None and not subset_genome_df.empty:
+                subset_atlas_prefix = sanitize_label(f"{subset_prefix}_atlas")
+                subset_atlas_args = build_atlas_linked_args(args, subset_atlas_prefix)
+                subset_atlas_annotation_df = (
+                    pd.DataFrame()
+                    if args.skip_atlas_linked_annotation_presence
+                    else subset_annotation_audit_df
+                )
+                print(f"[start] atlas-linked best-ANI subset comparisons: prefix={subset_atlas_prefix}")
+                subset_atlas_paths = run_atlas_linked_comparisons(
+                    args=subset_atlas_args,
+                    output_dir=output_dir,
+                    combined_genome_df=subset_genome_df,
+                    combined_annotation_audit_df=subset_atlas_annotation_df,
+                    prefix_override=subset_atlas_prefix,
+                )
+                written_paths.extend(subset_atlas_paths)
+                print(f"[done] atlas-linked best-ANI subset comparisons: {len(subset_atlas_paths)} files")
+        else:
+            needed = "*_annotated.tsv" if args.atlas_linkage_mode == "species_all" else "*_shared_best_genomes.tsv"
+            print(
+                "[warn] atlas-linked category comparisons not run; no compatible atlas file was found in "
+                f"{args.genome_atlas_dir} for mode={args.atlas_linkage_mode} (need {needed})."
+            )
+    else:
+        print(
+            "[warn] atlas-linked category comparisons not run; provide --genome-atlas-dir "
+            "or allow auto-detection of a compatible atlas directory."
         )
 
     if not args.skip_organize_outputs:
@@ -4586,6 +5353,29 @@ def main():
             f"[done] organized outputs: {organized_files_total} files "
             f"({len(organized_index_paths)} index tables)"
         )
+
+    if args.run_denovo_phylogeny:
+        if atlas_best_ready:
+            print("[start] de novo phylogeny cohort export")
+            denovo_set_paths = build_denovo_phylogeny_sets(
+                args=args,
+                output_dir=output_dir,
+                combined_genome_df=combined_genome_df,
+            )
+            written_paths.extend(denovo_set_paths)
+            print(f"[done] de novo phylogeny cohort export: {len(denovo_set_paths)} files")
+            phylogeny_paths = run_denovo_phylogeny(
+                python_exe=python_exe,
+                output_dir=output_dir / "denovo_phylogeny",
+                threads=args.denovo_phylogeny_threads,
+                gtdbtk_data_path=args.denovo_gtdbtk_data_path,
+            )
+            written_paths.extend(phylogeny_paths)
+        else:
+            print(
+                "[warn] de novo phylogeny requested, but no atlas component-member TSV was found. "
+                "Provide --genome-atlas-dir containing tables/components/best_sets_review_component_members.tsv."
+            )
 
     print(f"[done] combined outputs in: {output_dir}")
     for path in written_paths:

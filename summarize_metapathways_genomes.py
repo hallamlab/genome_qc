@@ -19,6 +19,25 @@ import pandas as pd
 plt = None
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def resolve_repo_asset_path(*parts):
+    cwd_candidate = Path.cwd().joinpath(*parts)
+    if cwd_candidate.exists():
+        return cwd_candidate.resolve()
+    return SCRIPT_DIR.joinpath(*parts).resolve()
+
+
+def resolve_optional_path_arg(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "off", "false", "no", "disable", "disabled"}:
+        return None
+    return Path(text).expanduser().resolve()
+
+
 ANNOTATED_PRODUCT_TOKENS = {
     "",
     "<unannotated protein>",
@@ -26,6 +45,7 @@ ANNOTATED_PRODUCT_TOKENS = {
     "hypothetical protein",
 }
 FUNCTIONAL_SOURCE_COLUMNS = ["metacyc", "swissprot", "uniref50"]
+FUNCTIONAL_TARGET_COLUMNS = [f"{column}_target" for column in FUNCTIONAL_SOURCE_COLUMNS]
 FUNCTIONAL_SOURCE_DB = {"metacyc", "swissprot", "uniref50"}
 ANNOTATION_CATEGORY_ORDER = [
     "informative",
@@ -42,7 +62,7 @@ ANNOTATION_CATEGORY_LABELS = {
     "hypothetical": "Hypothetical",
     "uncharacterized": "Uncharacterized/unknown",
     "domain_family": "Domain/family/DUF",
-    "qualifier": "Putative/probable/etc.",
+    "qualifier": "Provisional annotation",
     "fragment": "Fragment",
     "other_uncertain": "Other uncertain",
     "unannotated": "Unannotated",
@@ -101,6 +121,8 @@ TAXONOMY_MISSING_TOKENS = {
     "uncultured",
     "unidentified",
 }
+SWISSPROT_TRAILING_FIELD_RE = re.compile(r"\s(?:OS|OX|GN|PE|SV)\s")
+UNIREF_TRAILING_FIELD_RE = re.compile(r"\s(?:n|Tax|TaxID|RepID)=")
 ELEMENTAL_CYCLE_ORDER = [
     "carbon_c1",
     "nitrogen",
@@ -389,6 +411,151 @@ ELEMENTAL_MODE_KEYWORDS = {
         "arr",
     ],
 }
+
+# Experimental mobility screen note:
+# This is intentionally kept separate from the reusable reference_mappings workflow.
+# It currently runs as a lightweight annotation-text screen during write_outputs().
+# If it proves useful, promote it into a maintained reusable resource/config path;
+# otherwise it can be removed without changing the core metabolism reference system.
+EXPERIMENTAL_MOBILITY_CATEGORY_ORDER = [
+    "plasmid-associated",
+    "phage/prophage-associated",
+    "generic MGE-associated",
+    "genomic-island-associated",
+]
+EXPERIMENTAL_MOBILITY_CATEGORY_COLUMNS = {
+    "plasmid-associated": "plasmid_associated",
+    "phage/prophage-associated": "phage_prophage_associated",
+    "generic MGE-associated": "generic_mge_associated",
+    "genomic-island-associated": "genomic_island_associated",
+}
+EXPERIMENTAL_MOBILITY_KEYWORDS = {
+    "plasmid-associated": [
+        "repa",
+        "repb",
+        "repc",
+        "plasmid replication",
+        "plasmid initiator",
+        "relaxase",
+        "type iv coupling protein",
+        "t4cp",
+        "vird4",
+        "trb",
+        "conjugation",
+        "conjugal transfer",
+        "mating pair formation",
+        "mpf",
+        "type iv secretion",
+        "t4ss",
+        "partition protein",
+        "plasmid partition",
+        "stability protein",
+        "toxin antitoxin",
+        "postsegregational killing",
+    ],
+    "phage/prophage-associated": [
+        "terminase",
+        "terminase large subunit",
+        "terl",
+        "portal protein",
+        "major capsid",
+        "capsid",
+        "head protein",
+        "prohead",
+        "tail protein",
+        "tail fiber",
+        "tail sheath",
+        "tail tube",
+        "baseplate",
+        "tape measure protein",
+        "endolysin",
+        "spanin",
+        "prophage",
+        "phage integrase",
+        "capsid maturation protease",
+        "phage protease",
+        "dna packaging",
+        "packaging atpase",
+    ],
+    "generic MGE-associated": [
+        "integrase",
+        "site-specific recombinase",
+        "tyrosine recombinase",
+        "serine recombinase",
+        "recombinase",
+        "excisionase",
+        "xis",
+        "transposase",
+        "insertion sequence",
+        "is element",
+        "resolvase",
+        "invertase",
+        "conjugative transfer",
+        "mobilization protein",
+        "mobilization",
+        "orit",
+        "relaxosome",
+        "type iv secretion",
+        "t4ss",
+        "integrative conjugative element",
+        "ice",
+        "ime",
+        "conjugative element",
+        "mobilizable element",
+    ],
+    "genomic-island-associated": [
+        "genomic island",
+        "pathogenicity island",
+        "pai",
+        "symbiosis island",
+        "metabolic island",
+        "resistance island",
+        "integrative element",
+        "integrase",
+        "recombinase",
+        "excisionase",
+        "direct repeat",
+        "attl",
+        "attr",
+        "insertion hotspot",
+        "integration hotspot",
+        "conjugation",
+        "type iv secretion",
+        "cargo gene cluster",
+    ],
+}
+EXPERIMENTAL_MOBILITY_OPTIONAL_BROAD_KEYWORDS = [
+    "mobile element protein",
+    "hypothetical phage protein",
+    "plasmid protein",
+    "conjugation protein",
+    "phage protein",
+    "virus-like",
+    "viral protein",
+    "temperate phage",
+    "lysogeny",
+    "lysogenic",
+]
+EXPERIMENTAL_SHORT_TOKEN_KEYWORDS = {
+    "rep",
+    "tra",
+    "ice",
+    "ime",
+    "pai",
+    "xis",
+    "attl",
+    "attr",
+    "orit",
+    "mpf",
+    "t4ss",
+    "t4cp",
+    "terl",
+    "lysin",
+    "holin",
+    "repa",
+    "repb",
+    "repc",
+}
 ELEMENTAL_CYCLE_KEYWORDS = {
     "carbon_c1": [
         "carbon fixation",
@@ -469,9 +636,9 @@ ELEMENTAL_CYCLE_KEYWORDS = {
 }
 
 
-METABOLISM_MANIFEST_PATH = Path(__file__).resolve().parent / "config" / "metabolism_keyword_manifest.tsv"
-MARKER_MANIFEST_PATH = Path(__file__).resolve().parent / "config" / "metabolism_marker_manifest.tsv"
-DEFAULT_REFERENCE_MAPPINGS_DIR = Path(__file__).resolve().parent / "reference_mappings"
+METABOLISM_MANIFEST_PATH = resolve_repo_asset_path("config", "metabolism_keyword_manifest.tsv")
+MARKER_MANIFEST_PATH = resolve_repo_asset_path("config", "metabolism_marker_manifest.tsv")
+DEFAULT_REFERENCE_MAPPINGS_DIR = resolve_repo_asset_path("reference_mappings")
 UNIPROT_ACCESSION_REGEX = re.compile(
     r"(?<![A-Z0-9])(?:"
     r"UniRef\d+_([A-Z0-9]+)"
@@ -605,17 +772,365 @@ def prepare_marker_matcher(marker_manifest):
     alias_to_rows = {}
     if marker_manifest is None or marker_manifest.empty:
         return alias_to_rows, None
-    for row in marker_manifest.to_dict("records"):
+    specificity_map = classify_marker_manifest_specificity(marker_manifest)
+    marker_rows = marker_manifest.to_dict("records")
+    marker_alias_sets = {}
+    marker_label_text = {}
+    for row in marker_rows:
+        marker_key = (
+            str(row.get("family_id", "")).strip().lower(),
+            str(row.get("mode_id", "")).strip().lower(),
+            str(row.get("marker_id", "")).strip().lower(),
+        )
         alias = str(row.get("alias", "")).strip().lower()
-        if not alias:
-            continue
-        alias_to_rows.setdefault(alias, []).append(row)
+        label_text = re.sub(r"\s+", " ", str(row.get("marker_label", "")).strip().lower())
+        marker_label_text[marker_key] = label_text
+        marker_alias_sets.setdefault(marker_key, set())
+        if alias:
+            marker_alias_sets[marker_key].add(alias)
+        if label_text:
+            marker_alias_sets[marker_key].add(label_text)
+
+    for row in marker_rows:
+        marker_key = (
+            str(row.get("family_id", "")).strip().lower(),
+            str(row.get("mode_id", "")).strip().lower(),
+            str(row.get("marker_id", "")).strip().lower(),
+        )
+        alias = str(row.get("alias", "")).strip().lower()
+        row["_marker_key"] = marker_key
+        row["_marker_label_text"] = marker_label_text.get(marker_key, "")
+        row["_specificity_class"] = specificity_map.get(
+            (str(row.get("mode_id", "")).strip().lower(), str(row.get("marker_id", "")).strip()),
+            "specific",
+        )
+        row["_descriptive_aliases"] = tuple(
+            sorted(
+                candidate
+                for candidate in marker_alias_sets.get(marker_key, set())
+                if is_descriptive_marker_alias(candidate)
+            )
+        )
+        aliases_for_row = set()
+        if alias:
+            aliases_for_row.add(alias)
+        if row["_marker_label_text"]:
+            aliases_for_row.add(row["_marker_label_text"])
+        for candidate_alias in aliases_for_row:
+            alias_to_rows.setdefault(candidate_alias, []).append(row)
     if not alias_to_rows:
         return alias_to_rows, None
-    # Longest-first helps avoid short-token dominance on partial overlaps.
+    # Marker aliases are gene/protein tokens, not arbitrary substrings.
+    # Require non-alphanumeric boundaries so short aliases like `ccs` and
+    # `ccl` do not fire inside tokens such as `CCS1` or `Ccl2`.
     escaped_aliases = [re.escape(alias) for alias in sorted(alias_to_rows.keys(), key=len, reverse=True)]
-    alias_regex = re.compile("|".join(escaped_aliases))
+    alias_regex = re.compile(
+        r"(?<![a-z0-9_])(?:"
+        + "|".join(escaped_aliases)
+        + r")(?![a-z0-9_])"
+    )
     return alias_to_rows, alias_regex
+
+
+def is_short_symbol_marker_alias(alias):
+    token = str(alias or "").strip().lower()
+    return bool(token) and len(token) <= 4 and re.fullmatch(r"[a-z0-9]+", token) is not None
+
+
+def is_descriptive_marker_alias(alias):
+    return not is_short_symbol_marker_alias(alias)
+
+
+def is_symbolic_marker_id(marker_id):
+    token = str(marker_id or "").strip()
+    if not token:
+        return False
+    compact = re.sub(r"[^A-Za-z0-9]", "", token)
+    if not compact:
+        return False
+    return re.search(r"[A-Z]", token) is not None or is_short_symbol_marker_alias(compact.lower())
+
+
+@lru_cache(maxsize=200000)
+def contains_boundary_phrase(text, phrase):
+    normalized_text = str(text or "").strip().lower()
+    normalized_phrase = str(phrase or "").strip().lower()
+    if not normalized_text or not normalized_phrase:
+        return False
+    return bool(
+        re.search(
+            rf"(?<![a-z0-9_]){re.escape(normalized_phrase)}(?![a-z0-9_])",
+            normalized_text,
+        )
+    )
+
+
+@lru_cache(maxsize=200000)
+def short_alias_in_strong_context(text, alias):
+    normalized_text = str(text or "").strip().lower()
+    normalized_alias = str(alias or "").strip().lower()
+    if not normalized_text or not normalized_alias:
+        return False
+
+    patterns = [
+        rf"^{re.escape(normalized_alias)}$",
+        rf"[\(\[]\s*{re.escape(normalized_alias)}\s*[\)\]]",
+        rf"(?<![a-z0-9_]){re.escape(normalized_alias)}(?=\s*$)",
+        rf"(?:(?<=^)|(?<=[/|,;+]))\s*{re.escape(normalized_alias)}\s*(?=$|[/|,;+])",
+        rf"(?<![a-z0-9_]){re.escape(normalized_alias)}(?=\s+(protein|subunit|chain|enzyme|family|like)\b)",
+        rf"\bgn\s*=?\s*{re.escape(normalized_alias)}\b",
+        rf"\bgene(?:_name)?\s*[:=]?\s*{re.escape(normalized_alias)}\b",
+        rf"\bgene\s+symbol\s*[:=]?\s*{re.escape(normalized_alias)}\b",
+    ]
+    return any(re.search(pattern, normalized_text) for pattern in patterns)
+
+
+def marker_row_match_evidence(normalized_text, alias, marker_row):
+    if not normalized_text or not alias or not marker_row:
+        return ""
+    if not is_short_symbol_marker_alias(alias):
+        return "descriptive_alias"
+
+    descriptive_aliases = marker_row.get("_descriptive_aliases", ())
+    label_text = str(marker_row.get("_marker_label_text", "")).strip().lower()
+
+    if label_text and contains_boundary_phrase(normalized_text, label_text):
+        return "marker_label"
+    if any(contains_boundary_phrase(normalized_text, candidate) for candidate in descriptive_aliases):
+        return "descriptive_alias"
+    if short_alias_in_strong_context(normalized_text, alias):
+        return "short_alias"
+    return ""
+
+
+def marker_row_supported_by_annotation(normalized_text, alias, marker_row):
+    return bool(marker_row_match_evidence(normalized_text, alias, marker_row))
+
+
+def marker_specificity_rank(marker_id, marker_label, evidence_type):
+    marker_token = str(marker_id or "").strip()
+    label_text = str(marker_label or "").strip().lower()
+    evidence = str(evidence_type or "").strip().lower()
+
+    rank = 0
+    if evidence == "short_alias":
+        rank += 40
+    elif evidence == "marker_label":
+        rank += 30
+    elif evidence == "descriptive_alias":
+        rank += 20
+
+    if label_text:
+        for token in [
+            "subunit",
+            "alpha",
+            "beta",
+            "gamma",
+            "delta",
+            "epsilon",
+            "zeta",
+            "large subunit",
+            "small subunit",
+            "catalytic subunit",
+            "chain",
+            "component",
+        ]:
+            if token in label_text:
+                rank += 8
+        if "maturation" in label_text or "assembly" in label_text or "accessory" in label_text:
+            rank -= 10
+
+    normalized_id = re.sub(r"[^a-z0-9]", "", marker_token.lower())
+    if is_symbolic_marker_id(marker_token):
+        rank += 6
+    rank += min(len(normalized_id), 12)
+    return rank
+
+
+def marker_row_more_specific(candidate_row, other_row):
+    if not candidate_row or not other_row:
+        return False
+    if str(candidate_row.get("mode_id", "")) != str(other_row.get("mode_id", "")):
+        return False
+    if str(candidate_row.get("family_id", "")) != str(other_row.get("family_id", "")):
+        return False
+    if str(candidate_row.get("marker_id", "")) == str(other_row.get("marker_id", "")):
+        return False
+
+    candidate_id = re.sub(r"[^a-z0-9]", "", str(candidate_row.get("marker_id", "")).lower())
+    other_id = re.sub(r"[^a-z0-9]", "", str(other_row.get("marker_id", "")).lower())
+    candidate_label = re.sub(r"\s+", " ", str(candidate_row.get("marker_label", "")).strip().lower())
+    other_label = re.sub(r"\s+", " ", str(other_row.get("marker_label", "")).strip().lower())
+    candidate_evidence = str(candidate_row.get("match_evidence_type", "")).strip().lower()
+    other_evidence = str(other_row.get("match_evidence_type", "")).strip().lower()
+
+    if other_label and candidate_label and other_label != candidate_label and contains_boundary_phrase(candidate_label, other_label):
+        return True
+    if candidate_label and other_label and candidate_label == other_label:
+        if (
+            candidate_id
+            and other_id
+            and candidate_id.startswith(other_id)
+            and len(candidate_id) > len(other_id)
+            and candidate_evidence == "short_alias"
+        ):
+            return True
+        if (
+            is_symbolic_marker_id(candidate_row.get("marker_id", ""))
+            and not is_symbolic_marker_id(other_row.get("marker_id", ""))
+            and candidate_evidence == "short_alias"
+        ):
+            return True
+        if candidate_evidence == "short_alias" and other_evidence in {"marker_label", "descriptive_alias"}:
+            return True
+        return False
+    if candidate_id and other_id and candidate_id.startswith(other_id) and len(candidate_id) > len(other_id):
+        return True
+
+    candidate_rank = marker_specificity_rank(
+        candidate_row.get("marker_id", ""),
+        candidate_row.get("marker_label", ""),
+        candidate_evidence,
+    )
+    other_rank = marker_specificity_rank(
+        other_row.get("marker_id", ""),
+        other_row.get("marker_label", ""),
+        other_evidence,
+    )
+    return candidate_rank > other_rank and (
+        candidate_rank - other_rank >= 12
+        or (candidate_evidence == "short_alias" and other_evidence != "short_alias")
+    )
+
+
+def choose_generic_marker_row(marker_rows):
+    if not marker_rows:
+        return None
+    return sorted(
+        marker_rows,
+        key=lambda row: (
+            is_symbolic_marker_id(row.get("marker_id", "")),
+            len(re.sub(r"[^a-z0-9]", "", str(row.get("marker_id", "")).lower())),
+            marker_specificity_rank(
+                row.get("marker_id", ""),
+                row.get("marker_label", ""),
+                row.get("match_evidence_type", ""),
+            ),
+            str(row.get("marker_id", "")),
+        ),
+    )[0]
+
+
+def manifest_marker_more_specific(candidate_row, other_row):
+    if not candidate_row or not other_row:
+        return False
+    if str(candidate_row.get("mode_id", "")) != str(other_row.get("mode_id", "")):
+        return False
+    if str(candidate_row.get("marker_id", "")) == str(other_row.get("marker_id", "")):
+        return False
+
+    candidate_id = re.sub(r"[^a-z0-9]", "", str(candidate_row.get("marker_id", "")).lower())
+    other_id = re.sub(r"[^a-z0-9]", "", str(other_row.get("marker_id", "")).lower())
+    candidate_label = re.sub(r"\s+", " ", str(candidate_row.get("marker_label", "")).strip().lower())
+    other_label = re.sub(r"\s+", " ", str(other_row.get("marker_label", "")).strip().lower())
+
+    if other_label and candidate_label and other_label != candidate_label and contains_boundary_phrase(candidate_label, other_label):
+        return True
+    if candidate_label and other_label and candidate_label == other_label:
+        if candidate_id and other_id and candidate_id.startswith(other_id) and len(candidate_id) > len(other_id):
+            return True
+        if is_symbolic_marker_id(candidate_row.get("marker_id", "")) and not is_symbolic_marker_id(other_row.get("marker_id", "")):
+            return True
+        return False
+    if candidate_id and other_id and candidate_id.startswith(other_id) and len(candidate_id) > len(other_id):
+        return True
+    return False
+
+
+def classify_marker_manifest_specificity(marker_manifest):
+    specificity = {}
+    if marker_manifest is None or marker_manifest.empty:
+        return specificity
+
+    records = marker_manifest[["mode_id", "marker_id", "marker_label"]].drop_duplicates().to_dict("records")
+    for row in records:
+        key = (str(row.get("mode_id", "")).strip().lower(), str(row.get("marker_id", "")).strip())
+        specificity[key] = "specific"
+
+    for row in records:
+        key = (str(row.get("mode_id", "")).strip().lower(), str(row.get("marker_id", "")).strip())
+        if any(manifest_marker_more_specific(other, row) for other in records):
+            specificity[key] = "generic"
+    return specificity
+
+
+def resolve_marker_specificity(marker_rows):
+    if not marker_rows:
+        return []
+
+    ambiguous_same_label_rows = set()
+    grouped_by_label = {}
+    for row in marker_rows:
+        label_key = re.sub(r"\s+", " ", str(row.get("marker_label", "")).strip().lower())
+        grouped_by_label.setdefault(label_key, []).append(row)
+
+    for label_rows in grouped_by_label.values():
+        unique_markers = {
+            str(row.get("marker_id", "")).strip().lower()
+            for row in label_rows
+            if str(row.get("marker_id", "")).strip()
+        }
+        if len(unique_markers) <= 1:
+            continue
+        if any(str(row.get("match_evidence_type", "")).strip().lower() == "short_alias" for row in label_rows):
+            continue
+        non_symbolic_rows = [
+            row for row in label_rows
+            if not is_symbolic_marker_id(row.get("marker_id", ""))
+        ]
+        if non_symbolic_rows:
+            generic_row = choose_generic_marker_row(non_symbolic_rows)
+            for row in label_rows:
+                if row is not generic_row:
+                    ambiguous_same_label_rows.add(id(row))
+            continue
+        marker_ids = [
+            re.sub(r"[^a-z0-9]", "", str(row.get("marker_id", "")).lower())
+            for row in label_rows
+        ]
+        prefix_generic_rows = []
+        for row, marker_id in zip(label_rows, marker_ids):
+            if marker_id and all(other_id.startswith(marker_id) for other_id in marker_ids if other_id and other_id != marker_id):
+                prefix_generic_rows.append(row)
+        if len(prefix_generic_rows) == 1:
+            generic_row = prefix_generic_rows[0]
+            for row in label_rows:
+                if row is not generic_row:
+                    ambiguous_same_label_rows.add(id(row))
+            continue
+        for row in label_rows:
+            ambiguous_same_label_rows.add(id(row))
+
+    resolved_rows = []
+    for row in marker_rows:
+        if id(row) in ambiguous_same_label_rows:
+            row_copy = row.copy()
+            row_copy["match_resolution"] = "suppressed_same_label_ambiguous"
+            resolved_rows.append(row_copy)
+            continue
+        keep = True
+        for other in marker_rows:
+            if row is other:
+                continue
+            if id(other) in ambiguous_same_label_rows:
+                continue
+            if marker_row_more_specific(other, row):
+                keep = False
+                break
+        row_copy = row.copy()
+        row_copy["match_resolution"] = "retained" if keep else "suppressed_by_specific_match"
+        resolved_rows.append(row_copy)
+    return [row for row in resolved_rows if row.get("match_resolution") == "retained"]
 
 
 def load_reference_term_maps(reference_mappings_dir):
@@ -739,7 +1254,8 @@ def collect_target_accessions_from_orf_lookup(
                     chunk_hits.add(accession)
         return chunk_hits
 
-    for column in FUNCTIONAL_SOURCE_COLUMNS:
+    columns_to_scan = list(FUNCTIONAL_SOURCE_COLUMNS) + list(FUNCTIONAL_TARGET_COLUMNS)
+    for column in columns_to_scan:
         if column not in orf_annotation_lookup.columns:
             continue
         values = normalize_text(orf_annotation_lookup[column])
@@ -1213,6 +1729,46 @@ def build_parser():
             "Useful to pre-index before batch runs."
         ),
     )
+    parser.add_argument(
+        "--experimental-mobility-screen",
+        action="store_true",
+        help=(
+            "Run a separate experimental candidate mobility marker screen from annotation text "
+            "and write dedicated tables/plots."
+        ),
+    )
+    parser.add_argument(
+        "--experimental-mobility-genome-type-tsv",
+        default=None,
+        help=(
+            "Optional metadata TSV used to resolve category labels for the "
+            "experimental mobility screen."
+        ),
+    )
+    parser.add_argument(
+        "--experimental-mobility-genome-type-column",
+        default=None,
+        help=(
+            "Column in --experimental-mobility-genome-type-tsv containing category labels. "
+            "If omitted, common column names are tried."
+        ),
+    )
+    parser.add_argument(
+        "--experimental-mobility-genome-type-id-column",
+        default=None,
+        help=(
+            "Genome ID column in --experimental-mobility-genome-type-tsv. "
+            "If omitted, common ID columns are tried."
+        ),
+    )
+    parser.add_argument(
+        "--experimental-mobility-include-broad-screen",
+        action="store_true",
+        help=(
+            "Also write separate optional broad-screen mobility tables using the broad keyword list. "
+            "These are kept out of the main prevalence table and figure."
+        ),
+    )
     return parser
 
 
@@ -1254,6 +1810,58 @@ def normalize_text(series):
         .astype(str)
         .str.strip()
     )
+
+
+def normalize_annotation_defline(text, source_db):
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    value = re.sub(r"\s+", " ", value)
+    source = str(source_db or "").strip().lower()
+
+    if source == "swissprot":
+        gene_name_match = re.search(r"\bGN\s*=?\s*([A-Za-z0-9_.-]+)\b", value, flags=re.IGNORECASE)
+        gene_name = gene_name_match.group(1).strip() if gene_name_match else ""
+        match = re.search(r"\s(?:OS|OX|PE|SV)\s", value)
+        if match:
+            value = value[: match.start()].strip()
+        if gene_name and not re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(gene_name)}(?![A-Za-z0-9_])",
+            value,
+            flags=re.IGNORECASE,
+        ):
+            value = f"{value} GN {gene_name}".strip()
+        value = re.sub(r"\s+", " ", value)
+        return value
+
+    if source == "uniref50":
+        value = re.sub(r"^UniRef\d+_[^\s]+\s+", "", value)
+        value = re.sub(r"^(Cluster:|Multispecies:)\s*", "", value, flags=re.IGNORECASE)
+        match = UNIREF_TRAILING_FIELD_RE.search(value)
+        if match:
+            value = value[: match.start()].strip()
+        return value
+
+    if source == "metacyc":
+        value = re.sub(r"\s+\[EC[:=][^\]]+\]\s*$", "", value)
+        value = re.sub(r"\s+\|.*$", "", value)
+        return value.strip()
+
+    return value
+
+
+def infer_functional_source_db(target_value):
+    target = str(target_value or "").strip()
+    if not target:
+        return ""
+    lowered = target.lower()
+    if lowered.startswith(("sp|", "tr|")):
+        return "swissprot"
+    if lowered.startswith("uniref"):
+        return "uniref50"
+    if lowered.startswith("gnl|meta|"):
+        return "metacyc"
+    return ""
 
 
 def split_csv_arg(value):
@@ -1409,6 +2017,25 @@ def id_aliases(value):
     return {alias for alias in aliases if alias}
 
 
+def find_result_files(base_dir, pattern):
+    base = Path(base_dir)
+    direct = sorted(base.glob(pattern))
+    if direct:
+        return [path for path in direct if path.is_file()]
+    recursive = sorted(base.rglob(pattern))
+    return [path for path in recursive if path.is_file()]
+
+
+def resolve_pgdb_genome_dir(path_obj):
+    path_obj = Path(path_obj)
+    parts = path_obj.parts
+    if "tables" in parts and "other" in parts:
+        tables_index = parts.index("tables")
+        if tables_index > 0:
+            return Path(*parts[:tables_index])
+    return path_obj.parent
+
+
 def parse_genes_dat(path):
     gene_ids = []
     current_gene = None
@@ -1499,17 +2126,88 @@ def _labels_from_mask(mask_value, ordered_items, bit_values):
 
 def build_orf_annotation_lookup(results_dir, workers=1, progress=False):
     annotation_dir = results_dir / "annotation_table"
-    annotation_files = sorted(annotation_dir.glob("*.ORF_annotation_table.txt"))
-    if not annotation_files:
-        return None
+    functional_frame = None
+    annotation_frame = None
 
-    frame = pd.read_csv(annotation_files[0], sep="\t", low_memory=False).copy()
-    id_column = "# ORF_ID" if "# ORF_ID" in frame.columns else "ORF_ID"
-    if id_column not in frame.columns:
+    functional_files = find_result_files(annotation_dir, "*.functional_and_taxonomic_table.txt")
+    for functional_file in functional_files:
+        try:
+            candidate = pd.read_csv(functional_file, sep="\t", low_memory=False).copy()
+        except pd.errors.EmptyDataError:
+            continue
+        id_column = "# ORF_ID" if "# ORF_ID" in candidate.columns else "ORF_ID"
+        if id_column not in candidate.columns or "product" not in candidate.columns:
+            continue
+        candidate["target"] = normalize_text(candidate.get("target", pd.Series("", index=candidate.index)))
+        candidate["product"] = normalize_text(candidate.get("product", pd.Series("", index=candidate.index)))
+        candidate["selected_source_db"] = candidate["target"].map(infer_functional_source_db)
+        for column in FUNCTIONAL_SOURCE_COLUMNS:
+            candidate[column] = ""
+            candidate[f"{column}_target"] = ""
+        for column in FUNCTIONAL_SOURCE_COLUMNS:
+            source_mask = candidate["selected_source_db"].eq(column)
+            if source_mask.any():
+                candidate.loc[source_mask, column] = candidate.loc[source_mask, "product"].map(
+                    lambda text: normalize_annotation_defline(text, column)
+                )
+                candidate.loc[source_mask, f"{column}_target"] = candidate.loc[source_mask, "target"]
+        candidate["orf_id"] = normalize_text(candidate[id_column])
+        functional_frame = candidate
+        break
+
+    annotation_files = find_result_files(annotation_dir, "*.ORF_annotation_table.txt")
+    for annotation_file in annotation_files:
+        try:
+            candidate = pd.read_csv(annotation_file, sep="\t", low_memory=False).copy()
+        except pd.errors.EmptyDataError:
+            continue
+        id_column = "# ORF_ID" if "# ORF_ID" in candidate.columns else "ORF_ID"
+        if id_column not in candidate.columns:
+            continue
+        candidate["orf_id"] = normalize_text(candidate[id_column])
+        annotation_frame = candidate
+        break
+
+    if annotation_frame is not None:
+        frame = annotation_frame.copy()
+        for column in FUNCTIONAL_SOURCE_COLUMNS:
+            if column not in frame.columns:
+                frame[column] = ""
+            target_column = f"{column}_target"
+            if target_column not in frame.columns:
+                frame[target_column] = ""
+            frame[column] = normalize_text(frame[column]).map(
+                lambda text: normalize_annotation_defline(text, column)
+            )
+            frame[target_column] = normalize_text(frame[target_column])
+
+        if functional_frame is not None:
+            for column in FUNCTIONAL_SOURCE_COLUMNS:
+                source_rows = functional_frame.loc[
+                    functional_frame["selected_source_db"].eq(column),
+                    ["orf_id", column, f"{column}_target"],
+                ].drop_duplicates("orf_id")
+                if source_rows.empty:
+                    continue
+                source_rows = source_rows.set_index("orf_id")
+                source_values = source_rows[column].to_dict()
+                target_values = source_rows[f"{column}_target"].to_dict()
+                missing_source_mask = frame[column].eq("")
+                if missing_source_mask.any():
+                    frame.loc[missing_source_mask, column] = (
+                        frame.loc[missing_source_mask, "orf_id"].map(source_values).fillna("")
+                    )
+                missing_target_mask = frame[target_column].eq("")
+                if missing_target_mask.any():
+                    frame.loc[missing_target_mask, target_column] = (
+                        frame.loc[missing_target_mask, "orf_id"].map(target_values).fillna("")
+                    )
+    elif functional_frame is not None:
+        frame = functional_frame.copy()
+    else:
         return None
 
     worker_count = max(1, int(workers))
-    frame["orf_id"] = normalize_text(frame[id_column])
     source_category = {}
     source_mode_mask = {}
     source_cycle_mask = {}
@@ -1519,7 +2217,11 @@ def build_orf_annotation_lookup(results_dir, workers=1, progress=False):
     for column in FUNCTIONAL_SOURCE_COLUMNS:
         if column not in frame.columns:
             frame[column] = ""
-        frame[column] = normalize_text(frame[column])
+        target_column = f"{column}_target"
+        if target_column not in frame.columns:
+            frame[target_column] = ""
+        frame[column] = normalize_text(frame[column]).map(lambda text: normalize_annotation_defline(text, column))
+        frame[target_column] = normalize_text(frame[target_column])
         frame[f"has_{column}"] = frame[column].ne("")
         unique_texts = pd.unique(frame.loc[frame[column].ne(""), column].astype(str))
         category_map = _parallel_map_unique_texts(
@@ -1623,11 +2325,23 @@ def build_orf_annotation_lookup(results_dir, workers=1, progress=False):
 
 def build_ptinput_lookup(results_dir):
     annotation_dir = results_dir / "annotation_table"
-    ptinput_files = sorted(annotation_dir.glob("*.ptinput.tsv"))
+    ptinput_files = find_result_files(annotation_dir, "*.ptinput.tsv")
     if not ptinput_files:
         return None
 
-    ptinput = read_table(ptinput_files[0]).copy()
+    ptinput = None
+    for ptinput_file in ptinput_files:
+        try:
+            candidate = read_table(ptinput_file).copy()
+        except pd.errors.EmptyDataError:
+            continue
+        if "orf_id" not in candidate.columns:
+            continue
+        ptinput = candidate
+        break
+    if ptinput is None:
+        return None
+
     ptinput["orf_id"] = normalize_text(ptinput["orf_id"])
     ptinput["sourcedb"] = normalize_text(ptinput.get("sourcedb", pd.Series("", index=ptinput.index))).str.lower()
     ptinput["product"] = normalize_text(ptinput.get("product", pd.Series("", index=ptinput.index)))
@@ -1648,57 +2362,217 @@ def build_ptinput_lookup(results_dir):
     return ptinput.drop_duplicates("orf_id").set_index("orf_id")
 
 
+def infer_results_mode(path_obj):
+    return "metagenome" if "MAGs" in Path(path_obj).parts else "genome"
+
+
+def infer_genome_id_from_results_dir(results_dir):
+    annotation_dir = results_dir / "annotation_table"
+    functional_files = find_result_files(annotation_dir, "*.functional_and_taxonomic_table.txt")
+    if functional_files:
+        return functional_files[0].name[: -len(".functional_and_taxonomic_table.txt")]
+    annotation_files = find_result_files(annotation_dir, "*.ORF_annotation_table.txt")
+    if annotation_files:
+        return annotation_files[0].name[: -len(".ORF_annotation_table.txt")]
+
+    ptinput_files = find_result_files(annotation_dir, "*.ptinput.tsv")
+    if ptinput_files:
+        return ptinput_files[0].name[: -len(".ptinput.tsv")]
+
+    results_dir = Path(results_dir)
+    if results_dir.name == "results" and results_dir.parent.name:
+        return results_dir.parent.name
+    return results_dir.name
+
+
+def build_empty_pathway_table(genome_id):
+    columns = [
+        "genome_id",
+        "PWY_NAME",
+        "PWY_COMMON_NAME",
+        "PWY_SCORE",
+        "NUM_REACTIONS",
+        "NUM_COVERED_REACTIONS",
+        "ORF_COUNT",
+        "reaction_coverage_fraction",
+        "high_confidence_pathway",
+        "complete_pathway",
+        "elemental_mode_labels",
+        "elemental_cycle_labels",
+    ]
+    for mode in ELEMENTAL_MODE_ORDER:
+        columns.append(f"elemental_mode_{mode}")
+    for cycle in ELEMENTAL_CYCLE_ORDER:
+        columns.append(f"elemental_{cycle}")
+    return pd.DataFrame(columns=columns).assign(genome_id=pd.Series(dtype=str))
+
+
+def build_genome_record(
+    genome_id,
+    mode,
+    genome_dir,
+    pwy_path=None,
+    pwy2orf_path=None,
+    genes_dat_path=None,
+    pathway_status="present",
+    pathway_missing_reason="",
+):
+    return {
+        "genome_id": genome_id,
+        "mode": mode,
+        "genome_dir": Path(genome_dir),
+        "pwy_path": Path(pwy_path) if pwy_path else None,
+        "pwy2orf_path": Path(pwy2orf_path) if pwy2orf_path else None,
+        "genes_dat_path": Path(genes_dat_path) if genes_dat_path else None,
+        "pathway_status": pathway_status,
+        "pathway_missing_reason": pathway_missing_reason,
+    }
+
+
 def find_genome_records(results_dir):
     pgdb_dir = results_dir / "pgdb"
-    if not pgdb_dir.exists():
-        raise FileNotFoundError(f"MetaPathways pgdb directory not found: {pgdb_dir}")
+    records_by_id = {}
+    explicit_pathway_record_count = 0
 
-    records = []
-    pathway_files = sorted(pgdb_dir.glob("**/*_pwy.tsv"))
-    for pwy_path in pathway_files:
-        if "community" in pwy_path.parts:
-            continue
-        genome_id = pwy_path.name[: -len("_pwy.tsv")]
-        genome_dir = pwy_path.parent
-        pwy2orf_path = genome_dir / f"{genome_id}_pwy2orf.tsv"
-        genes_dat_path = genome_dir / "1.0" / "data" / "genes.dat"
-        records.append(
-            {
-                "genome_id": genome_id,
-                "mode": "metagenome" if "MAGs" in pwy_path.parts else "genome",
-                "genome_dir": genome_dir,
-                "pwy_path": pwy_path,
-                "pwy2orf_path": pwy2orf_path if pwy2orf_path.exists() else None,
-                "genes_dat_path": genes_dat_path if genes_dat_path.exists() else None,
-            }
+    def upsert_record(record):
+        genome_id = str(record["genome_id"])
+        existing = records_by_id.get(genome_id)
+        if existing is None:
+            records_by_id[genome_id] = record
+            return
+
+        for key in ["pwy_path", "pwy2orf_path", "genes_dat_path"]:
+            if existing.get(key) is None and record.get(key) is not None:
+                existing[key] = record[key]
+        if existing.get("genome_dir") is None and record.get("genome_dir") is not None:
+            existing["genome_dir"] = record["genome_dir"]
+        if existing.get("mode") in {None, ""} and record.get("mode"):
+            existing["mode"] = record["mode"]
+        if existing.get("pathway_status") != "present" and record.get("pathway_status") == "present":
+            existing["pathway_status"] = "present"
+            existing["pathway_missing_reason"] = ""
+        elif not existing.get("pathway_missing_reason") and record.get("pathway_missing_reason"):
+            existing["pathway_missing_reason"] = record["pathway_missing_reason"]
+
+    if pgdb_dir.exists():
+        pathway_files = sorted(pgdb_dir.glob("**/*_pwy.tsv"))
+        for pwy_path in pathway_files:
+            if "community" in pwy_path.parts:
+                continue
+            genome_id = pwy_path.name[: -len("_pwy.tsv")]
+            genome_dir = resolve_pgdb_genome_dir(pwy_path)
+            pwy2orf_candidates = [
+                genome_dir / f"{genome_id}_pwy2orf.tsv",
+                genome_dir / "tables" / "other" / f"{genome_id}_pwy2orf.tsv",
+            ]
+            pwy2orf_path = next((path for path in pwy2orf_candidates if path.exists()), None)
+            genes_dat_path = genome_dir / "1.0" / "data" / "genes.dat"
+            upsert_record(
+                build_genome_record(
+                    genome_id=genome_id,
+                    mode=infer_results_mode(pwy_path),
+                    genome_dir=genome_dir,
+                    pwy_path=pwy_path,
+                    pwy2orf_path=pwy2orf_path,
+                    genes_dat_path=genes_dat_path if genes_dat_path.exists() else None,
+                    pathway_status="present",
+                )
+            )
+            explicit_pathway_record_count += 1
+
+        for pwy2orf_path in sorted(pgdb_dir.glob("**/*_pwy2orf.tsv")):
+            if "community" in pwy2orf_path.parts:
+                continue
+            genome_id = pwy2orf_path.name[: -len("_pwy2orf.tsv")]
+            genome_dir = resolve_pgdb_genome_dir(pwy2orf_path)
+            genes_dat_path = genome_dir / "1.0" / "data" / "genes.dat"
+            upsert_record(
+                build_genome_record(
+                    genome_id=genome_id,
+                    mode=infer_results_mode(pwy2orf_path),
+                    genome_dir=genome_dir,
+                    pwy2orf_path=pwy2orf_path,
+                    genes_dat_path=genes_dat_path if genes_dat_path.exists() else None,
+                    pathway_status="missing_pathway_table",
+                    pathway_missing_reason="missing *_pwy.tsv; using non-pathway summaries only",
+                )
+            )
+
+        for genes_dat_path in sorted(pgdb_dir.glob("**/1.0/data/genes.dat")):
+            genome_dir = genes_dat_path.parents[2]
+            if genome_dir.name == "community":
+                continue
+            genome_id = genome_dir.name
+            pwy2orf_candidates = [
+                genome_dir / f"{genome_id}_pwy2orf.tsv",
+                genome_dir / "tables" / "other" / f"{genome_id}_pwy2orf.tsv",
+            ]
+            pwy2orf_path = next((path for path in pwy2orf_candidates if path.exists()), None)
+            upsert_record(
+                build_genome_record(
+                    genome_id=genome_id,
+                    mode=infer_results_mode(genes_dat_path),
+                    genome_dir=genome_dir,
+                    pwy2orf_path=pwy2orf_path,
+                    genes_dat_path=genes_dat_path,
+                    pathway_status="missing_pathway_table",
+                    pathway_missing_reason="missing *_pwy.tsv; using non-pathway summaries only",
+                )
+            )
+
+        community_pwy = sorted((pgdb_dir / "community").glob("**/*_pwy.tsv"))
+        if community_pwy and explicit_pathway_record_count == 0:
+            pwy_path = community_pwy[0]
+            genome_id = pwy_path.name[: -len("_pwy.tsv")]
+            genome_dir = resolve_pgdb_genome_dir(pwy_path)
+            pwy2orf_candidates = [
+                genome_dir / f"{genome_id}_pwy2orf.tsv",
+                genome_dir / "tables" / "other" / f"{genome_id}_pwy2orf.tsv",
+            ]
+            pwy2orf_path = next((path for path in pwy2orf_candidates if path.exists()), None)
+            genes_dat_path = genome_dir / "1.0" / "data" / "genes.dat"
+            records_by_id.pop("community", None)
+            upsert_record(
+                build_genome_record(
+                    genome_id=genome_id,
+                    mode=infer_results_mode(results_dir),
+                    genome_dir=genome_dir,
+                    pwy_path=pwy_path,
+                    pwy2orf_path=pwy2orf_path,
+                    genes_dat_path=genes_dat_path if genes_dat_path.exists() else None,
+                    pathway_status="present",
+                    pathway_missing_reason="",
+                )
+            )
+
+    if not records_by_id:
+        annotation_dir = results_dir / "annotation_table"
+        has_annotation = annotation_dir.exists() and any(annotation_dir.iterdir())
+        if has_annotation:
+            genome_id = infer_genome_id_from_results_dir(results_dir)
+            upsert_record(
+                build_genome_record(
+                    genome_id=genome_id,
+                    mode=infer_results_mode(results_dir),
+                    genome_dir=results_dir,
+                    pathway_status="missing_pgdb_or_pathway_tables",
+                    pathway_missing_reason="missing pgdb/pathway tables; using annotation-derived summaries only",
+                )
+            )
+
+    if not records_by_id:
+        if not pgdb_dir.exists():
+            raise FileNotFoundError(
+                f"MetaPathways pgdb directory not found and no usable annotation tables were found: {pgdb_dir}"
+            )
+        raise FileNotFoundError(
+            f"No MetaPathways pathway summary files or usable annotation tables found under: {results_dir}"
         )
 
-    if records:
-        return pd.DataFrame(records).sort_values("genome_id").reset_index(drop=True)
-
-    community_pwy = sorted((pgdb_dir / "community").glob("*_pwy.tsv"))
-    if not community_pwy:
-        raise FileNotFoundError(f"No MetaPathways pathway summary files found under: {pgdb_dir}")
-
-    pwy_path = community_pwy[0]
-    genome_id = pwy_path.name[: -len("_pwy.tsv")]
-    genome_dir = pwy_path.parent
-    pwy2orf_path = genome_dir / f"{genome_id}_pwy2orf.tsv"
-    genes_dat_path = None
-    for candidate in sorted(pgdb_dir.glob("**/1.0/data/genes.dat")):
-        genes_dat_path = candidate
-        break
-    return pd.DataFrame(
-        [
-            {
-                "genome_id": genome_id,
-                "mode": "community_fallback",
-                "genome_dir": genome_dir,
-                "pwy_path": pwy_path,
-                "pwy2orf_path": pwy2orf_path if pwy2orf_path.exists() else None,
-                "genes_dat_path": genes_dat_path,
-            }
-        ]
+    return (
+        pd.DataFrame(records_by_id.values())
+        .sort_values("genome_id")
+        .reset_index(drop=True)
     )
 
 
@@ -2009,6 +2883,169 @@ def classify_orf_annotation_row(row):
     }
 
 
+@lru_cache(maxsize=500000)
+def mobility_keyword_matches(text, keyword):
+    normalized_text = str(text).strip().lower()
+    normalized_keyword = str(keyword).strip().lower()
+    if not normalized_text or not normalized_keyword:
+        return False
+    if normalized_keyword in EXPERIMENTAL_SHORT_TOKEN_KEYWORDS:
+        pattern = r"(?<![a-z0-9])" + re.escape(normalized_keyword) + r"(?![a-z0-9])"
+        return bool(re.search(pattern, normalized_text))
+    return normalized_keyword in normalized_text
+
+
+def detect_experimental_mobility_hits(annotation_text, keyword_map):
+    normalized_text = str(annotation_text).strip().lower()
+    if not normalized_text:
+        return {}
+    matches = {}
+    for category, keywords in keyword_map.items():
+        matched_keywords = [keyword for keyword in keywords if mobility_keyword_matches(normalized_text, keyword)]
+        if matched_keywords:
+            matches[category] = matched_keywords
+    return matches
+
+
+def clean_experimental_category_label(value):
+    text = str(value).strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered in {"nan", "none", "null", "na", "n/a"}:
+        return ""
+    return text
+
+
+def infer_experimental_category_from_path(value):
+    text = str(value).strip()
+    if not text:
+        return ""
+    parts = [part for part in Path(text).parts if str(part).strip()]
+    for part in parts:
+        label = clean_experimental_category_label(part)
+        token = "".join(character for character in label.lower() if character.isalnum())
+        if "sag" in token or "mag" in token:
+            return label
+    text_label = clean_experimental_category_label(text)
+    text_token = "".join(character for character in text_label.lower() if character.isalnum())
+    if text_token == "genome":
+        return "SAGs"
+    if text_token == "metagenome":
+        return "MAGs"
+    if "sag" in text_token or "mag" in text_token:
+        return text_label
+    return ""
+
+
+def normalize_experimental_genome_type(value):
+    return clean_experimental_category_label(value)
+
+
+def infer_experimental_genome_type_from_row(row):
+    direct_label = clean_experimental_category_label(row.get("genome_type", ""))
+    if direct_label:
+        return direct_label, "genome_type"
+
+    for column in ["genome_dir", "genome_id", "results_mode"]:
+        value = row.get(column, "")
+        normalized = infer_experimental_category_from_path(value)
+        if normalized:
+            return normalized, column
+    return "", ""
+
+
+def resolve_experimental_genome_type_lookup(genome_summary, genome_type_tsv=None, genome_type_column=None, genome_type_id_column=None):
+    rows = []
+    for row in genome_summary.to_dict("records"):
+        genome_id = str(row.get("genome_id", "")).strip()
+        if not genome_id:
+            continue
+        genome_type, source_column = infer_experimental_genome_type_from_row(row)
+        rows.append(
+            {
+                "genome_id": genome_id,
+                "genome_type": genome_type,
+                "genome_type_source": source_column or "",
+            }
+        )
+    genome_type_df = pd.DataFrame(rows).drop_duplicates("genome_id")
+
+    if genome_type_tsv:
+        metadata_df = read_table(Path(genome_type_tsv).expanduser().resolve()).copy()
+        candidate_id_columns = (
+            [genome_type_id_column] if genome_type_id_column
+            else ["genome_id", "Genome_Id", "Bin Id", "SAG_ID", "pre_ani_bin_key", "fasta_path"]
+        )
+        selected_id_column = None
+        for column in candidate_id_columns:
+            if column and column in metadata_df.columns:
+                selected_id_column = column
+                break
+        if selected_id_column is None:
+            raise ValueError(
+                "Experimental mobility genome-type metadata does not contain a usable genome ID column. "
+                "Provide --experimental-mobility-genome-type-id-column."
+            )
+
+        candidate_type_columns = (
+            [genome_type_column] if genome_type_column
+            else ["genome_type", "category", "method", "type"]
+        )
+        selected_type_column = None
+        for column in candidate_type_columns:
+            if column and column in metadata_df.columns:
+                selected_type_column = column
+                break
+        if selected_type_column is None:
+            raise ValueError(
+                "Experimental mobility genome-type metadata does not contain a usable genome-type column. "
+                "Provide --experimental-mobility-genome-type-column."
+            )
+
+        alias_lookup = {}
+        for record in metadata_df.to_dict("records"):
+            raw_id = str(record.get(selected_id_column, "")).strip()
+            if not raw_id:
+                continue
+            if selected_id_column == "fasta_path":
+                raw_id = Path(raw_id).name
+            normalized_type = normalize_experimental_genome_type(record.get(selected_type_column, ""))
+            if not normalized_type:
+                continue
+            for alias in id_aliases(raw_id):
+                alias_lookup.setdefault(alias, set()).add(normalized_type)
+
+        resolved_types = []
+        resolved_sources = []
+        for row in genome_type_df.to_dict("records"):
+            if row["genome_type"]:
+                resolved_types.append(row["genome_type"])
+                resolved_sources.append(row["genome_type_source"])
+                continue
+            genome_aliases = id_aliases(row["genome_id"])
+            matched_types = set()
+            for alias in genome_aliases:
+                matched_types.update(alias_lookup.get(alias, set()))
+            if len(matched_types) == 1:
+                resolved_types.append(sorted(matched_types)[0])
+                resolved_sources.append(selected_type_column)
+            else:
+                resolved_types.append("")
+                resolved_sources.append("")
+        genome_type_df["genome_type"] = resolved_types
+        genome_type_df["genome_type_source"] = resolved_sources
+
+    unresolved = genome_type_df.loc[genome_type_df["genome_type"].eq(""), "genome_id"].astype(str).tolist()
+    if unresolved:
+        raise ValueError(
+            "Experimental mobility screen could not resolve category labels for all genomes. "
+            "Provide --experimental-mobility-genome-type-tsv and --experimental-mobility-genome-type-column. "
+            f"Examples of unresolved genome IDs: {', '.join(unresolved[:5])}"
+        )
+    return genome_type_df
+
+
 @lru_cache(maxsize=200000)
 def classify_elemental_cycles(text):
     normalized = str(text).strip().lower()
@@ -2249,6 +3286,9 @@ def build_marker_audit_table(
         "marker_label",
         "is_core",
         "matched_alias",
+        "match_evidence_type",
+        "match_resolution",
+        "marker_specificity_class",
     ]
     if orf_annotation_lookup is None or not orf_ids or marker_manifest.empty:
         return pd.DataFrame(columns=columns)
@@ -2264,14 +3304,18 @@ def build_marker_audit_table(
                 continue
             aliases = set()
             if marker_alias_regex is not None:
-                aliases.update(marker_alias_regex.findall(normalized))
+                aliases.update(match.group(0) for match in marker_alias_regex.finditer(normalized))
             elif alias_to_rows:
                 for alias in alias_to_rows:
-                    if alias in normalized:
+                    if re.search(rf"(?<![a-z0-9_]){re.escape(alias)}(?![a-z0-9_])", normalized):
                         aliases.add(alias)
+            matched_rows = []
             for alias in aliases:
                 for marker in alias_to_rows.get(alias, []):
-                    rows.append(
+                    evidence_type = marker_row_match_evidence(normalized, alias, marker)
+                    if not evidence_type:
+                        continue
+                    matched_rows.append(
                         {
                             "genome_id": genome_id,
                             "orf_id": orf_id,
@@ -2285,8 +3329,12 @@ def build_marker_audit_table(
                             "marker_label": marker["marker_label"],
                             "is_core": bool(marker["is_core"]),
                             "matched_alias": alias,
+                            "match_evidence_type": evidence_type,
+                            "match_resolution": "",
+                            "marker_specificity_class": marker.get("_specificity_class", "specific"),
                         }
                     )
+            rows.extend(resolve_marker_specificity(matched_rows))
     return pd.DataFrame(rows, columns=columns).drop_duplicates()
 
 
@@ -2295,11 +3343,15 @@ def summarize_marker_support(marker_audit_df):
         "marker_supported_orfs": 0,
         "marker_gene_count": 0,
         "core_marker_gene_count": 0,
+        "specific_marker_gene_count": 0,
+        "generic_marker_gene_count": 0,
     }
     for mode_id in ELEMENTAL_MODE_ORDER:
         summary[f"marker_{mode_id}_orf_count"] = 0
         summary[f"marker_{mode_id}_gene_count"] = 0
         summary[f"marker_{mode_id}_core_gene_count"] = 0
+        summary[f"marker_{mode_id}_specific_gene_count"] = 0
+        summary[f"marker_{mode_id}_generic_gene_count"] = 0
 
     if marker_audit_df is None or marker_audit_df.empty:
         return summary
@@ -2308,11 +3360,23 @@ def summarize_marker_support(marker_audit_df):
     summary["marker_supported_orfs"] = int(matched["orf_id"].nunique())
     summary["marker_gene_count"] = int(matched["marker_id"].nunique())
     summary["core_marker_gene_count"] = int(matched.loc[matched["is_core"], "marker_id"].nunique())
+    summary["specific_marker_gene_count"] = int(
+        matched.loc[matched["marker_specificity_class"].eq("specific"), "marker_id"].nunique()
+    )
+    summary["generic_marker_gene_count"] = int(
+        matched.loc[matched["marker_specificity_class"].eq("generic"), "marker_id"].nunique()
+    )
     for mode_id in ELEMENTAL_MODE_ORDER:
         mode_df = matched.loc[matched["mode_id"].eq(mode_id)]
         summary[f"marker_{mode_id}_orf_count"] = int(mode_df["orf_id"].nunique())
         summary[f"marker_{mode_id}_gene_count"] = int(mode_df["marker_id"].nunique())
         summary[f"marker_{mode_id}_core_gene_count"] = int(mode_df.loc[mode_df["is_core"], "marker_id"].nunique())
+        summary[f"marker_{mode_id}_specific_gene_count"] = int(
+            mode_df.loc[mode_df["marker_specificity_class"].eq("specific"), "marker_id"].nunique()
+        )
+        summary[f"marker_{mode_id}_generic_gene_count"] = int(
+            mode_df.loc[mode_df["marker_specificity_class"].eq("generic"), "marker_id"].nunique()
+        )
     return summary
 
 
@@ -2330,6 +3394,8 @@ def collapse_marker_audit(marker_audit_df):
         "supporting_orf_ids",
         "source_dbs",
         "matched_aliases",
+        "match_evidence_types",
+        "marker_specificity_class",
         "supporting_annotations",
     ]
     if marker_audit_df is None or marker_audit_df.empty:
@@ -2346,6 +3412,7 @@ def collapse_marker_audit(marker_audit_df):
                 "marker_id",
                 "marker_label",
                 "is_core",
+                "marker_specificity_class",
             ],
             dropna=False,
             sort=False,
@@ -2355,6 +3422,7 @@ def collapse_marker_audit(marker_audit_df):
             supporting_orf_ids=("orf_id", lambda s: ";".join(sorted(pd.Series(s).astype(str).unique().tolist()))),
             source_dbs=("source_db", lambda s: ";".join(sorted(pd.Series(s).astype(str).unique().tolist()))),
             matched_aliases=("matched_alias", lambda s: ";".join(sorted(pd.Series(s).astype(str).unique().tolist()))),
+            match_evidence_types=("match_evidence_type", lambda s: ";".join(sorted(pd.Series(s).astype(str).unique().tolist()))),
             supporting_annotations=("annotation_text", lambda s: " || ".join(sorted(pd.Series(s).astype(str).unique().tolist()))),
         )
         .reset_index()
@@ -2386,7 +3454,9 @@ def build_reference_mode_audit_table(genome_id, orf_ids, orf_annotation_lookup, 
             annotation_text = str(row.get(source_db, "") or "").strip()
             if not annotation_text:
                 continue
-            for accession in extract_uniprot_accessions(annotation_text):
+            target_text = str(row.get(f"{source_db}_target", "") or "").strip()
+            accession_text = target_text or annotation_text
+            for accession in extract_uniprot_accessions(accession_text):
                 evidence = accession_mode_lookup.get(accession)
                 if not evidence:
                     continue
@@ -2442,15 +3512,31 @@ def summarize_reference_mode_support(reference_mode_audit_df):
 def marker_mode_possible_counts(marker_manifest):
     possible_counts = {mode_id: 0 for mode_id in ELEMENTAL_MODE_ORDER}
     core_possible_counts = {mode_id: 0 for mode_id in ELEMENTAL_MODE_ORDER}
+    specific_possible_counts = {mode_id: 0 for mode_id in ELEMENTAL_MODE_ORDER}
+    generic_possible_counts = {mode_id: 0 for mode_id in ELEMENTAL_MODE_ORDER}
     if marker_manifest is None or marker_manifest.empty:
-        return possible_counts, core_possible_counts
+        return possible_counts, core_possible_counts, specific_possible_counts, generic_possible_counts
 
+    specificity_map = classify_marker_manifest_specificity(marker_manifest)
     deduped = marker_manifest[["mode_id", "marker_id", "is_core"]].drop_duplicates().copy()
+    deduped["marker_specificity_class"] = deduped.apply(
+        lambda row: specificity_map.get(
+            (str(row["mode_id"]).strip().lower(), str(row["marker_id"]).strip()),
+            "specific",
+        ),
+        axis=1,
+    )
     for mode_id in ELEMENTAL_MODE_ORDER:
         mode_df = deduped.loc[deduped["mode_id"].eq(mode_id)]
         possible_counts[mode_id] = int(mode_df["marker_id"].nunique())
         core_possible_counts[mode_id] = int(mode_df.loc[mode_df["is_core"], "marker_id"].nunique())
-    return possible_counts, core_possible_counts
+        specific_possible_counts[mode_id] = int(
+            mode_df.loc[mode_df["marker_specificity_class"].eq("specific"), "marker_id"].nunique()
+        )
+        generic_possible_counts[mode_id] = int(
+            mode_df.loc[mode_df["marker_specificity_class"].eq("generic"), "marker_id"].nunique()
+        )
+    return possible_counts, core_possible_counts, specific_possible_counts, generic_possible_counts
 
 
 def summarize_elemental_annotation_lookup(orf_ids, orf_annotation_lookup):
@@ -2484,10 +3570,18 @@ def summarize_elemental_mode_lookup(orf_ids, orf_annotation_lookup, prefix, deno
     summary = {
         f"{prefix}_elemental_mode_assigned_{denominator_label}": np.nan,
         f"{prefix}_elemental_mode_assigned_fraction": np.nan,
+        f"{prefix}_elemental_mode_uniquely_assigned_{denominator_label}": np.nan,
+        f"{prefix}_elemental_mode_uniquely_assigned_fraction": np.nan,
+        f"{prefix}_elemental_mode_ambiguously_assigned_{denominator_label}": np.nan,
+        f"{prefix}_elemental_mode_ambiguously_assigned_fraction": np.nan,
     }
     for mode in ELEMENTAL_MODE_ORDER:
         summary[f"{prefix}_{mode}_{denominator_label}"] = np.nan
         summary[f"{prefix}_{mode}_fraction"] = np.nan
+        summary[f"{prefix}_unique_{mode}_{denominator_label}"] = np.nan
+        summary[f"{prefix}_unique_{mode}_fraction"] = np.nan
+        summary[f"{prefix}_ambiguous_{mode}_{denominator_label}"] = np.nan
+        summary[f"{prefix}_ambiguous_{mode}_fraction"] = np.nan
 
     if orf_annotation_lookup is None or not orf_ids:
         return summary
@@ -2495,15 +3589,37 @@ def summarize_elemental_mode_lookup(orf_ids, orf_annotation_lookup, prefix, deno
     lookup_hits = orf_annotation_lookup.reindex(orf_ids)
     total = len(orf_ids)
     assigned_mask = lookup_hits["elemental_mode_labels"].fillna("").ne("")
+    mode_counts = (
+        lookup_hits["elemental_mode_labels"]
+        .fillna("")
+        .astype(str)
+        .map(lambda text: len([token for token in text.split(";") if token]))
+    )
+    unique_mask = assigned_mask & mode_counts.eq(1)
+    ambiguous_mask = assigned_mask & mode_counts.gt(1)
     summary[f"{prefix}_elemental_mode_assigned_{denominator_label}"] = int(assigned_mask.sum())
     summary[f"{prefix}_elemental_mode_assigned_fraction"] = (
         float(assigned_mask.sum()) / total if total else np.nan
+    )
+    summary[f"{prefix}_elemental_mode_uniquely_assigned_{denominator_label}"] = int(unique_mask.sum())
+    summary[f"{prefix}_elemental_mode_uniquely_assigned_fraction"] = (
+        float(unique_mask.sum()) / total if total else np.nan
+    )
+    summary[f"{prefix}_elemental_mode_ambiguously_assigned_{denominator_label}"] = int(ambiguous_mask.sum())
+    summary[f"{prefix}_elemental_mode_ambiguously_assigned_fraction"] = (
+        float(ambiguous_mask.sum()) / total if total else np.nan
     )
     for mode in ELEMENTAL_MODE_ORDER:
         mode_hits = lookup_hits[f"elemental_mode_{mode}"].fillna(False)
         count = int(mode_hits.sum())
         summary[f"{prefix}_{mode}_{denominator_label}"] = count
         summary[f"{prefix}_{mode}_fraction"] = count / total if total else np.nan
+        unique_count = int((mode_hits & unique_mask).sum())
+        summary[f"{prefix}_unique_{mode}_{denominator_label}"] = unique_count
+        summary[f"{prefix}_unique_{mode}_fraction"] = unique_count / total if total else np.nan
+        ambiguous_count = int((mode_hits & ambiguous_mask).sum())
+        summary[f"{prefix}_ambiguous_{mode}_{denominator_label}"] = ambiguous_count
+        summary[f"{prefix}_ambiguous_{mode}_fraction"] = ambiguous_count / total if total else np.nan
     return summary
 
 
@@ -2575,25 +3691,55 @@ def summarize_elemental_pathway_modes(pwy_df):
     summary = {
         "pathway_elemental_mode_assigned_pathways": np.nan,
         "pathway_elemental_mode_assigned_fraction": np.nan,
+        "pathway_elemental_mode_uniquely_assigned_pathways": np.nan,
+        "pathway_elemental_mode_uniquely_assigned_fraction": np.nan,
+        "pathway_elemental_mode_ambiguously_assigned_pathways": np.nan,
+        "pathway_elemental_mode_ambiguously_assigned_fraction": np.nan,
     }
     for mode in ELEMENTAL_MODE_ORDER:
         summary[f"pathway_{mode}_count"] = np.nan
         summary[f"pathway_{mode}_fraction"] = np.nan
+        summary[f"pathway_unique_{mode}_count"] = np.nan
+        summary[f"pathway_unique_{mode}_fraction"] = np.nan
+        summary[f"pathway_ambiguous_{mode}_count"] = np.nan
+        summary[f"pathway_ambiguous_{mode}_fraction"] = np.nan
 
     if pwy_df is None or pwy_df.empty:
         return summary
 
     total = len(pwy_df)
     assigned_mask = pwy_df["elemental_mode_labels"].fillna("").ne("")
+    mode_counts = (
+        pwy_df["elemental_mode_labels"]
+        .fillna("")
+        .astype(str)
+        .map(lambda text: len([token for token in text.split(";") if token]))
+    )
+    unique_mask = assigned_mask & mode_counts.eq(1)
+    ambiguous_mask = assigned_mask & mode_counts.gt(1)
     summary["pathway_elemental_mode_assigned_pathways"] = int(assigned_mask.sum())
     summary["pathway_elemental_mode_assigned_fraction"] = (
         float(assigned_mask.sum()) / total if total else np.nan
+    )
+    summary["pathway_elemental_mode_uniquely_assigned_pathways"] = int(unique_mask.sum())
+    summary["pathway_elemental_mode_uniquely_assigned_fraction"] = (
+        float(unique_mask.sum()) / total if total else np.nan
+    )
+    summary["pathway_elemental_mode_ambiguously_assigned_pathways"] = int(ambiguous_mask.sum())
+    summary["pathway_elemental_mode_ambiguously_assigned_fraction"] = (
+        float(ambiguous_mask.sum()) / total if total else np.nan
     )
     for mode in ELEMENTAL_MODE_ORDER:
         mode_hits = pwy_df[f"elemental_mode_{mode}"].fillna(False)
         count = int(mode_hits.sum())
         summary[f"pathway_{mode}_count"] = count
         summary[f"pathway_{mode}_fraction"] = count / total if total else np.nan
+        unique_count = int((mode_hits & unique_mask).sum())
+        summary[f"pathway_unique_{mode}_count"] = unique_count
+        summary[f"pathway_unique_{mode}_fraction"] = unique_count / total if total else np.nan
+        ambiguous_count = int((mode_hits & ambiguous_mask).sum())
+        summary[f"pathway_ambiguous_{mode}_count"] = ambiguous_count
+        summary[f"pathway_ambiguous_{mode}_fraction"] = ambiguous_count / total if total else np.nan
     return summary
 
 
@@ -2685,39 +3831,42 @@ def summarize_pathway_orf_table(pwy2orf_df):
 
 
 def load_pathway_tables(record, high_conf_threshold):
-    pwy_df = read_table(record["pwy_path"]).copy()
-    pwy_df["genome_id"] = record["genome_id"]
-    pwy_df["PWY_SCORE"] = pd.to_numeric(pwy_df["PWY_SCORE"], errors="coerce")
-    pwy_df["NUM_REACTIONS"] = pd.to_numeric(pwy_df["NUM_REACTIONS"], errors="coerce")
-    pwy_df["NUM_COVERED_REACTIONS"] = pd.to_numeric(pwy_df["NUM_COVERED_REACTIONS"], errors="coerce")
-    pwy_df["ORF_COUNT"] = pd.to_numeric(pwy_df["ORF_COUNT"], errors="coerce")
-    pwy_df["reaction_coverage_fraction"] = np.where(
-        pwy_df["NUM_REACTIONS"].fillna(0) > 0,
-        pwy_df["NUM_COVERED_REACTIONS"] / pwy_df["NUM_REACTIONS"],
-        np.nan,
-    )
-    pwy_df["high_confidence_pathway"] = pwy_df["PWY_SCORE"] >= high_conf_threshold
-    pwy_df["complete_pathway"] = pwy_df["reaction_coverage_fraction"] >= 1.0
-    pathway_text = normalize_text(
-        pwy_df.get("PWY_COMMON_NAME", pd.Series("", index=pwy_df.index))
-    )
-    if "PWY_NAME" in pwy_df.columns:
-        pathway_text = pathway_text.where(
-            pathway_text.ne(""),
-            normalize_text(pwy_df["PWY_NAME"]),
+    if record["pwy_path"] is not None and Path(record["pwy_path"]).exists():
+        pwy_df = read_table(record["pwy_path"]).copy()
+        pwy_df["genome_id"] = record["genome_id"]
+        pwy_df["PWY_SCORE"] = pd.to_numeric(pwy_df["PWY_SCORE"], errors="coerce")
+        pwy_df["NUM_REACTIONS"] = pd.to_numeric(pwy_df["NUM_REACTIONS"], errors="coerce")
+        pwy_df["NUM_COVERED_REACTIONS"] = pd.to_numeric(pwy_df["NUM_COVERED_REACTIONS"], errors="coerce")
+        pwy_df["ORF_COUNT"] = pd.to_numeric(pwy_df["ORF_COUNT"], errors="coerce")
+        pwy_df["reaction_coverage_fraction"] = np.where(
+            pwy_df["NUM_REACTIONS"].fillna(0) > 0,
+            pwy_df["NUM_COVERED_REACTIONS"] / pwy_df["NUM_REACTIONS"],
+            np.nan,
         )
-    pwy_df["elemental_mode_labels"] = pathway_text.map(
-        lambda text: ";".join(classify_elemental_modes(text))
-    )
-    for mode in ELEMENTAL_MODE_ORDER:
-        pwy_df[f"elemental_mode_{mode}"] = pwy_df["elemental_mode_labels"].str.contains(mode, regex=False)
-    pwy_df["elemental_cycle_labels"] = pathway_text.map(
-        lambda text: ";".join(
-            elemental_families_from_modes(classify_elemental_modes(text)) or classify_elemental_cycles(text)
+        pwy_df["high_confidence_pathway"] = pwy_df["PWY_SCORE"] >= high_conf_threshold
+        pwy_df["complete_pathway"] = pwy_df["reaction_coverage_fraction"] >= 1.0
+        pathway_text = normalize_text(
+            pwy_df.get("PWY_COMMON_NAME", pd.Series("", index=pwy_df.index))
         )
-    )
-    for cycle in ELEMENTAL_CYCLE_ORDER:
-        pwy_df[f"elemental_{cycle}"] = pwy_df["elemental_cycle_labels"].str.contains(cycle, regex=False)
+        if "PWY_NAME" in pwy_df.columns:
+            pathway_text = pathway_text.where(
+                pathway_text.ne(""),
+                normalize_text(pwy_df["PWY_NAME"]),
+            )
+        pwy_df["elemental_mode_labels"] = pathway_text.map(
+            lambda text: ";".join(classify_elemental_modes(text))
+        )
+        for mode in ELEMENTAL_MODE_ORDER:
+            pwy_df[f"elemental_mode_{mode}"] = pwy_df["elemental_mode_labels"].str.contains(mode, regex=False)
+        pwy_df["elemental_cycle_labels"] = pathway_text.map(
+            lambda text: ";".join(
+                elemental_families_from_modes(classify_elemental_modes(text)) or classify_elemental_cycles(text)
+            )
+        )
+        for cycle in ELEMENTAL_CYCLE_ORDER:
+            pwy_df[f"elemental_{cycle}"] = pwy_df["elemental_cycle_labels"].str.contains(cycle, regex=False)
+    else:
+        pwy_df = build_empty_pathway_table(record["genome_id"])
 
     pwy2orf_df = None
     if record["pwy2orf_path"] is not None and Path(record["pwy2orf_path"]).exists():
@@ -2732,7 +3881,6 @@ def select_genome_orf_ids(record, all_records, orf_annotation_lookup, pwy2orf_df
     if (
         orf_annotation_lookup is not None
         and len(all_records) == 1
-        and record["mode"] in {"community_fallback", "genome"}
     ):
         return sorted(orf_annotation_lookup.index.astype(str).tolist()), "orf_annotation_table"
 
@@ -2807,6 +3955,10 @@ def summarize_genome_record(
         "results_mode": record["mode"],
         "genome_dir": str(record["genome_dir"]),
         "broad_orf_source": broad_orf_source,
+        "pathway_status": record.get("pathway_status", "present"),
+        "pathway_missing_reason": record.get("pathway_missing_reason", ""),
+        "pathway_table_present": bool(record.get("pwy_path")),
+        "pathway_orf_table_present": bool(record.get("pwy2orf_path")),
         **annotation_summary,
         **elemental_annotation_summary,
         **elemental_annotation_mode_summary,
@@ -3175,7 +4327,14 @@ def build_elemental_summary_table(genome_summary, prefix, denominator_column, un
     return genome_summary[[column for column in columns if column in genome_summary.columns]].copy()
 
 
-def build_elemental_mode_summary_table(genome_summary, prefix, denominator_column, unit_label, assigned_unit_label=None):
+def build_elemental_mode_summary_table(
+    genome_summary,
+    prefix,
+    denominator_column,
+    unit_label,
+    assigned_unit_label=None,
+    scope="inclusive",
+):
     columns = [
         "genome_id",
         "genome_display_label",
@@ -3186,15 +4345,27 @@ def build_elemental_mode_summary_table(genome_summary, prefix, denominator_colum
         denominator_column,
     ]
     assigned_unit_label = assigned_unit_label or unit_label
-    assigned_count = f"{prefix}_elemental_mode_assigned_{assigned_unit_label}"
-    assigned_fraction = f"{prefix}_elemental_mode_assigned_fraction"
+    if scope == "inclusive":
+        assigned_count = f"{prefix}_elemental_mode_assigned_{assigned_unit_label}"
+        assigned_fraction = f"{prefix}_elemental_mode_assigned_fraction"
+        column_prefix = f"{prefix}_"
+    elif scope == "unique":
+        assigned_count = f"{prefix}_elemental_mode_uniquely_assigned_{assigned_unit_label}"
+        assigned_fraction = f"{prefix}_elemental_mode_uniquely_assigned_fraction"
+        column_prefix = f"{prefix}_unique_"
+    elif scope == "ambiguous":
+        assigned_count = f"{prefix}_elemental_mode_ambiguously_assigned_{assigned_unit_label}"
+        assigned_fraction = f"{prefix}_elemental_mode_ambiguously_assigned_fraction"
+        column_prefix = f"{prefix}_ambiguous_"
+    else:
+        raise ValueError(f"Unsupported elemental mode summary scope: {scope}")
     if assigned_count in genome_summary.columns:
         columns.append(assigned_count)
     if assigned_fraction in genome_summary.columns:
         columns.append(assigned_fraction)
     for mode in ELEMENTAL_MODE_ORDER:
-        count_column = f"{prefix}_{mode}_{unit_label}"
-        fraction_column = f"{prefix}_{mode}_fraction"
+        count_column = f"{column_prefix}{mode}_{unit_label}"
+        fraction_column = f"{column_prefix}{mode}_fraction"
         if count_column in genome_summary.columns:
             columns.append(count_column)
         if fraction_column in genome_summary.columns:
@@ -3213,6 +4384,8 @@ def build_marker_summary_table(genome_summary, marker_manifest=None):
         "marker_supported_orfs",
         "marker_gene_count",
         "core_marker_gene_count",
+        "specific_marker_gene_count",
+        "generic_marker_gene_count",
     ]
     for mode_id in ELEMENTAL_MODE_ORDER:
         columns.extend(
@@ -3220,13 +4393,17 @@ def build_marker_summary_table(genome_summary, marker_manifest=None):
                 f"marker_{mode_id}_orf_count",
                 f"marker_{mode_id}_gene_count",
                 f"marker_{mode_id}_core_gene_count",
+                f"marker_{mode_id}_specific_gene_count",
+                f"marker_{mode_id}_generic_gene_count",
             ]
         )
     summary = genome_summary[[column for column in columns if column in genome_summary.columns]].copy()
-    possible_counts, core_possible_counts = marker_mode_possible_counts(marker_manifest)
+    possible_counts, core_possible_counts, specific_possible_counts, generic_possible_counts = marker_mode_possible_counts(marker_manifest)
     for mode_id in ELEMENTAL_MODE_ORDER:
         summary[f"marker_{mode_id}_possible_gene_count"] = possible_counts.get(mode_id, 0)
         summary[f"marker_{mode_id}_possible_core_gene_count"] = core_possible_counts.get(mode_id, 0)
+        summary[f"marker_{mode_id}_possible_specific_gene_count"] = specific_possible_counts.get(mode_id, 0)
+        summary[f"marker_{mode_id}_possible_generic_gene_count"] = generic_possible_counts.get(mode_id, 0)
     return summary
 
 
@@ -3249,6 +4426,271 @@ def build_reference_mode_summary_table(genome_summary):
             ]
         )
     return genome_summary[[column for column in columns if column in genome_summary.columns]].copy()
+
+
+def build_annotation_category_definitions_table():
+    rows = []
+    for category in ANNOTATION_CATEGORY_ORDER:
+        if category == "informative":
+            definition = "Annotation text classified as informative rather than uncertain or unannotated."
+            triggers = ""
+        elif category == "unannotated":
+            definition = "No usable functional annotation text detected across supported source columns."
+            triggers = ""
+        elif category == "other_uncertain":
+            definition = "Annotated ORF with non-informative text that did not match a more specific uncertain category."
+            triggers = ""
+        else:
+            trigger_list = UNCERTAIN_ANNOTATION_PATTERNS.get(category, [])
+            definition = "Annotated ORF assigned to this uncertain annotation grouping."
+            triggers = "; ".join(trigger_list)
+        rows.append(
+            {
+                "annotation_category": category,
+                "display_label": ANNOTATION_CATEGORY_LABELS.get(category, category),
+                "classification_group": "uncertain"
+                if category not in {"informative", "unannotated"}
+                else ("informative" if category == "informative" else "unannotated"),
+                "definition": definition,
+                "trigger_patterns": triggers,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_experimental_mobility_hit_table(annotation_audit_long, keyword_map):
+    columns = [
+        "genome_id",
+        "orf_id",
+        "source_db",
+        "annotation_text",
+        "category",
+        "matched_keywords",
+    ]
+    if annotation_audit_long is None or annotation_audit_long.empty:
+        return pd.DataFrame(columns=columns)
+
+    working = annotation_audit_long.copy()
+    working["annotation_text"] = working["annotation_text"].astype(str).str.strip()
+    working = working.loc[working["annotation_text"].ne("")].copy()
+    if working.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for record in working.to_dict("records"):
+        hits = detect_experimental_mobility_hits(record.get("annotation_text", ""), keyword_map)
+        if not hits:
+            continue
+        for category, matched_keywords in hits.items():
+            rows.append(
+                {
+                    "genome_id": str(record.get("genome_id", "")).strip(),
+                    "orf_id": str(record.get("orf_id", "")).strip(),
+                    "source_db": str(record.get("source_db", "")).strip(),
+                    "annotation_text": str(record.get("annotation_text", "")).strip(),
+                    "category": category,
+                    "matched_keywords": ";".join(matched_keywords),
+                }
+            )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def build_experimental_mobility_per_genome_summary(genome_summary, genome_type_df, hit_df):
+    columns = [
+        "genome_id",
+        "genome_display_label",
+        "genome_type",
+        "genome_type_source",
+        "plasmid_associated",
+        "phage_prophage_associated",
+        "generic_mge_associated",
+        "genomic_island_associated",
+    ]
+    if genome_summary.empty:
+        return pd.DataFrame(columns=columns)
+
+    base = genome_summary.copy()
+    display_column = "genome_display_label" if "genome_display_label" in base.columns else "genome_id"
+    base = base.loc[:, ["genome_id", display_column]].drop_duplicates("genome_id").copy()
+    base = base.rename(columns={display_column: "genome_display_label"})
+    base = base.merge(genome_type_df, on="genome_id", how="left")
+
+    for category in EXPERIMENTAL_MOBILITY_CATEGORY_ORDER:
+        base[EXPERIMENTAL_MOBILITY_CATEGORY_COLUMNS[category]] = False
+
+    if hit_df is not None and not hit_df.empty:
+        positive_pairs = hit_df.loc[:, ["genome_id", "category"]].drop_duplicates().copy()
+        for category in EXPERIMENTAL_MOBILITY_CATEGORY_ORDER:
+            positive_ids = set(
+                positive_pairs.loc[positive_pairs["category"].eq(category), "genome_id"].astype(str).tolist()
+            )
+            base[EXPERIMENTAL_MOBILITY_CATEGORY_COLUMNS[category]] = base["genome_id"].astype(str).isin(positive_ids)
+
+    return base.loc[:, columns].sort_values(by=["genome_type", "genome_id"], kind="mergesort").reset_index(drop=True)
+
+
+def build_experimental_mobility_prevalence_summary(per_genome_df):
+    rows = []
+    if per_genome_df is None or per_genome_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "genome_type",
+                "category",
+                "n_genomes_total",
+                "n_genomes_positive",
+                "prevalence_fraction",
+                "prevalence_percent",
+            ]
+        )
+
+    for genome_type, group in per_genome_df.groupby("genome_type", dropna=False):
+        total = int(group["genome_id"].astype(str).nunique())
+        for category in EXPERIMENTAL_MOBILITY_CATEGORY_ORDER:
+            column = EXPERIMENTAL_MOBILITY_CATEGORY_COLUMNS[category]
+            positive = int(group[column].fillna(False).astype(bool).sum())
+            fraction = (positive / total) if total else np.nan
+            rows.append(
+                {
+                    "genome_type": str(genome_type),
+                    "category": category,
+                    "n_genomes_total": total,
+                    "n_genomes_positive": positive,
+                    "prevalence_fraction": fraction,
+                    "prevalence_percent": (fraction * 100.0) if pd.notna(fraction) else np.nan,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def plot_experimental_mobility_prevalence(prevalence_df, output_base):
+    ensure_plotting()
+    if prevalence_df is None or prevalence_df.empty:
+        return False
+
+    working = prevalence_df.copy()
+    working["category"] = pd.Categorical(
+        working["category"],
+        categories=EXPERIMENTAL_MOBILITY_CATEGORY_ORDER,
+        ordered=True,
+    )
+    working = working.sort_values(by=["category", "genome_type"], kind="mergesort")
+    genome_types = sorted(
+        [
+            value
+            for value in working["genome_type"].astype(str).unique().tolist()
+            if str(value).strip() and str(value).strip().lower() != "nan"
+        ]
+    )
+    if not genome_types:
+        return False
+
+    plt_local = ensure_plotting()
+    x_positions = np.arange(len(EXPERIMENTAL_MOBILITY_CATEGORY_ORDER), dtype=float)
+    width = min(0.8 / max(1, len(genome_types)), 0.36) if len(genome_types) > 1 else 0.55
+    color_map = {}
+    if len(genome_types) <= 10:
+        cmap = plt_local.get_cmap("tab10")
+        for index, genome_type in enumerate(genome_types):
+            color_map[genome_type] = cmap(index % 10)
+    else:
+        cmap = plt_local.get_cmap("viridis")
+        denominator = max(1, len(genome_types) - 1)
+        for index, genome_type in enumerate(genome_types):
+            color_map[genome_type] = cmap(index / denominator)
+    fig, ax = plt_local.subplots(figsize=(11, 6))
+
+    for index, genome_type in enumerate(genome_types):
+        subset = working.loc[working["genome_type"].astype(str).eq(genome_type)].copy()
+        value_map = {
+            row["category"]: float(row["prevalence_percent"])
+            for _, row in subset.iterrows()
+            if pd.notna(row["prevalence_percent"])
+        }
+        y_values = [value_map.get(category, 0.0) for category in EXPERIMENTAL_MOBILITY_CATEGORY_ORDER]
+        offset = (index - ((len(genome_types) - 1) / 2.0)) * width
+        ax.bar(
+            x_positions + offset,
+            y_values,
+            width=width,
+            color=color_map.get(genome_type, "#808080"),
+            edgecolor="#333333",
+            linewidth=0.6,
+            label=genome_type,
+        )
+
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(EXPERIMENTAL_MOBILITY_CATEGORY_ORDER, rotation=20, ha="right")
+    ax.set_ylabel("Prevalence (%)")
+    ax.set_xlabel("Category")
+    ax.set_title("Experimental candidate mobility marker prevalence by genome type")
+    ax.set_ylim(0, max(5.0, float(working["prevalence_percent"].fillna(0).max()) * 1.15))
+    ax.legend(frameon=False, title="Genome type")
+    fig.tight_layout()
+    save_figure(fig, output_base)
+    return True
+
+
+def build_experimental_mobility_outputs(
+    genome_summary,
+    annotation_audit_long,
+    genome_type_tsv=None,
+    genome_type_column=None,
+    genome_type_id_column=None,
+    include_optional_broad_screen=False,
+):
+    outputs = {}
+    genome_type_df = resolve_experimental_genome_type_lookup(
+        genome_summary,
+        genome_type_tsv=genome_type_tsv,
+        genome_type_column=genome_type_column,
+        genome_type_id_column=genome_type_id_column,
+    )
+    main_hit_df = build_experimental_mobility_hit_table(
+        annotation_audit_long,
+        EXPERIMENTAL_MOBILITY_KEYWORDS,
+    )
+    per_genome_df = build_experimental_mobility_per_genome_summary(
+        genome_summary,
+        genome_type_df,
+        main_hit_df,
+    )
+    prevalence_df = build_experimental_mobility_prevalence_summary(per_genome_df)
+    outputs["genome_type_lookup"] = genome_type_df
+    outputs["hit_table"] = main_hit_df
+    outputs["per_genome_table"] = per_genome_df
+    outputs["prevalence_table"] = prevalence_df
+
+    if include_optional_broad_screen:
+        broad_keyword_map = {"optional broad screen": EXPERIMENTAL_MOBILITY_OPTIONAL_BROAD_KEYWORDS}
+        broad_hit_df = build_experimental_mobility_hit_table(annotation_audit_long, broad_keyword_map)
+        broad_per_genome_df = genome_type_df.copy()
+        broad_per_genome_df = genome_summary.loc[:, ["genome_id"]].drop_duplicates().merge(
+            broad_per_genome_df,
+            on="genome_id",
+            how="left",
+        )
+        positive_ids = set(broad_hit_df["genome_id"].astype(str).tolist()) if not broad_hit_df.empty else set()
+        broad_per_genome_df["optional_broad_screen"] = broad_per_genome_df["genome_id"].astype(str).isin(positive_ids)
+        broad_rows = []
+        for genome_type, group in broad_per_genome_df.groupby("genome_type", dropna=False):
+            total = int(group["genome_id"].astype(str).nunique())
+            positive = int(group["optional_broad_screen"].fillna(False).astype(bool).sum())
+            fraction = (positive / total) if total else np.nan
+            broad_rows.append(
+                {
+                    "genome_type": str(genome_type),
+                    "category": "optional broad screen",
+                    "n_genomes_total": total,
+                    "n_genomes_positive": positive,
+                    "prevalence_fraction": fraction,
+                    "prevalence_percent": (fraction * 100.0) if pd.notna(fraction) else np.nan,
+                }
+            )
+        outputs["optional_broad_hit_table"] = broad_hit_df
+        outputs["optional_broad_per_genome_table"] = broad_per_genome_df
+        outputs["optional_broad_prevalence_table"] = pd.DataFrame(broad_rows)
+
+    return outputs
 
 
 def build_pathway_matrix(pathway_long, value_column):
@@ -3566,13 +5008,24 @@ def plot_elemental_metabolism(genome_summary, output_base):
     return True
 
 
-def plot_elemental_modes(genome_summary, output_base):
+def plot_elemental_modes(genome_summary, output_base, scope="inclusive"):
     ensure_plotting()
     if genome_summary.empty:
         return False
 
     order = genome_order(genome_summary)
     y_labels = ordered_display_labels(genome_summary, order)
+    if scope == "inclusive":
+        scope_prefix = ""
+        scope_title = "All assignments"
+    elif scope == "unique":
+        scope_prefix = "unique_"
+        scope_title = "Unique assignments only"
+    elif scope == "ambiguous":
+        scope_prefix = "ambiguous_"
+        scope_title = "Ambiguous assignments only"
+    else:
+        raise ValueError(f"Unsupported elemental mode plot scope: {scope}")
     panel_specs = [
         ("annotation", "Annotation-supported modes", "orfs"),
         ("pathway_support", "Pathway-supporting modes", "orfs"),
@@ -3581,7 +5034,7 @@ def plot_elemental_modes(genome_summary, output_base):
     fig, axes = plt.subplots(1, 3, figsize=(22, max(7, len(order) * 0.24)), sharey=True)
 
     for ax, (prefix, title, unit_label) in zip(axes, panel_specs):
-        value_columns = [f"{prefix}_{mode}_{unit_label}" for mode in ELEMENTAL_MODE_ORDER]
+        value_columns = [f"{prefix}_{scope_prefix}{mode}_{unit_label}" for mode in ELEMENTAL_MODE_ORDER]
         available_columns = [column for column in value_columns if column in genome_summary.columns]
         if not available_columns:
             ax.axis("off")
@@ -3593,9 +5046,9 @@ def plot_elemental_modes(genome_summary, output_base):
             .reindex(order)[available_columns]
             .rename(
                 columns={
-                    f"{prefix}_{mode}_{unit_label}": ELEMENTAL_MODE_LABELS[mode]
+                    f"{prefix}_{scope_prefix}{mode}_{unit_label}": ELEMENTAL_MODE_LABELS[mode]
                     for mode in ELEMENTAL_MODE_ORDER
-                    if f"{prefix}_{mode}_{unit_label}" in genome_summary.columns
+                    if f"{prefix}_{scope_prefix}{mode}_{unit_label}" in genome_summary.columns
                 }
             )
             .fillna(0)
@@ -3629,29 +5082,63 @@ def plot_elemental_modes(genome_summary, output_base):
         cbar.set_label("Count")
 
     axes[0].set_ylabel("Genome")
-    fig.suptitle("Specific metabolism-mode summary", fontsize=16, y=0.985)
+    fig.suptitle(f"Specific metabolism-mode summary ({scope_title})", fontsize=16, y=0.985)
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     save_figure(fig, output_base)
     return True
 
 
-def plot_marker_heatmap(genome_summary, output_base, marker_manifest=None):
+def plot_marker_heatmap(genome_summary, output_base, marker_manifest=None, specificity="all"):
     ensure_plotting()
     if genome_summary.empty:
         return False
 
     order = genome_order(genome_summary)
     y_labels = ordered_display_labels(genome_summary, order)
-    marker_columns = [f"marker_{mode_id}_gene_count" for mode_id in ELEMENTAL_MODE_ORDER]
+    if specificity == "all":
+        marker_columns = [f"marker_{mode_id}_gene_count" for mode_id in ELEMENTAL_MODE_ORDER]
+        plot_title = "Marker-support heatmap"
+        figure_title = "Mode support by curated marker genes"
+    elif specificity == "specific":
+        marker_columns = [f"marker_{mode_id}_specific_gene_count" for mode_id in ELEMENTAL_MODE_ORDER]
+        plot_title = "Specific-marker heatmap"
+        figure_title = "Mode support by specific curated marker genes"
+    elif specificity == "generic":
+        marker_columns = [f"marker_{mode_id}_generic_gene_count" for mode_id in ELEMENTAL_MODE_ORDER]
+        plot_title = "Generic-marker heatmap"
+        figure_title = "Mode support by generic curated marker genes"
+    else:
+        raise ValueError(f"Unsupported marker heatmap specificity: {specificity}")
     available_columns = [column for column in marker_columns if column in genome_summary.columns]
     if not available_columns:
         return False
 
-    possible_counts, _ = marker_mode_possible_counts(marker_manifest)
+    possible_counts, _, specific_possible_counts, generic_possible_counts = marker_mode_possible_counts(marker_manifest)
+    mode_ids = [
+        mode_id for mode_id in ELEMENTAL_MODE_ORDER
+        if (
+            (specificity == "all" and f"marker_{mode_id}_gene_count" in available_columns)
+            or (specificity == "specific" and f"marker_{mode_id}_specific_gene_count" in available_columns)
+            or (specificity == "generic" and f"marker_{mode_id}_generic_gene_count" in available_columns)
+        )
+    ]
+    if specificity == "specific":
+        label_counts = specific_possible_counts
+    elif specificity == "generic":
+        label_counts = generic_possible_counts
+    else:
+        label_counts = possible_counts
     heat_df = (
         genome_summary.set_index("genome_id")
         .reindex(order)[available_columns]
-        .rename(columns={f"marker_{mode_id}_gene_count": ELEMENTAL_MODE_LABELS[mode_id] for mode_id in ELEMENTAL_MODE_ORDER})
+        .rename(
+            columns={
+                column: ELEMENTAL_MODE_LABELS[mode_id]
+                for mode_id in ELEMENTAL_MODE_ORDER
+                for column in [f"marker_{mode_id}_gene_count", f"marker_{mode_id}_specific_gene_count", f"marker_{mode_id}_generic_gene_count"]
+                if column in genome_summary.columns
+            }
+        )
         .fillna(0)
         .astype(float)
     )
@@ -3660,7 +5147,6 @@ def plot_marker_heatmap(genome_summary, output_base, marker_manifest=None):
 
     vmax = max(1.0, float(np.nanmax(heat_df.values)))
     rgb = np.ones((heat_df.shape[0], heat_df.shape[1], 3), dtype=float)
-    mode_ids = [mode_id for mode_id in ELEMENTAL_MODE_ORDER if f"marker_{mode_id}_gene_count" in available_columns]
     family_ids = [ELEMENTAL_MODE_FAMILY[mode_id] for mode_id in mode_ids]
     for col_index, family_id in enumerate(family_ids):
         for row_index in range(heat_df.shape[0]):
@@ -3701,17 +5187,14 @@ def plot_marker_heatmap(genome_summary, output_base, marker_manifest=None):
     ax.imshow(rgb, aspect="auto")
     ax.set_xticks(np.arange(len(mode_ids)))
     ax.set_xticklabels(
-        [
-            f"{ELEMENTAL_MODE_LABELS[mode_id]}\n(n={possible_counts.get(mode_id, 0)})"
-            for mode_id in mode_ids
-        ],
+        [f"{ELEMENTAL_MODE_LABELS[mode_id]}\n(n={label_counts.get(mode_id, 0)})" for mode_id in mode_ids],
         rotation=90,
     )
     ax.set_yticks(np.arange(len(order)))
     ax.set_yticklabels(y_labels)
     ax.set_xlabel("Metabolism mode")
     ax.set_ylabel("Genome")
-    ax.set_title("Marker-support heatmap", pad=2)
+    ax.set_title(plot_title, pad=2)
 
     last_family = None
     for col_index, family_id in enumerate(family_ids):
@@ -3722,16 +5205,14 @@ def plot_marker_heatmap(genome_summary, output_base, marker_manifest=None):
     for row_index in range(len(order)):
         for col_index in range(len(mode_ids)):
             value = int(round(float(heat_df.iat[row_index, col_index])))
-            possible = int(possible_counts.get(mode_ids[col_index], 0))
             color = heatmap_text_color(value, vmax)
-            label = f"{value}/{possible}" if possible > 0 else str(value)
-            ax.text(col_index, row_index, label, ha="center", va="center", fontsize=7, color=color)
+            ax.text(col_index, row_index, str(value), ha="center", va="center", fontsize=7, color=color)
 
-    fig.suptitle("Mode support by curated marker genes", fontsize=15, y=0.992)
+    fig.suptitle(figure_title, fontsize=15, y=0.992)
     fig.text(
         0.5,
         0.965,
-        "Cell text = observed curated markers / possible curated markers for that mode",
+        "Axis labels show possible curated markers for the displayed marker class.",
         ha="center",
         va="center",
         fontsize=9,
@@ -3920,6 +5401,11 @@ def write_outputs(
     top_n_pathways=20,
     progress=True,
     heartbeat_seconds=60,
+    experimental_mobility_screen=False,
+    experimental_mobility_genome_type_tsv=None,
+    experimental_mobility_genome_type_column=None,
+    experimental_mobility_genome_type_id_column=None,
+    experimental_mobility_include_broad_screen=False,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
     base = output_dir / prefix
@@ -3935,16 +5421,35 @@ def write_outputs(
     reference_mode_summary = build_reference_mode_summary_table(genome_summary)
     elemental_annotation = build_elemental_summary_table(genome_summary, "annotation", "total_orfs", "orfs")
     elemental_mode_annotation = build_elemental_mode_summary_table(genome_summary, "annotation", "total_orfs", "orfs")
+    elemental_mode_annotation_unique = build_elemental_mode_summary_table(
+        genome_summary, "annotation", "total_orfs", "orfs", scope="unique"
+    )
+    elemental_mode_annotation_ambiguous = build_elemental_mode_summary_table(
+        genome_summary, "annotation", "total_orfs", "orfs", scope="ambiguous"
+    )
     elemental_pathway_support = build_elemental_summary_table(genome_summary, "pathway_support", "pathway_support_orfs", "orfs")
     elemental_mode_pathway_support = build_elemental_mode_summary_table(genome_summary, "pathway_support", "pathway_support_orfs", "orfs")
+    elemental_mode_pathway_support_unique = build_elemental_mode_summary_table(
+        genome_summary, "pathway_support", "pathway_support_orfs", "orfs", scope="unique"
+    )
+    elemental_mode_pathway_support_ambiguous = build_elemental_mode_summary_table(
+        genome_summary, "pathway_support", "pathway_support_orfs", "orfs", scope="ambiguous"
+    )
     elemental_pathway = build_elemental_summary_table(genome_summary, "pathway", "total_pathways", "count", assigned_unit_label="pathways")
     elemental_mode_pathway = build_elemental_mode_summary_table(genome_summary, "pathway", "total_pathways", "count", assigned_unit_label="pathways")
+    elemental_mode_pathway_unique = build_elemental_mode_summary_table(
+        genome_summary, "pathway", "total_pathways", "count", assigned_unit_label="pathways", scope="unique"
+    )
+    elemental_mode_pathway_ambiguous = build_elemental_mode_summary_table(
+        genome_summary, "pathway", "total_pathways", "count", assigned_unit_label="pathways", scope="ambiguous"
+    )
     pathway_presence = build_pathway_matrix(
         pathway_long.assign(pathway_present=1),
         "pathway_present",
     )
     pathway_score = build_pathway_matrix(pathway_long, "PWY_SCORE")
     pathway_coverage = build_pathway_matrix(pathway_long, "reaction_coverage_fraction")
+    annotation_category_definitions = build_annotation_category_definitions_table()
     taxonomy_label_table = genome_summary[
         [
             column
@@ -3959,6 +5464,16 @@ def write_outputs(
             if column in genome_summary.columns
         ]
     ].copy()
+    experimental_mobility_outputs = {}
+    if experimental_mobility_screen:
+        experimental_mobility_outputs = build_experimental_mobility_outputs(
+            genome_summary,
+            annotation_audit_long,
+            genome_type_tsv=experimental_mobility_genome_type_tsv,
+            genome_type_column=experimental_mobility_genome_type_column,
+            genome_type_id_column=experimental_mobility_genome_type_id_column,
+            include_optional_broad_screen=experimental_mobility_include_broad_screen,
+        )
 
     def write_tables():
         genome_summary.to_csv(f"{base}_genome_summary.tsv", sep="\t", index=False)
@@ -3966,10 +5481,16 @@ def write_outputs(
         annotation_quality.to_csv(f"{base}_annotation_quality_summary.tsv", sep="\t", index=False)
         elemental_annotation.to_csv(f"{base}_elemental_annotation_summary.tsv", sep="\t", index=False)
         elemental_mode_annotation.to_csv(f"{base}_elemental_mode_annotation_summary.tsv", sep="\t", index=False)
+        elemental_mode_annotation_unique.to_csv(f"{base}_elemental_mode_annotation_unique_summary.tsv", sep="\t", index=False)
+        elemental_mode_annotation_ambiguous.to_csv(f"{base}_elemental_mode_annotation_ambiguous_summary.tsv", sep="\t", index=False)
         elemental_pathway_support.to_csv(f"{base}_elemental_pathway_support_summary.tsv", sep="\t", index=False)
         elemental_mode_pathway_support.to_csv(f"{base}_elemental_mode_pathway_support_summary.tsv", sep="\t", index=False)
+        elemental_mode_pathway_support_unique.to_csv(f"{base}_elemental_mode_pathway_support_unique_summary.tsv", sep="\t", index=False)
+        elemental_mode_pathway_support_ambiguous.to_csv(f"{base}_elemental_mode_pathway_support_ambiguous_summary.tsv", sep="\t", index=False)
         elemental_pathway.to_csv(f"{base}_elemental_pathway_summary.tsv", sep="\t", index=False)
         elemental_mode_pathway.to_csv(f"{base}_elemental_mode_pathway_summary.tsv", sep="\t", index=False)
+        elemental_mode_pathway_unique.to_csv(f"{base}_elemental_mode_pathway_unique_summary.tsv", sep="\t", index=False)
+        elemental_mode_pathway_ambiguous.to_csv(f"{base}_elemental_mode_pathway_ambiguous_summary.tsv", sep="\t", index=False)
         reference_mode_summary.to_csv(f"{base}_reference_mode_summary.tsv", sep="\t", index=False)
         pathway_long.to_csv(f"{base}_pathway_long.tsv", sep="\t", index=False)
         pathway_orf_long.to_csv(f"{base}_pathway_orf_long.tsv", sep="\t", index=False)
@@ -3982,7 +5503,45 @@ def write_outputs(
         pathway_presence.to_csv(f"{base}_pathway_presence_matrix.tsv", sep="\t", index=False)
         pathway_score.to_csv(f"{base}_pathway_score_matrix.tsv", sep="\t", index=False)
         pathway_coverage.to_csv(f"{base}_pathway_coverage_matrix.tsv", sep="\t", index=False)
+        annotation_category_definitions.to_csv(f"{base}_annotation_category_definitions.tsv", sep="\t", index=False)
         taxonomy_label_table.to_csv(f"{base}_taxonomy_labels.tsv", sep="\t", index=False)
+        if experimental_mobility_outputs:
+            experimental_mobility_outputs["genome_type_lookup"].to_csv(
+                f"{base}_experimental_candidate_mobility_genome_type_lookup.tsv",
+                sep="\t",
+                index=False,
+            )
+            experimental_mobility_outputs["hit_table"].to_csv(
+                f"{base}_experimental_candidate_mobility_hits.tsv",
+                sep="\t",
+                index=False,
+            )
+            experimental_mobility_outputs["per_genome_table"].to_csv(
+                f"{base}_experimental_candidate_mobility_per_genome.tsv",
+                sep="\t",
+                index=False,
+            )
+            experimental_mobility_outputs["prevalence_table"].to_csv(
+                f"{base}_experimental_candidate_mobility_prevalence.tsv",
+                sep="\t",
+                index=False,
+            )
+            if "optional_broad_hit_table" in experimental_mobility_outputs:
+                experimental_mobility_outputs["optional_broad_hit_table"].to_csv(
+                    f"{base}_experimental_candidate_mobility_optional_broad_hits.tsv",
+                    sep="\t",
+                    index=False,
+                )
+                experimental_mobility_outputs["optional_broad_per_genome_table"].to_csv(
+                    f"{base}_experimental_candidate_mobility_optional_broad_per_genome.tsv",
+                    sep="\t",
+                    index=False,
+                )
+                experimental_mobility_outputs["optional_broad_prevalence_table"].to_csv(
+                    f"{base}_experimental_candidate_mobility_optional_broad_prevalence.tsv",
+                    sep="\t",
+                    index=False,
+                )
 
     run_with_heartbeat(
         "writing summary tables",
@@ -4001,10 +5560,16 @@ def write_outputs(
         f"{base}_reference_mode_summary.tsv",
         f"{base}_elemental_annotation_summary.tsv",
         f"{base}_elemental_mode_annotation_summary.tsv",
+        f"{base}_elemental_mode_annotation_unique_summary.tsv",
+        f"{base}_elemental_mode_annotation_ambiguous_summary.tsv",
         f"{base}_elemental_pathway_support_summary.tsv",
         f"{base}_elemental_mode_pathway_support_summary.tsv",
+        f"{base}_elemental_mode_pathway_support_unique_summary.tsv",
+        f"{base}_elemental_mode_pathway_support_ambiguous_summary.tsv",
         f"{base}_elemental_pathway_summary.tsv",
         f"{base}_elemental_mode_pathway_summary.tsv",
+        f"{base}_elemental_mode_pathway_unique_summary.tsv",
+        f"{base}_elemental_mode_pathway_ambiguous_summary.tsv",
         f"{base}_pathway_long.tsv",
         f"{base}_pathway_orf_long.tsv",
         f"{base}_elemental_annotation_audit.tsv",
@@ -4015,19 +5580,51 @@ def write_outputs(
         f"{base}_pathway_presence_matrix.tsv",
         f"{base}_pathway_score_matrix.tsv",
         f"{base}_pathway_coverage_matrix.tsv",
+        f"{base}_annotation_category_definitions.tsv",
         f"{base}_taxonomy_labels.tsv",
     ]
+    if experimental_mobility_outputs:
+        wrote_files.extend(
+            [
+                f"{base}_experimental_candidate_mobility_genome_type_lookup.tsv",
+                f"{base}_experimental_candidate_mobility_hits.tsv",
+                f"{base}_experimental_candidate_mobility_per_genome.tsv",
+                f"{base}_experimental_candidate_mobility_prevalence.tsv",
+            ]
+        )
+        if "optional_broad_hit_table" in experimental_mobility_outputs:
+            wrote_files.extend(
+                [
+                    f"{base}_experimental_candidate_mobility_optional_broad_hits.tsv",
+                    f"{base}_experimental_candidate_mobility_optional_broad_per_genome.tsv",
+                    f"{base}_experimental_candidate_mobility_optional_broad_prevalence.tsv",
+                ]
+            )
     plot_specs = [
         ("compact_summary", lambda: plot_compact_summary(genome_summary, f"{base}_compact_summary")),
         ("annotation_sources", lambda: plot_annotation_sources(genome_summary, f"{base}_annotation_sources")),
         ("annotation_quality", lambda: plot_annotation_quality(genome_summary, f"{base}_annotation_quality")),
         ("elemental_metabolism", lambda: plot_elemental_metabolism(genome_summary, f"{base}_elemental_metabolism")),
         ("elemental_modes", lambda: plot_elemental_modes(genome_summary, f"{base}_elemental_modes")),
-        ("marker_heatmap", lambda: plot_marker_heatmap(genome_summary, f"{base}_marker_heatmap", marker_manifest=marker_manifest)),
+        ("elemental_modes_unique", lambda: plot_elemental_modes(genome_summary, f"{base}_elemental_modes_unique", scope="unique")),
+        ("elemental_modes_ambiguous", lambda: plot_elemental_modes(genome_summary, f"{base}_elemental_modes_ambiguous", scope="ambiguous")),
+        ("marker_heatmap", lambda: plot_marker_heatmap(genome_summary, f"{base}_marker_heatmap", marker_manifest=marker_manifest, specificity="all")),
+        ("marker_heatmap_specific", lambda: plot_marker_heatmap(genome_summary, f"{base}_marker_heatmap_specific", marker_manifest=marker_manifest, specificity="specific")),
+        ("marker_heatmap_generic", lambda: plot_marker_heatmap(genome_summary, f"{base}_marker_heatmap_generic", marker_manifest=marker_manifest, specificity="generic")),
         ("reference_mode_heatmap", lambda: plot_reference_mode_heatmap(genome_summary, f"{base}_reference_mode_heatmap")),
         ("pathway_metrics", lambda: plot_pathway_metric_panels(genome_summary, f"{base}_pathway_metrics")),
         ("top_pathways", lambda: plot_top_pathway_heatmap(pathway_long, genome_summary, f"{base}_top_pathways", top_n_pathways)),
     ]
+    if experimental_mobility_outputs:
+        plot_specs.append(
+            (
+                "experimental_candidate_mobility_prevalence",
+                lambda: plot_experimental_mobility_prevalence(
+                    experimental_mobility_outputs["prevalence_table"],
+                    f"{base}_experimental_candidate_mobility_prevalence",
+                ),
+            )
+        )
     for index, (name, plotter) in enumerate(plot_specs, start=1):
         progress_log(
             f"[progress] rendering plot {index}/{len(plot_specs)}: {name}",
@@ -4053,8 +5650,16 @@ def write_outputs(
             f"{base}_elemental_metabolism.pdf",
             f"{base}_elemental_modes.png",
             f"{base}_elemental_modes.pdf",
+            f"{base}_elemental_modes_unique.png",
+            f"{base}_elemental_modes_unique.pdf",
+            f"{base}_elemental_modes_ambiguous.png",
+            f"{base}_elemental_modes_ambiguous.pdf",
             f"{base}_marker_heatmap.png",
             f"{base}_marker_heatmap.pdf",
+            f"{base}_marker_heatmap_specific.png",
+            f"{base}_marker_heatmap_specific.pdf",
+            f"{base}_marker_heatmap_generic.png",
+            f"{base}_marker_heatmap_generic.pdf",
             f"{base}_reference_mode_heatmap.png",
             f"{base}_reference_mode_heatmap.pdf",
             f"{base}_pathway_metrics.png",
@@ -4063,6 +5668,13 @@ def write_outputs(
             f"{base}_top_pathways.pdf",
         ]
     )
+    if experimental_mobility_outputs:
+        wrote_files.extend(
+            [
+                f"{base}_experimental_candidate_mobility_prevalence.png",
+                f"{base}_experimental_candidate_mobility_prevalence.pdf",
+            ]
+        )
     return wrote_files
 
 
@@ -4148,7 +5760,7 @@ def main():
         run_with_heartbeat(
             "building/loading accession reference index cache",
             lambda: load_reference_accession_modes(
-                args.reference_mappings_dir,
+                reference_mappings_dir,
                 progress=progress_enabled,
                 progress_interval_rows=args.reference_progress_rows,
                 chunk_size=args.reference_chunk_size,
@@ -4167,7 +5779,12 @@ def main():
         )
         return
 
-    marker_manifest = load_marker_manifest(Path(args.marker_manifest).expanduser().resolve())
+    marker_manifest_path = resolve_optional_path_arg(args.marker_manifest)
+    if marker_manifest_path is None:
+        marker_manifest = pd.DataFrame(columns=["family_id", "mode_id", "marker_id", "marker_label", "is_core", "alias"])
+    else:
+        marker_manifest = load_marker_manifest(marker_manifest_path)
+    reference_mappings_dir = resolve_optional_path_arg(args.reference_mappings_dir)
     if len(input_results_dirs) == 1:
         (
             genome_summary,
@@ -4183,7 +5800,7 @@ def main():
             allowed_genomes=allowed_genomes,
             taxonomy_label_lookup=taxonomy_label_lookup,
             marker_manifest=marker_manifest,
-            reference_mappings_dir=args.reference_mappings_dir,
+            reference_mappings_dir=reference_mappings_dir,
             workers=worker_count,
             progress=progress_enabled,
             progress_interval=args.progress_interval,
@@ -4223,7 +5840,7 @@ def main():
                     allowed_genomes=allowed_genomes,
                     taxonomy_label_lookup=taxonomy_label_lookup,
                     marker_manifest=marker_manifest,
-                    reference_mappings_dir=args.reference_mappings_dir,
+                    reference_mappings_dir=reference_mappings_dir,
                     workers=worker_count,
                     progress=progress_enabled,
                     progress_interval=args.progress_interval,
@@ -4263,6 +5880,11 @@ def main():
                     top_n_pathways=args.top_n_pathways,
                     progress=progress_enabled,
                     heartbeat_seconds=args.heartbeat_seconds,
+                    experimental_mobility_screen=bool(args.experimental_mobility_screen),
+                    experimental_mobility_genome_type_tsv=args.experimental_mobility_genome_type_tsv,
+                    experimental_mobility_genome_type_column=args.experimental_mobility_genome_type_column,
+                    experimental_mobility_genome_type_id_column=args.experimental_mobility_genome_type_id_column,
+                    experimental_mobility_include_broad_screen=bool(args.experimental_mobility_include_broad_screen),
                 )
                 progress_log(
                     f"[done] ({index}/{total_dirs}) individual outputs in: {individual_output_dir}",
@@ -4337,12 +5959,17 @@ def main():
         top_n_pathways=args.top_n_pathways,
         progress=progress_enabled,
         heartbeat_seconds=args.heartbeat_seconds,
+        experimental_mobility_screen=bool(args.experimental_mobility_screen),
+        experimental_mobility_genome_type_tsv=args.experimental_mobility_genome_type_tsv,
+        experimental_mobility_genome_type_column=args.experimental_mobility_genome_type_column,
+        experimental_mobility_genome_type_id_column=args.experimental_mobility_genome_type_id_column,
+        experimental_mobility_include_broad_screen=bool(args.experimental_mobility_include_broad_screen),
     )
     elapsed = time.time() - run_start
     progress_log(
-        f"[done] summarize_metapathways_genomes completed in {elapsed/60:.2f}m; files={len(wrote_files)}",
-        enabled=progress_enabled,
-    )
+            f"[done] summarize_metapathways_genomes completed in {elapsed/60:.2f}m; files={len(wrote_files)}",
+            enabled=progress_enabled,
+        )
     for path in wrote_files:
         print(path)
 

@@ -11,6 +11,8 @@ import sys
 import warnings
 from pathlib import Path
 
+import numpy as np
+
 pd = None
 
 PLOT_EXTENSIONS = {".png", ".pdf", ".svg", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -34,6 +36,19 @@ STYLE_KEYWORDS = [
     ("component", "components"),
     ("selected", "selected"),
 ]
+PREFERRED_METHOD_ORDER = ["SAGs", "xPG_SAGs", "MAGs", "xPG_MAGs"]
+PREFERRED_METHOD_TOKENS = {
+    "sag": 0,
+    "sags": 0,
+    "xpgssag": 1,
+    "xpgssags": 1,
+    "xpgsag": 1,
+    "xpgsags": 1,
+    "mag": 2,
+    "mags": 2,
+    "xpgsmag": 3,
+    "xpgsmags": 3,
+}
 
 
 def build_parser():
@@ -163,6 +178,16 @@ def build_parser():
         help="Directory name under the combined output for the global best deduplicated set. Default: best_of_best",
     )
     parser.add_argument(
+        "--best-set-min-mimag-tier",
+        default="low",
+        choices=["low", "medium", "high"],
+        help=(
+            "Minimum MIMAG tier allowed into atlas best-of-sample / best-of-best "
+            "selection. Default: low (keeps all genomes). Use 'medium' to exclude "
+            "LQ genomes or 'high' to keep only HQ genomes."
+        ),
+    )
+    parser.add_argument(
         "--skip-to-best",
         action="store_true",
         help=(
@@ -176,6 +201,31 @@ def build_parser():
         help=(
             "Skip moving outputs into plots/ and tables/ subdirectories grouped "
             "by style and type."
+        ),
+    )
+    parser.add_argument(
+        "--run-best-set-phylogeny",
+        action="store_true",
+        help=(
+            "After best-of-sample / best-of-best export, run 16S and GTDB-marker "
+            "phylogeny generation for every best-set directory."
+        ),
+    )
+    parser.add_argument(
+        "--best-set-phylogeny-threads",
+        type=int,
+        default=1,
+        help=(
+            "Threads passed to best_set_phylogeny.py for Barrnap, MAFFT, and "
+            "GTDB-Tk. Default: 1"
+        ),
+    )
+    parser.add_argument(
+        "--best-set-gtdbtk-data-path",
+        default=None,
+        help=(
+            "Optional GTDBTK_DATA_PATH override passed to best_set_phylogeny.py "
+            "when building GTDB marker alignments/trees."
         ),
     )
     return parser
@@ -242,10 +292,108 @@ def atlas_script_path(user_value):
     return path
 
 
+def best_set_phylogeny_script_path():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "best_set_phylogeny.py")
+    if not os.path.exists(path):
+        raise ValueError(f"Best-set phylogeny script was not found: {path}")
+    return path
+
+
 def sanitize_token(value):
     token = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value).strip())
     token = token.strip("._-")
     return token or "unknown"
+
+
+def method_token(value):
+    return "".join(character for character in str(value).strip().lower() if character.isalnum())
+
+
+def method_rank(value):
+    token = method_token(value)
+    if token in PREFERRED_METHOD_TOKENS:
+        return PREFERRED_METHOD_TOKENS[token]
+    if ("xpg" in token) and ("sag" in token):
+        return 1
+    if ("xpg" in token) and ("mag" in token):
+        return 3
+    if ("sag" in token) and ("mag" not in token):
+        return 0
+    if ("mag" in token) and ("sag" not in token):
+        return 2
+    return None
+
+
+def ordered_methods(values, counts=None):
+    cleaned = [str(value).strip() for value in values if str(value).strip() != ""]
+    if not cleaned:
+        return []
+    unique = []
+    seen = set()
+    for value in cleaned:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+
+    def sort_key(value):
+        rank = method_rank(value)
+        if rank is not None:
+            return (0, rank, str(value).lower())
+        if counts is not None:
+            return (1, -int(counts.get(value, 0)), str(value).lower())
+        return (1, 0, str(value).lower())
+
+    return sorted(unique, key=sort_key)
+
+
+def bh_adjust(pvalues):
+    cleaned = []
+    for index, value in enumerate(pvalues):
+        try:
+            numeric = float(value)
+        except Exception:
+            numeric = float("nan")
+        cleaned.append((index, numeric))
+    valid = [(index, value) for index, value in cleaned if not math.isnan(value)]
+    adjusted = [float("nan")] * len(cleaned)
+    if not valid:
+        return adjusted
+    valid.sort(key=lambda item: item[1])
+    total = len(valid)
+    running = 1.0
+    for rank in range(total, 0, -1):
+        index, value = valid[rank - 1]
+        scaled = value * total / float(rank)
+        running = min(running, scaled)
+        adjusted[index] = min(running, 1.0)
+    return adjusted
+
+
+def exact_binomial_test_two_sided(k, n):
+    if n <= 0:
+        return float("nan")
+    pmf_obs = math.comb(int(n), int(k)) / (2.0 ** int(n))
+    total = 0.0
+    for x in range(int(n) + 1):
+        pmf_x = math.comb(int(n), int(x)) / (2.0 ** int(n))
+        if pmf_x <= pmf_obs + 1e-15:
+            total += pmf_x
+    return min(float(total), 1.0)
+
+
+def significance_stars(pvalue):
+    if pvalue is None or pd.isna(pvalue):
+        return ""
+    if pvalue < 1e-4:
+        return "****"
+    if pvalue < 1e-3:
+        return "***"
+    if pvalue < 1e-2:
+        return "**"
+    if pvalue < 5e-2:
+        return "*"
+    return ""
 
 
 def classify_output_file(path_obj):
@@ -321,7 +469,7 @@ def organize_output_tree(root_dir):
     total_files = 0
     index_paths = []
     for current_dir, dirnames, _ in os.walk(root_path):
-        dirnames[:] = [name for name in dirnames if name not in {"plots", "tables", "_organized"}]
+        dirnames[:] = [name for name in dirnames if name not in {"plots", "tables", "_organized", "selected_set", "phylogeny"}]
         count, index_path = organize_directory_outputs(current_dir)
         if count > 0:
             total_files += count
@@ -348,6 +496,93 @@ def resolve_output_file(base_dir, filename):
         )
     )
     return str(matches[0].resolve())
+
+
+def normalize_gunc_genome_id(value):
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return None
+    for suffix in [
+        ".fasta",
+        ".fa",
+        ".fna",
+        ".fasta.gz",
+        ".fa.gz",
+        ".fna.gz",
+        ".gz",
+    ]:
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+            break
+    return text
+
+
+def find_gunc_summary_path(run_dir):
+    patterns = [
+        os.path.join(run_dir, "gunc", "gunc", "GUNC.*.maxCSS_level.tsv"),
+        os.path.join(run_dir, "gunc", "GUNC.*.maxCSS_level.tsv"),
+    ]
+    matches = []
+    for pattern in patterns:
+        matches.extend(glob.glob(pattern))
+    if not matches:
+        return None
+    return sorted({os.path.abspath(path) for path in matches})[0]
+
+
+def load_gunc_summary(run_dir):
+    ensure_pandas()
+    gunc_summary_path = find_gunc_summary_path(run_dir)
+    if not gunc_summary_path:
+        return None
+
+    gunc_df = pd.read_csv(gunc_summary_path, sep="\t")
+    if gunc_df.empty or "genome" not in gunc_df.columns:
+        return None
+
+    gunc_df = gunc_df.copy()
+    gunc_df["__gunc_key"] = gunc_df["genome"].map(normalize_gunc_genome_id)
+    gunc_df = gunc_df.dropna(subset=["__gunc_key"]).drop_duplicates("__gunc_key")
+    rename_map = {
+        "n_genes_called": "gunc_n_genes_called",
+        "n_genes_mapped": "gunc_n_genes_mapped",
+        "n_contigs": "gunc_n_contigs",
+        "taxonomic_level": "gunc_taxonomic_level",
+        "proportion_genes_retained_in_major_clades": "gunc_proportion_genes_retained_in_major_clades",
+        "genes_retained_index": "gunc_genes_retained_index",
+        "clade_separation_score": "gunc_clade_separation_score",
+        "contamination_portion": "gunc_contamination_portion",
+        "n_effective_surplus_clades": "gunc_n_effective_surplus_clades",
+        "mean_hit_identity": "gunc_mean_hit_identity",
+        "reference_representation_score": "gunc_reference_representation_score",
+        "pass.GUNC": "gunc_pass",
+    }
+    keep_columns = ["__gunc_key"] + [column for column in rename_map if column in gunc_df.columns]
+    return gunc_df.loc[:, keep_columns].rename(columns=rename_map)
+
+
+def merge_gunc_summary(master, run_dir):
+    ensure_pandas()
+    if "gunc_clade_separation_score" in master.columns:
+        return master
+
+    gunc_df = load_gunc_summary(run_dir)
+    if gunc_df is None:
+        return master
+
+    merge_candidates = []
+    if "Bin Id" in master.columns:
+        merge_candidates.append("Bin Id")
+    if "Genome_Id" in master.columns:
+        merge_candidates.append("Genome_Id")
+
+    for merge_column in merge_candidates:
+        working = master.copy()
+        working["__gunc_key"] = working[merge_column].map(normalize_gunc_genome_id)
+        merged = working.merge(gunc_df, on="__gunc_key", how="left").drop(columns=["__gunc_key"])
+        if merged["gunc_clade_separation_score"].notna().any():
+            return merged
+    return master
 
 
 def build_fasta_map(run_dir):
@@ -517,6 +752,7 @@ def augment_master(master_path, run_dir, sample, sample_column, category, catego
     ensure_pandas()
     master = pd.read_csv(master_path, sep="\t")
     master, dedup_summary = pre_deduplicate_master(master, bin_id_token_index)
+    master = merge_gunc_summary(master, run_dir)
     fasta_map, representative_stems = build_fasta_map(run_dir)
     fasta_paths = []
     missing = []
@@ -610,6 +846,33 @@ def run_command(cmd, description):
     if completed.returncode != 0:
         raise RuntimeError(f"Command failed with exit code {completed.returncode}: {' '.join(cmd)}")
     log_step(f"[done] {description}")
+
+
+def run_best_set_phylogeny(python_exe, output_dir, threads, gtdbtk_data_path=None):
+    phylogeny_script = best_set_phylogeny_script_path()
+    cmd = [
+        python_exe,
+        phylogeny_script,
+        output_dir,
+        "--threads",
+        str(max(1, int(threads))),
+    ]
+    if gtdbtk_data_path:
+        cmd.extend(["--gtdbtk-data-path", os.path.abspath(os.path.expanduser(gtdbtk_data_path))])
+    log_step(f"[start] best-set phylogeny: {output_dir}")
+    env = os.environ.copy()
+    env["PYTHONWARNINGS"] = "ignore"
+    completed = subprocess.run(cmd, check=False, env=env, text=True, capture_output=True)
+    if completed.returncode != 0:
+        if completed.stderr:
+            sys.stderr.write(completed.stderr)
+        raise RuntimeError(
+            f"Best-set phylogeny failed with exit code {completed.returncode}: {' '.join(cmd)}"
+        )
+    if completed.stderr:
+        sys.stderr.write(completed.stderr)
+    log_step(f"[done] best-set phylogeny: {output_dir}")
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
 
 
 def maybe_add_group_column(cmd, group_column):
@@ -874,6 +1137,51 @@ def filter_pair_df_to_frame_records(pair_df, frame):
     return filtered
 
 
+def best_set_has_16s(frame):
+    if "contains_16S" in frame.columns:
+        contains_series = pd.to_numeric(frame["contains_16S"], errors="coerce").fillna(0)
+        return contains_series.gt(0).astype(int)
+    if "16S_rRNA" in frame.columns:
+        rrna_series = pd.to_numeric(frame["16S_rRNA"], errors="coerce").fillna(0)
+        return rrna_series.gt(0).astype(int)
+    return pd.Series(0, index=frame.index, dtype=int)
+
+
+def coarse_quality_bin(series, step):
+    numeric = pd.to_numeric(series, errors="coerce")
+    return (numeric / float(step)).round().fillna(float("-inf"))
+
+
+def gunc_assessment_rank(series):
+    if series is None:
+        return pd.Series(dtype=int)
+    rank_map = {
+        "likely_not_chimeric": 0,
+        "low_reference_uncertain": 1,
+        "unscored": 1,
+        "credible_chimeric_signal": 2,
+    }
+    cleaned = (
+        series.astype(str)
+        .str.strip()
+        .str.lower()
+        .replace({"nan": "unscored", "none": "unscored", "null": "unscored"})
+    )
+    return cleaned.map(rank_map).fillna(2).astype(int)
+
+
+def gunc_confident_call_mask(series):
+    if series is None:
+        return pd.Series(dtype=bool)
+    cleaned = (
+        series.astype(str)
+        .str.strip()
+        .str.lower()
+        .replace({"nan": "unscored", "none": "unscored", "null": "unscored"})
+    )
+    return cleaned.isin({"likely_not_chimeric", "credible_chimeric_signal"})
+
+
 def select_best_per_component(frame, pair_summary, atlas_module, category_column, sample_column):
     working = frame.copy()
     working["ani_record_id"] = working["ani_record_id"].astype(str)
@@ -886,8 +1194,19 @@ def select_best_per_component(frame, pair_summary, atlas_module, category_column
         .fillna(3)
         .astype(int)
     )
+    working["__integrity_bin"] = coarse_quality_bin(working.get("integrity_score"), 0.02)
+    working["__recoverability_bin"] = coarse_quality_bin(working.get("recoverability_score"), 0.02)
+    working["__qscore_bin"] = coarse_quality_bin(working.get("qscore"), 5.0)
+    working["__has_16s"] = best_set_has_16s(working)
+    if "gunc_strict_assessment" in working.columns:
+        working["__gunc_strict_rank"] = gunc_assessment_rank(working["gunc_strict_assessment"])
     sort_specs = [
         ("__mimag_rank", True),
+        ("__gunc_strict_rank", True),
+        ("__integrity_bin", False),
+        ("__recoverability_bin", False),
+        ("__qscore_bin", False),
+        ("__has_16s", False),
         ("integrity_score", False),
         ("recoverability_score", False),
         ("qscore", False),
@@ -934,7 +1253,12 @@ def select_best_per_component(frame, pair_summary, atlas_module, category_column
     selected["component_member_count"] = selected["component_id"].map(component_member_count)
     selected["component_categories"] = selected["component_id"].map(component_categories)
     selected["component_samples"] = selected["component_id"].map(component_samples)
-    selected["best_selection_metric"] = "ani_strict_component>mimag_tier>integrity>recoverability>qscore"
+    selected["best_selection_metric"] = (
+        "ani_strict_component>mimag_tier>"
+        "gunc(class_gate_only)>"
+        "coarse(integrity,recoverability,qscore)>16S_presence>"
+        "integrity>recoverability>qscore>completeness>contamination"
+    )
 
     selected_records = set(selected["ani_record_id"].astype(str).tolist())
     member_table = working.copy()
@@ -956,6 +1280,10 @@ def select_best_per_component(frame, pair_summary, atlas_module, category_column
         "qscore",
         "Completeness",
         "Contamination",
+        "gunc_assessment",
+        "gunc_strict_assessment",
+        "gunc_clade_separation_score",
+        "gunc_reference_representation_score",
         "component_member_count",
         "component_categories",
         "component_samples",
@@ -974,6 +1302,10 @@ def select_best_per_component(frame, pair_summary, atlas_module, category_column
             "qscore": "winner_qscore",
             "Completeness": "winner_Completeness",
             "Contamination": "winner_Contamination",
+            "gunc_assessment": "winner_gunc_assessment",
+            "gunc_strict_assessment": "winner_gunc_strict_assessment",
+            "gunc_clade_separation_score": "winner_gunc_clade_separation_score",
+            "gunc_reference_representation_score": "winner_gunc_reference_representation_score",
             "component_member_count": "winner_component_member_count",
             "component_categories": "winner_component_categories",
             "component_samples": "winner_component_samples",
@@ -1012,8 +1344,32 @@ def select_best_per_component(frame, pair_summary, atlas_module, category_column
     component_summary = component_summary.merge(tier_counts, on="component_id", how="left")
     component_summary = component_summary.merge(winner_table, on="component_id", how="left")
 
-    member_table = member_table.drop(columns=["__mimag_rank"], errors="ignore")
-    selected = selected.drop(columns=["__mimag_rank"], errors="ignore")
+    member_table = member_table.drop(
+        columns=[
+            "__mimag_rank",
+            "__gunc_strict_rank",
+            "__gunc_css",
+            "__gunc_rrs",
+            "__integrity_bin",
+            "__recoverability_bin",
+            "__qscore_bin",
+            "__has_16s",
+        ],
+        errors="ignore",
+    )
+    selected = selected.drop(
+        columns=[
+            "__mimag_rank",
+            "__gunc_strict_rank",
+            "__gunc_css",
+            "__gunc_rrs",
+            "__integrity_bin",
+            "__recoverability_bin",
+            "__qscore_bin",
+            "__has_16s",
+        ],
+        errors="ignore",
+    )
     return selected, member_table, component_summary
 
 
@@ -1105,7 +1461,10 @@ def summarize_best_set_category_contributions(source_frame, selected, member_tab
     contribution["selected_fraction_of_input"] = contribution["n_selected_genomes"] / contribution["n_input_genomes"].replace(0, pd.NA)
     contribution["win_fraction_when_present"] = contribution["n_components_won"] / contribution["n_components_with_category_present"].replace(0, pd.NA)
     contribution["selected_share_of_best_set"] = contribution["n_selected_genomes"] / max(int(len(selected)), 1)
-    return contribution
+    category_counts = dict(zip(contribution[category_column].astype(str), contribution["n_selected_genomes"]))
+    order = ordered_methods(contribution[category_column].astype(str).tolist(), counts=category_counts)
+    contribution[category_column] = contribution[category_column].astype(str)
+    return contribution.set_index(category_column).reindex(order).reset_index()
 
 
 def summarize_best_set_sample_category_contributions(source_frame, selected, member_table, category_column, sample_column):
@@ -1156,7 +1515,237 @@ def summarize_best_set_sample_category_contributions(source_frame, selected, mem
         summary[column] = summary[column].fillna(0).astype(int)
     summary["selected_fraction_of_input"] = summary["n_selected_genomes"] / summary["n_input_genomes"].replace(0, pd.NA)
     summary["win_fraction_when_present"] = summary["n_components_won"] / summary["n_components_present"].replace(0, pd.NA)
-    return summary
+    category_counts = (
+        summary.groupby(category_column)["n_selected_genomes"].sum().to_dict()
+        if not summary.empty else {}
+    )
+    method_order = ordered_methods(summary[category_column].astype(str).tolist(), counts=category_counts)
+    order_map = {category: index for index, category in enumerate(method_order)}
+    summary[category_column] = summary[category_column].astype(str)
+    summary["__method_order"] = summary[category_column].map(order_map).fillna(len(order_map)).astype(int)
+    summary = summary.sort_values(
+        by=[sample_column, "__method_order", category_column],
+        ascending=[True, True, True],
+        kind="mergesort",
+    ).drop(columns=["__method_order"])
+    return summary.reset_index(drop=True)
+
+
+def summarize_best_set_selection_preferences(member_table, selected, category_column):
+    columns_by_category = [
+        category_column,
+        "n_components_present_total",
+        "n_components_competing",
+        "n_components_singleton",
+        "n_components_won_when_competing",
+        "win_fraction_when_competing",
+    ]
+    pairwise_columns = [
+        "category_a",
+        "category_b",
+        "n_components_both_present",
+        "n_decisive_components",
+        "n_components_won_a",
+        "n_components_won_b",
+        "n_components_won_other",
+        "win_fraction_a_over_b",
+        "preferred_category",
+        "pvalue_binom",
+        "qvalue_bh",
+        "significance",
+    ]
+    if member_table is None or member_table.empty:
+        return pd.DataFrame(columns=columns_by_category), pd.DataFrame(columns=pairwise_columns)
+
+    present_df = member_table.loc[:, ["component_id", category_column]].dropna().copy()
+    present_df[category_column] = present_df[category_column].astype(str).str.strip()
+    present_df = present_df.loc[present_df[category_column].ne("")].drop_duplicates()
+    if present_df.empty:
+        return pd.DataFrame(columns=columns_by_category), pd.DataFrame(columns=pairwise_columns)
+
+    categories = ordered_methods(present_df[category_column].tolist())
+    component_categories = (
+        present_df.groupby("component_id")[category_column]
+        .agg(lambda values: sorted(set(values.astype(str))))
+        .to_dict()
+    )
+    winner_df = (
+        selected.loc[:, ["component_id", category_column]]
+        .dropna()
+        .copy()
+        if selected is not None and not selected.empty else pd.DataFrame(columns=["component_id", category_column])
+    )
+    winner_df[category_column] = winner_df[category_column].astype(str).str.strip()
+    winner_map = (
+        winner_df.drop_duplicates(subset=["component_id"])
+        .set_index("component_id")[category_column]
+        .to_dict()
+    )
+
+    overall_rows = []
+    for category in categories:
+        present_components = [component_id for component_id, values in component_categories.items() if category in values]
+        competing_components = [component_id for component_id in present_components if len(component_categories.get(component_id, [])) > 1]
+        singleton_components = [component_id for component_id in present_components if len(component_categories.get(component_id, [])) == 1]
+        wins_competing = sum(1 for component_id in competing_components if winner_map.get(component_id) == category)
+        overall_rows.append(
+            {
+                category_column: category,
+                "n_components_present_total": int(len(present_components)),
+                "n_components_competing": int(len(competing_components)),
+                "n_components_singleton": int(len(singleton_components)),
+                "n_components_won_when_competing": int(wins_competing),
+                "win_fraction_when_competing": (
+                    float(wins_competing) / float(len(competing_components))
+                    if competing_components else float("nan")
+                ),
+            }
+        )
+    overall_df = pd.DataFrame(overall_rows)
+
+    pairwise_rows = []
+    pairwise_pvalues = []
+    for index_a, category_a in enumerate(categories):
+        for category_b in categories[index_a + 1:]:
+            both_components = [
+                component_id
+                for component_id, values in component_categories.items()
+                if category_a in values and category_b in values
+            ]
+            wins_a = sum(1 for component_id in both_components if winner_map.get(component_id) == category_a)
+            wins_b = sum(1 for component_id in both_components if winner_map.get(component_id) == category_b)
+            wins_other = int(len(both_components) - wins_a - wins_b)
+            decisive = int(wins_a + wins_b)
+            pvalue = exact_binomial_test_two_sided(wins_a, decisive) if decisive > 0 else float("nan")
+            pairwise_pvalues.append(pvalue)
+            preferred = ""
+            if wins_a > wins_b:
+                preferred = category_a
+            elif wins_b > wins_a:
+                preferred = category_b
+            pairwise_rows.append(
+                {
+                    "category_a": category_a,
+                    "category_b": category_b,
+                    "n_components_both_present": int(len(both_components)),
+                    "n_decisive_components": decisive,
+                    "n_components_won_a": int(wins_a),
+                    "n_components_won_b": int(wins_b),
+                    "n_components_won_other": wins_other,
+                    "win_fraction_a_over_b": (
+                        float(wins_a) / float(decisive) if decisive > 0 else float("nan")
+                    ),
+                    "preferred_category": preferred,
+                    "pvalue_binom": pvalue,
+                }
+            )
+    pairwise_df = pd.DataFrame(pairwise_rows)
+    if not pairwise_df.empty:
+        pairwise_df["qvalue_bh"] = bh_adjust(pairwise_pvalues)
+        pairwise_df["significance"] = pairwise_df["qvalue_bh"].map(significance_stars)
+        pairwise_df = pairwise_df.sort_values(
+            by=["category_a", "category_b"],
+            kind="mergesort",
+        ).reset_index(drop=True)
+    else:
+        pairwise_df = pd.DataFrame(columns=pairwise_columns)
+
+    if not overall_df.empty:
+        counts = dict(zip(overall_df[category_column].astype(str), overall_df["n_components_won_when_competing"]))
+        order = ordered_methods(overall_df[category_column].astype(str).tolist(), counts=counts)
+        overall_df[category_column] = overall_df[category_column].astype(str)
+        overall_df = overall_df.set_index(category_column).reindex(order).reset_index()
+    return overall_df, pairwise_df
+
+
+def plot_best_set_selection_preferences(overall_df, pairwise_df, destination_dir, label, category_column, atlas_module):
+    if overall_df is None or overall_df.empty:
+        return []
+
+    plt, sns = atlas_module.ensure_plotting()
+    category_counts = dict(zip(overall_df[category_column].astype(str), overall_df["n_components_won_when_competing"]))
+    order = ordered_methods(overall_df[category_column].astype(str).tolist(), counts=category_counts)
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7), gridspec_kw={"width_ratios": [1.0, 1.15]})
+
+    bar_df = overall_df.copy()
+    bar_df[category_column] = bar_df[category_column].astype(str)
+    sns.barplot(
+        data=bar_df,
+        x=category_column,
+        y="win_fraction_when_competing",
+        order=order,
+        color="#7f7f7f",
+        edgecolor="black",
+        linewidth=0.7,
+        ax=axes[0],
+    )
+    axes[0].set_ylim(0, 1.0)
+    axes[0].set_title("Win rate when categories compete")
+    axes[0].set_xlabel(category_column)
+    axes[0].set_ylabel("Selected fraction")
+    axes[0].tick_params(axis="x", rotation=90)
+    axes[0].axhline(0.5, color="#4d4d4d", linestyle="--", linewidth=0.8, alpha=0.7)
+    for index, category in enumerate(order):
+        row = bar_df.loc[bar_df[category_column].astype(str).eq(category)].head(1)
+        if row.empty:
+            continue
+        wins = int(row["n_components_won_when_competing"].iloc[0])
+        competing = int(row["n_components_competing"].iloc[0])
+        fraction = pd.to_numeric(row["win_fraction_when_competing"], errors="coerce").iloc[0]
+        if pd.isna(fraction):
+            continue
+        axes[0].text(
+            index,
+            float(fraction),
+            f"{wins}/{competing}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    heatmap_matrix = pd.DataFrame(float("nan"), index=order, columns=order)
+    annotation_matrix = pd.DataFrame("", index=order, columns=order)
+    if pairwise_df is not None and not pairwise_df.empty:
+        for row in pairwise_df.to_dict("records"):
+            category_a = str(row.get("category_a", "")).strip()
+            category_b = str(row.get("category_b", "")).strip()
+            if category_a not in heatmap_matrix.index or category_b not in heatmap_matrix.columns:
+                continue
+            wins_a = int(row.get("n_components_won_a", 0))
+            wins_b = int(row.get("n_components_won_b", 0))
+            decisive = int(row.get("n_decisive_components", 0))
+            frac_a = row.get("win_fraction_a_over_b", float("nan"))
+            frac_b = (float(wins_b) / float(decisive)) if decisive > 0 else float("nan")
+            sig = str(row.get("significance", "") or "")
+            heatmap_matrix.loc[category_a, category_b] = frac_a
+            heatmap_matrix.loc[category_b, category_a] = frac_b
+            annotation_matrix.loc[category_a, category_b] = f"{wins_a}-{wins_b}\n{sig}" if decisive > 0 else "0-0"
+            annotation_matrix.loc[category_b, category_a] = f"{wins_b}-{wins_a}\n{sig}" if decisive > 0 else "0-0"
+    sns.heatmap(
+        heatmap_matrix,
+        cmap="Greys",
+        vmin=0,
+        vmax=1,
+        linewidths=0.5,
+        linecolor="#f0f0f0",
+        annot=annotation_matrix,
+        fmt="",
+        cbar_kws={"label": "Row category win fraction"},
+        ax=axes[1],
+    )
+    axes[1].set_title("Pairwise preference when both categories are present")
+    axes[1].set_xlabel("Compared against")
+    axes[1].set_ylabel("Preferred row category")
+
+    fig.suptitle("Category selection preference across competing components", fontsize=16, y=0.98)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    written = []
+    for extension in ("png", "pdf"):
+        out_path = os.path.join(destination_dir, f"{label}.selection_preference.{extension}")
+        fig.savefig(out_path, dpi=300 if extension == "png" else None, bbox_inches="tight")
+        written.append(out_path)
+    plt.close(fig)
+    return written
 
 
 def build_best_set_excluded_hqmq_table(source_frame, member_table, category_column, sample_column):
@@ -1214,7 +1803,8 @@ def plot_best_set_category_contributions(category_df, sample_df, destination_dir
         return []
 
     plt, sns = atlas_module.ensure_plotting()
-    order = category_df.sort_values(["n_selected_genomes", "n_input_genomes"], ascending=[False, False])[category_column].tolist()
+    counts = dict(zip(category_df[category_column].astype(str), category_df["n_selected_genomes"]))
+    order = ordered_methods(category_df[category_column].astype(str).tolist(), counts=counts)
     fig, axes = plt.subplots(2, 2, figsize=(16, 11))
     axes = axes.ravel()
 
@@ -1305,11 +1895,65 @@ def plot_best_set_category_contributions(category_df, sample_df, destination_dir
     return written
 
 
+def plot_best_set_selected_category_counts(category_df, destination_dir, label, category_column, atlas_module):
+    if category_df is None or category_df.empty:
+        return []
+
+    plt, sns = atlas_module.ensure_plotting()
+    plot_df = category_df.copy()
+    counts = dict(zip(plot_df[category_column].astype(str), plot_df["n_selected_genomes"]))
+    order = ordered_methods(plot_df[category_column].astype(str).tolist(), counts=counts)
+    metrics = [
+        ("n_selected_genomes", "Total selected genomes"),
+        ("n_selected_hq", "Selected HQ genomes"),
+        ("n_selected_mq", "Selected MQ genomes"),
+        ("n_selected_lq", "Selected LQ genomes"),
+    ]
+    fig, axes = plt.subplots(2, 2, figsize=(15, 11))
+    axes = axes.ravel()
+    for ax, (metric, title) in zip(axes, metrics):
+        if metric not in plot_df.columns:
+            ax.axis("off")
+            continue
+        sns.barplot(
+            data=plot_df,
+            x=category_column,
+            y=metric,
+            order=order,
+            color="#7f7f7f",
+            edgecolor="black",
+            linewidth=0.6,
+            ax=ax,
+        )
+        ax.set_title(title)
+        ax.set_xlabel(category_column)
+        ax.set_ylabel("Genome count")
+        ax.tick_params(axis="x", rotation=90)
+        values = pd.to_numeric(plot_df.set_index(category_column).reindex(order)[metric], errors="coerce").fillna(0)
+        for index, value in enumerate(values.tolist()):
+            ax.text(index, float(value), f"{int(value)}", ha="center", va="bottom", fontsize=8)
+    fig.suptitle(f"{label.replace('_', ' ')} selected genomes by category", fontsize=16, y=0.98)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+    written = []
+    for extension in ("png", "pdf"):
+        out_path = os.path.join(destination_dir, f"{label}.selected_category_count_summary.{extension}")
+        fig.savefig(out_path, dpi=300 if extension == "png" else None, bbox_inches="tight")
+        written.append(out_path)
+    plt.close(fig)
+    return written
+
+
 def copy_selected_fastas(selected, destination_dir, include_sample=False):
     fasta_dir = os.path.join(destination_dir, "fasta")
     os.makedirs(fasta_dir, exist_ok=True)
+    for existing_name in os.listdir(fasta_dir):
+        existing_path = os.path.join(fasta_dir, existing_name)
+        if os.path.isfile(existing_path) and existing_name.lower().endswith(
+            (".fasta", ".fa", ".fna", ".fasta.gz", ".fa.gz", ".fna.gz")
+        ):
+            os.unlink(existing_path)
     copied = []
-    used_names = set()
     for row in selected.itertuples(index=False):
         source = os.path.abspath(os.path.expanduser(str(getattr(row, "fasta_path"))))
         if not os.path.exists(source):
@@ -1322,12 +1966,6 @@ def copy_selected_fastas(selected, destination_dir, include_sample=False):
             name_parts.append(sanitize_token(getattr(row, "category")))
         name_parts.append(base_name)
         target_name = "__".join([part for part in name_parts if part])
-        stem, ext = os.path.splitext(target_name)
-        counter = 1
-        while target_name in used_names:
-            target_name = f"{stem}_{counter}{ext}"
-            counter += 1
-        used_names.add(target_name)
         destination = os.path.join(fasta_dir, target_name)
         shutil.copy2(source, destination)
         copied.append({"ani_record_id": getattr(row, "ani_record_id"), "copied_fasta_path": destination})
@@ -1381,6 +2019,11 @@ def export_deduplicated_set(
         category_column,
         sample_column,
     )
+    selection_pref_df, selection_pairwise_df = summarize_best_set_selection_preferences(
+        member_table=member_table,
+        selected=selected,
+        category_column=category_column,
+    )
     excluded_hqmq = build_best_set_excluded_hqmq_table(compare_df, member_table, category_column, sample_column)
 
     copied_fasta_df = copy_selected_fastas(
@@ -1401,6 +2044,9 @@ def export_deduplicated_set(
     category_contrib_path = os.path.join(audit_dir, "category_contributions.tsv")
     sample_contrib_path = os.path.join(audit_dir, "sample_category_contributions.tsv")
     excluded_hqmq_path = os.path.join(audit_dir, "excluded_hqmq.tsv")
+    selected_category_count_path = os.path.join(audit_dir, "selected_category_count_summary.tsv")
+    selection_pref_path = os.path.join(audit_dir, "selection_preference_by_category.tsv")
+    selection_pairwise_path = os.path.join(audit_dir, "selection_preference_pairwise.tsv")
     selected_master_path = os.path.join(selected_dir, "master.tsv")
 
     compare_df.to_csv(input_candidates_path, sep="	", index=False)
@@ -1413,6 +2059,12 @@ def export_deduplicated_set(
     category_contrib.to_csv(category_contrib_path, sep="	", index=False)
     sample_category_contrib.to_csv(sample_contrib_path, sep="	", index=False)
     excluded_hqmq.to_csv(excluded_hqmq_path, sep="	", index=False)
+    selection_pref_df.to_csv(selection_pref_path, sep="	", index=False)
+    selection_pairwise_df.to_csv(selection_pairwise_path, sep="	", index=False)
+    category_contrib.loc[
+        :,
+        [column for column in [category_column, "n_selected_genomes", "n_selected_hq", "n_selected_mq", "n_selected_lq"] if column in category_contrib.columns]
+    ].to_csv(selected_category_count_path, sep="	", index=False)
     contribution_plots = plot_best_set_category_contributions(
         category_contrib,
         sample_category_contrib,
@@ -1421,6 +2073,21 @@ def export_deduplicated_set(
         category_column,
         sample_column,
         atlas_module,
+    )
+    selected_count_plots = plot_best_set_selected_category_counts(
+        category_contrib,
+        plots_dir,
+        "final_selected",
+        category_column,
+        atlas_module,
+    )
+    selection_pref_plots = plot_best_set_selection_preferences(
+        overall_df=selection_pref_df,
+        pairwise_df=selection_pairwise_df,
+        destination_dir=plots_dir,
+        label="selection_preference_summary",
+        category_column=category_column,
+        atlas_module=atlas_module,
     )
 
     atlas_output_dir = os.path.join(selected_dir, "genome_atlas")
@@ -1450,8 +2117,13 @@ def export_deduplicated_set(
         category_contrib_path,
         sample_contrib_path,
         excluded_hqmq_path,
+        selected_category_count_path,
+        selection_pref_path,
+        selection_pairwise_path,
         selected_master_path,
         *contribution_plots,
+        *selected_count_plots,
+        *selection_pref_plots,
         atlas_output_dir,
     ]
 
@@ -1570,6 +2242,7 @@ def export_best_sets(
     ani_results,
     best_sample_dir_name,
     best_global_dir_name,
+    best_set_min_mimag_tier,
 ):
     ensure_pandas()
     atlas_module = load_atlas_module()
@@ -1592,8 +2265,17 @@ def export_best_sets(
             "Annotated atlas table is missing mimag_tier; cannot rank best-set genomes by quality tier."
         )
     candidate_frame = fastani_frame.copy()
+    tier_order = {"low": 0, "medium": 1, "high": 2}
+    min_tier_value = tier_order[str(best_set_min_mimag_tier).strip().lower()]
+    candidate_frame["_mimag_tier_norm"] = candidate_frame["mimag_tier"].astype(str).str.lower().str.strip()
+    candidate_frame["_mimag_tier_value"] = candidate_frame["_mimag_tier_norm"].map(tier_order)
+    candidate_frame = candidate_frame.loc[candidate_frame["_mimag_tier_value"].fillna(-1).ge(min_tier_value)].copy()
+    candidate_frame = candidate_frame.drop(columns=["_mimag_tier_norm", "_mimag_tier_value"], errors="ignore")
     if candidate_frame.empty:
-        raise ValueError("No genomes available for best-set selection.")
+        raise ValueError(
+            "No genomes available for best-set selection after applying "
+            f"--best-set-min-mimag-tier {best_set_min_mimag_tier}."
+        )
     tier_counts = (
         candidate_frame["mimag_tier"]
         .astype(str)
@@ -1603,7 +2285,8 @@ def export_best_sets(
     )
     log_step(
         f"[info] best-set candidate pool: {len(candidate_frame)} genomes "
-        f"(HQ={tier_counts.get('high', 0)}, MQ={tier_counts.get('medium', 0)}, LQ={tier_counts.get('low', 0)})"
+        f"(HQ={tier_counts.get('high', 0)}, MQ={tier_counts.get('medium', 0)}, LQ={tier_counts.get('low', 0)}; "
+        f"min_tier={best_set_min_mimag_tier})"
     )
     pair_df = atlas_module.load_fastani_pairs(fastani_raw, fastani_frame)
     pair_df = filter_pair_df_to_frame_records(pair_df, candidate_frame)
@@ -1744,6 +2427,7 @@ def main():
             ani_results=args.ani_results,
             best_sample_dir_name=args.best_sample_dir_name,
             best_global_dir_name=args.best_global_dir_name,
+            best_set_min_mimag_tier=args.best_set_min_mimag_tier,
         )
         if not args.skip_organize_outputs:
             log_step("[start] organizing outputs by type/style")
@@ -1753,6 +2437,14 @@ def main():
                 f"[done] organized outputs under {output_dir}: "
                 f"{organized_files} files ({len(index_paths)} index tables)"
             )
+        if args.run_best_set_phylogeny:
+            phylogeny_paths = run_best_set_phylogeny(
+                python_exe=python_exe,
+                output_dir=output_dir,
+                threads=args.best_set_phylogeny_threads,
+                gtdbtk_data_path=args.best_set_gtdbtk_data_path,
+            )
+            best_set_paths.extend(phylogeny_paths)
         log_step("[done] exported best-of-sample and best-of-best genome sets")
         print("Wrote:")
         for path in [combined_master_path] + best_set_paths:
@@ -1892,6 +2584,7 @@ def main():
         ani_results=args.ani_results,
         best_sample_dir_name=args.best_sample_dir_name,
         best_global_dir_name=args.best_global_dir_name,
+        best_set_min_mimag_tier=args.best_set_min_mimag_tier,
     )
     written_paths.extend(best_set_paths)
     log_step("[done] exported best-of-sample and best-of-best genome sets")
@@ -1909,6 +2602,15 @@ def main():
             f"[done] organized outputs: {organized_files_total} files "
             f"({len(organized_index_paths)} index tables)"
         )
+
+    if args.run_best_set_phylogeny:
+        phylogeny_paths = run_best_set_phylogeny(
+            python_exe=python_exe,
+            output_dir=output_dir,
+            threads=args.best_set_phylogeny_threads,
+            gtdbtk_data_path=args.best_set_gtdbtk_data_path,
+        )
+        written_paths.extend(phylogeny_paths)
 
     print("Wrote:")
     for path in written_paths:
