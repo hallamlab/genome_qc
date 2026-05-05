@@ -6,6 +6,10 @@ dist
 *.egg-info
 *.sif
 
+/data
+/ws
+/lib
+/scratch
 .snakemake
 /config.yaml
 test/*
