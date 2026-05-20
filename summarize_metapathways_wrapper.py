@@ -468,10 +468,10 @@ def build_parser():
     parser.add_argument(
         "--min-mimag-tier",
         default="low",
-        choices=["low", "medium", "high"],
+        choices=["failed", "low", "medium", "high"],
         help=(
             "Optional minimum MIMAG tier filter for atlas-backed best-of selection. "
-            "Default: low (keeps all matched genomes). Use 'medium' to keep medium+high or "
+            "Default: low (keeps strict LQ/MQ/HQ genomes). Use 'failed' to keep every matched genome, 'medium' to keep medium+high, or "
             "'high' for high only."
         ),
     )
@@ -1553,6 +1553,50 @@ def filter_frame_by_best_subset(frame, subset_lookup, sample_column="sample", ca
     return working.loc[np.array(keep_mask, dtype=bool)].copy()
 
 
+def build_species_cluster_category_best_subset(
+    component_members_df,
+    best_set_scope="global",
+    best_set_name="best_of_best",
+):
+    required = {"component_id", "category"}
+    if component_members_df is None or component_members_df.empty:
+        return pd.DataFrame()
+    if not required.issubset(set(component_members_df.columns)):
+        return pd.DataFrame()
+
+    working = component_members_df.copy()
+    if "best_set_scope" in working.columns:
+        working = working.loc[
+            working["best_set_scope"].astype(str).str.strip().str.lower().eq(str(best_set_scope).strip().lower())
+        ].copy()
+    if best_set_name and "best_set_name" in working.columns:
+        working = working.loc[
+            working["best_set_name"].astype(str).str.strip().eq(str(best_set_name).strip())
+        ].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    working["component_id"] = working["component_id"].astype(str).str.strip()
+    working["category"] = working["category"].astype(str).str.strip().map(canonical_method_label)
+    if "sample" in working.columns:
+        working["sample"] = working["sample"].astype(str).str.strip()
+    working = working.loc[working["component_id"].ne("") & working["category"].ne("")].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    sort_columns, ascending = representative_sort_spec(working)
+    if sort_columns:
+        working = working.sort_values(by=sort_columns, ascending=ascending, kind="mergesort")
+    subset = (
+        working.groupby(["component_id", "category"], as_index=False, sort=False)
+        .head(1)
+        .reset_index(drop=True)
+    )
+    subset["species_cluster_selection"] = "best_genome_per_category_per_component"
+    subset["species_cluster_component_id"] = subset["component_id"]
+    return subset
+
+
 def best_set_has_16s(frame):
     if "contains_16S" in frame.columns:
         contains_series = pd.to_numeric(frame["contains_16S"], errors="coerce").fillna(0)
@@ -1801,7 +1845,7 @@ def run_metapathways_best_sets(
         args=args,
     )
     if args.min_mimag_tier:
-        tier_order = {"low": 0, "medium": 1, "high": 2}
+        tier_order = {"failed": 0, "low": 1, "medium": 2, "high": 3}
         min_value = tier_order[str(args.min_mimag_tier).strip().lower()]
         if "mimag_tier" not in matched_df.columns:
             raise ValueError(
@@ -2001,9 +2045,11 @@ def prepare_denovo_phylogeny_candidates(matched_df):
     working = matched_df.copy().reset_index(drop=True)
     working["_tier_norm"] = working["mimag_tier"].astype(str).str.strip().str.lower()
     working["_gunc_nonchimeric"] = gunc_nonchimeric_mask(working)
+    working["_resolved_species"] = resolved_species_mask(working)
     working = working.loc[
         working["_tier_norm"].isin({"high", "medium"})
         & working["_gunc_nonchimeric"]
+        & working["_resolved_species"]
     ].copy()
     if working.empty:
         return working
@@ -2032,6 +2078,7 @@ def prepare_denovo_phylogeny_candidates(matched_df):
         "mq_nonchimeric",
     )
     working["denovo_phylogeny_selection_rule"] = (
+        "resolved Species required for all cohorts; "
         "hq_nonchimeric: mimag_tier=high + not confirmed chimeric by GUNC; "
         "mq_nonchimeric: mimag_tier in {medium,high} + not confirmed chimeric by GUNC; "
         "best-representative subsets are also exported for each cohort; "
@@ -2285,6 +2332,14 @@ def taxonomy_species_is_informative(value):
     if lowered.startswith("unclassified"):
         return False
     return True
+
+
+def resolved_species_mask(frame):
+    if frame.empty:
+        return pd.Series(dtype=bool)
+    if "Species" not in frame.columns:
+        raise ValueError("Cannot build de novo phylogeny cohorts because 'Species' is missing.")
+    return frame["Species"].map(taxonomy_species_is_informative)
 
 
 def taxonomy_value_is_informative(value):
@@ -2700,6 +2755,284 @@ def metapathways_single_metric_specs(genome_df):
     return available
 
 
+def metapathways_benchmark_metric_specs(genome_df):
+    available = [
+        (metric, title)
+        for metric, title in metapathways_single_metric_specs(genome_df)
+        if not str(metric).endswith("_fraction")
+    ]
+    pathway_metrics = [(metric, title) for metric, title in available if metric == "total_pathways"]
+    other_metrics = [(metric, title) for metric, title in available if metric != "total_pathways"]
+    return other_metrics + pathway_metrics
+
+
+def grayscale_palette(n_values, start=0.18, stop=0.72):
+    if n_values <= 1:
+        return ["#4d4d4d"]
+    return [str(value) for value in np.linspace(start, stop, n_values)]
+
+
+def metric_interval_summary(values, summary_mode="median"):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return None
+    if summary_mode == "mean":
+        mean_value = float(np.nanmean(values))
+        if values.size > 1:
+            ci_delta = 1.96 * float(np.nanstd(values, ddof=1)) / math.sqrt(float(values.size))
+        else:
+            ci_delta = 0.0
+        return {
+            "point": mean_value,
+            "low": mean_value - ci_delta,
+            "high": mean_value + ci_delta,
+        }
+    return {
+        "point": float(np.nanmedian(values)),
+        "low": float(np.nanpercentile(values, 25)),
+        "high": float(np.nanpercentile(values, 75)),
+    }
+
+
+def style_benchmark_metric_axis(ax, metric):
+    ax.grid(axis="x", color="#e5e5e5", linestyle="-", linewidth=0.7, zorder=0)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#2f2f2f")
+    ax.spines["bottom"].set_color("#2f2f2f")
+    ax.tick_params(axis="both", labelsize=8, colors="#2f2f2f")
+    bounded_metrics = {
+        "mimag_quality_index",
+        "integrity_score",
+        "recoverability_score",
+        "informative_annotation_fraction",
+        "pathway_input_fraction",
+        "pathway_support_fraction",
+    }
+    if metric in bounded_metrics:
+        ax.set_xlim(-0.03, 1.03)
+    elif metric == "qscore":
+        ax.set_xlim(left=0)
+    elif metric == "genomes_per_sample" or metric.endswith("_orfs") or metric.endswith("_pathways"):
+        ax.set_xlim(left=0)
+
+
+def benchmark_significance_subset(metric, stats_df):
+    if stats_df is None or stats_df.empty or "metric" not in stats_df.columns:
+        return pd.DataFrame()
+    subset = stats_df.loc[stats_df["metric"].astype(str).eq(str(metric))].copy()
+    if "analysis_scope" in subset.columns:
+        subset = subset.loc[subset["analysis_scope"].astype(str).str.endswith("_pairwise")].copy()
+    if "significant_q05" in subset.columns:
+        subset = subset.loc[subset["significant_q05"].fillna(False)].copy()
+    elif "qvalue_bh" in subset.columns:
+        subset = subset.loc[pd.to_numeric(subset["qvalue_bh"], errors="coerce").lt(0.05)].copy()
+    elif "pvalue" in subset.columns:
+        subset = subset.loc[pd.to_numeric(subset["pvalue"], errors="coerce").lt(0.05)].copy()
+    else:
+        subset = pd.DataFrame()
+    return subset
+
+
+def add_benchmark_significance_brackets(ax, metric, summaries, order, stats_df):
+    subset = benchmark_significance_subset(metric, stats_df)
+    if subset.empty:
+        return
+    if "group_a" not in subset.columns or "group_b" not in subset.columns:
+        return
+
+    position_map = {category: float(index) for index, category in enumerate(order)}
+    subset["span"] = subset.apply(
+        lambda row: abs(position_map.get(str(row.get("group_b", "")), 0.0) - position_map.get(str(row.get("group_a", "")), 0.0)),
+        axis=1,
+    )
+    sort_columns = ["span"]
+    ascending = [True]
+    if "qvalue_bh" in subset.columns:
+        sort_columns.append("qvalue_bh")
+        ascending.append(True)
+    subset = subset.sort_values(by=sort_columns, ascending=ascending, kind="mergesort")
+
+    occupied = []
+    brackets = []
+    max_level = 0
+    for row in subset.to_dict("records"):
+        group_a = str(row.get("group_a", ""))
+        group_b = str(row.get("group_b", ""))
+        if group_a not in position_map or group_b not in position_map:
+            continue
+        y1 = position_map[group_a]
+        y2 = position_map[group_b]
+        if y1 == y2:
+            continue
+        if y1 > y2:
+            y1, y2 = y2, y1
+        star_label = str(row.get("significance_stars", "") or row.get("significance", "") or "").strip()
+        if not star_label:
+            star_label = significance_stars(row.get("qvalue_bh", row.get("pvalue", np.nan))) or "*"
+        star_count = len(star_label) if set(star_label) == {"*"} else 1
+        star_half_height = max(0.12, 0.075 * float(star_count))
+        label_center = (y1 + y2) / 2.0
+        footprint_start = min(y1, label_center - star_half_height)
+        footprint_end = max(y2, label_center + star_half_height)
+        level = 0
+        while any(
+            not (footprint_end < start or footprint_start > end) and used_level == level
+            for start, end, used_level in occupied
+        ):
+            level += 1
+        occupied.append((footprint_start, footprint_end, level))
+        max_level = max(max_level, level)
+        brackets.append((y1, y2, level, star_label))
+
+    if not brackets:
+        return
+
+    transform = ax.get_yaxis_transform()
+    x_start = 1.025
+    x_gap = 0.075
+    tick = 0.018
+    for y1, y2, level, star_label in brackets:
+        x = x_start + (level * x_gap)
+        vertical_stars = "\n".join(star_label) if set(star_label) == {"*"} else star_label
+        ax.plot(
+            [x, x + tick, x + tick, x],
+            [y1, y1, y2, y2],
+            color="black",
+            linewidth=0.8,
+            transform=transform,
+            clip_on=False,
+            zorder=4,
+        )
+        ax.text(
+            x + tick + 0.012,
+            (y1 + y2) / 2.0,
+            vertical_stars,
+            ha="left",
+            va="center",
+            fontsize=8,
+            linespacing=0.65,
+            transform=transform,
+            clip_on=False,
+            zorder=5,
+        )
+
+
+def plot_metapathways_benchmark_metric_panel(
+    genome_df,
+    output_base,
+    category_column="category",
+    sample_column="sample",
+    summary_mode="median",
+    stats_df=None,
+    show_significance=False,
+):
+    ensure_plotting()
+    if genome_df.empty or category_column not in genome_df.columns:
+        return False
+    order = category_order(genome_df, category_column=category_column)
+    metric_specs = metapathways_benchmark_metric_specs(genome_df)
+    if not order or not metric_specs:
+        return False
+
+    n_cols = 3
+    n_rows = int(math.ceil(len(metric_specs) / float(n_cols)))
+    plt_local = ensure_plotting()
+    fig, axes = plt_local.subplots(
+        n_rows,
+        n_cols,
+        figsize=(max(11.5, n_cols * 4.0), max(6.5, n_rows * 2.8)),
+        squeeze=False,
+    )
+    axes = axes.ravel()
+    y_positions = np.arange(len(order), dtype=float)
+    category_colors = dict(zip(order, grayscale_palette(len(order))))
+    wrote_any = False
+    if summary_mode == "mean":
+        point_label = "mean"
+        interval_label = "approximate 95% confidence intervals"
+    else:
+        point_label = "median"
+        interval_label = "interquartile ranges"
+
+    for ax, (metric, title) in zip(axes, metric_specs):
+        grouped_values = compact_metric_grouped_values(
+            genome_df,
+            metric,
+            order,
+            category_column=category_column,
+            sample_column=sample_column,
+        )
+        summaries = [
+            metric_interval_summary(values, summary_mode=summary_mode)
+            for values in grouped_values
+        ]
+        if not any(summary is not None for summary in summaries):
+            ax.axis("off")
+            continue
+
+        for y_pos, category, summary in zip(y_positions, order, summaries):
+            if summary is None:
+                continue
+            color = category_colors[category]
+            ax.hlines(
+                y_pos,
+                summary["low"],
+                summary["high"],
+                color=color,
+                linewidth=3.0,
+                zorder=2,
+            )
+            ax.scatter(
+                summary["point"],
+                y_pos,
+                s=52,
+                color=color,
+                edgecolors="black",
+                linewidths=0.75,
+                zorder=3,
+            )
+
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(order)
+        ax.invert_yaxis()
+        ax.set_title(title, fontsize=10.5, fontweight="bold", pad=8)
+        ax.set_xlabel(title, fontsize=8.5)
+        style_benchmark_metric_axis(ax, metric)
+        if show_significance:
+            add_benchmark_significance_brackets(ax, metric, summaries, order, stats_df)
+        wrote_any = True
+
+    for index in range(len(metric_specs), len(axes)):
+        axes[index].axis("off")
+
+    if not wrote_any:
+        plt_local.close(fig)
+        return False
+    fig.suptitle(
+        f"MetaPathways benchmark by category ({point_label}{'; significant pairs' if show_significance else ''})",
+        fontsize=15,
+        fontweight="bold",
+        y=0.995,
+    )
+    fig.text(
+        0.5,
+        0.014,
+        f"Points show category {point_label}s; horizontal intervals show {interval_label}."
+        + (" Stars mark BH-adjusted pairwise q<0.05." if show_significance else ""),
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="#4d4d4d",
+    )
+    fig.tight_layout(rect=[0, 0.04, 1, 0.965], w_pad=2.3, h_pad=2.0)
+    Path(output_base).parent.mkdir(parents=True, exist_ok=True)
+    save_figure(fig, output_base)
+    return True
+
+
 def plot_single_compact_metric(genome_df, metric, title, output_base, category_column="category", sample_column="sample", stats_df=None):
     ensure_plotting()
     if genome_df.empty or category_column not in genome_df.columns:
@@ -2736,6 +3069,874 @@ def plot_single_compact_metric(genome_df, metric, title, output_base, category_c
     Path(output_base).parent.mkdir(parents=True, exist_ok=True)
     save_figure(fig, output_base)
     return True
+
+
+MOBILITY_METRIC_LABELS = {
+    "plasmid_associated": "Plasmid-associated",
+    "phage_prophage_associated": "Phage/prophage-associated",
+    "generic_mge_associated": "Generic MGE-associated",
+    "genomic_island_associated": "Genomic-island-associated",
+    "optional_broad_screen": "Optional broad screen",
+}
+PRIMARY_MOBILITY_METRICS = {
+    "plasmid_associated",
+    "phage_prophage_associated",
+    "generic_mge_associated",
+    "genomic_island_associated",
+}
+
+
+def mobility_metric_sort_key(metric):
+    order = list(MOBILITY_METRIC_LABELS)
+    if metric in order:
+        return (0, order.index(metric))
+    return (1, str(metric))
+
+
+def boolish_to_int(value):
+    text = str(value).strip().lower()
+    if text in {"true", "t", "yes", "y", "1"}:
+        return 1
+    if text in {"false", "f", "no", "n", "0", "", "nan", "none", "na"}:
+        return 0
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iat[0]
+    if pd.isna(numeric):
+        return 0
+    return int(float(numeric) != 0.0)
+
+
+def mobility_summary_dirs_for_input(input_path, individual_subdir):
+    path = Path(input_path)
+    child_candidates = []
+    if path.name == str(individual_subdir):
+        child_candidates.extend(sorted(path.parent.glob(f"*/results/{individual_subdir}")))
+    else:
+        child_candidates.extend(sorted(path.glob(f"*/results/{individual_subdir}")))
+        child_candidates.extend(sorted(path.glob(f"*/{individual_subdir}")))
+    # When a grouped summary directory points at a parent mpoutput folder with
+    # per-genome summaries beside it, prefer the per-genome tables to avoid
+    # counting the grouped rollup and individual genome tables twice.
+    candidates = child_candidates if child_candidates else [path]
+    if not child_candidates and path.name != str(individual_subdir):
+        candidates.append(path / individual_subdir)
+    seen = set()
+    unique = []
+    for candidate in candidates:
+        resolved = str(candidate)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(candidate)
+    return unique
+
+
+def collect_row_mobility_outputs(input_paths, sample, category, input_dir_value, individual_subdir):
+    per_genome_parts = []
+    hit_parts = []
+    prevalence_parts = []
+    seen_paths = set()
+    for input_path in input_paths:
+        for summary_dir in mobility_summary_dirs_for_input(input_path, individual_subdir):
+            pathway_dir = summary_dir / "tables" / "pathway"
+            if not pathway_dir.exists():
+                continue
+            table_patterns = [
+                ("per_genome", "*_experimental_candidate_mobility_per_genome.tsv"),
+                ("per_genome", "*_experimental_candidate_mobility_optional_broad_per_genome.tsv"),
+                ("hits", "*_experimental_candidate_mobility_hits.tsv"),
+                ("hits", "*_experimental_candidate_mobility_optional_broad_hits.tsv"),
+                ("prevalence", "*_experimental_candidate_mobility_prevalence.tsv"),
+                ("prevalence", "*_experimental_candidate_mobility_optional_broad_prevalence.tsv"),
+            ]
+            for table_kind, pattern in table_patterns:
+                for table_path in sorted(pathway_dir.glob(pattern)):
+                    resolved = str(table_path.resolve())
+                    if resolved in seen_paths:
+                        continue
+                    seen_paths.add(resolved)
+                    try:
+                        table = pd.read_csv(table_path, sep="\t")
+                    except Exception:
+                        continue
+                    if table.empty:
+                        continue
+                    if table_kind in {"hits", "prevalence"} and "category" in table.columns:
+                        table = table.rename(columns={"category": "mobility_category"})
+                    table.insert(0, "sample", str(sample))
+                    table.insert(1, "category", canonical_method_label(category))
+                    table.insert(2, "input_dir", str(input_dir_value))
+                    table.insert(3, "source_table", str(table_path))
+                    if table_kind == "per_genome":
+                        per_genome_parts.append(table)
+                    elif table_kind == "hits":
+                        hit_parts.append(table)
+                    else:
+                        prevalence_parts.append(table)
+    return per_genome_parts, hit_parts, prevalence_parts
+
+
+def mobility_value_columns(per_genome_df):
+    if per_genome_df.empty:
+        return []
+    columns = []
+    for column in per_genome_df.columns:
+        if column in MOBILITY_METRIC_LABELS:
+            columns.append(column)
+    return sorted(columns, key=mobility_metric_sort_key)
+
+
+def build_mobility_long_table(per_genome_df):
+    if per_genome_df.empty:
+        return pd.DataFrame()
+    required = {"sample", "category", "genome_id"}
+    if not required.issubset(set(per_genome_df.columns)):
+        return pd.DataFrame()
+    metric_columns = mobility_value_columns(per_genome_df)
+    if not metric_columns:
+        return pd.DataFrame()
+    id_columns = [
+        column
+        for column in [
+            "sample",
+            "category",
+            "input_dir",
+            "source_table",
+            "genome_id",
+            "genome_display_label",
+            "genome_type",
+            "genome_type_source",
+        ]
+        if column in per_genome_df.columns
+    ]
+    long_df = per_genome_df[id_columns + metric_columns].melt(
+        id_vars=id_columns,
+        value_vars=metric_columns,
+        var_name="metric",
+        value_name="mobility_positive",
+    )
+    long_df["metric_label"] = long_df["metric"].map(MOBILITY_METRIC_LABELS).fillna(long_df["metric"])
+    long_df["mobility_positive"] = long_df["mobility_positive"].map(boolish_to_int).astype(int)
+    long_df["sample"] = long_df["sample"].astype(str).str.strip()
+    long_df["category"] = long_df["category"].astype(str).str.strip().map(canonical_method_label)
+    long_df = long_df.drop_duplicates(subset=["sample", "category", "genome_id", "metric"])
+    return long_df
+
+
+def build_mobility_prevalence_summaries(mobility_long_df, hit_df=None):
+    if mobility_long_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    sample_summary = (
+        mobility_long_df.groupby(["sample", "category", "metric", "metric_label"], dropna=False)
+        .agg(
+            n_genomes_total=("mobility_positive", "size"),
+            n_genomes_positive=("mobility_positive", "sum"),
+        )
+        .reset_index()
+    )
+    sample_summary["prevalence_fraction"] = (
+        sample_summary["n_genomes_positive"] / sample_summary["n_genomes_total"].replace(0, np.nan)
+    )
+    sample_summary["prevalence_percent"] = sample_summary["prevalence_fraction"] * 100.0
+    overall_summary = (
+        mobility_long_df.groupby(["category", "metric", "metric_label"], dropna=False)
+        .agg(
+            n_genomes_total=("mobility_positive", "size"),
+            n_genomes_positive=("mobility_positive", "sum"),
+        )
+        .reset_index()
+    )
+    overall_summary["prevalence_fraction"] = (
+        overall_summary["n_genomes_positive"] / overall_summary["n_genomes_total"].replace(0, np.nan)
+    )
+    overall_summary["prevalence_percent"] = overall_summary["prevalence_fraction"] * 100.0
+
+    return sample_summary, overall_summary
+
+
+def build_mobility_prevalence_stats(sample_summary_df, mobility_long_df):
+    rows = []
+    if sample_summary_df.empty:
+        return pd.DataFrame()
+    try:
+        from scipy import stats
+    except ImportError:
+        return pd.DataFrame()
+
+    order = category_order(sample_summary_df, category_column="category")
+    for metric in sorted(sample_summary_df["metric"].dropna().unique(), key=mobility_metric_sort_key):
+        metric_df = sample_summary_df.loc[sample_summary_df["metric"].eq(metric)].copy()
+        present = [
+            category
+            for category in order
+            if metric_df.loc[metric_df["category"].astype(str).eq(category), "prevalence_fraction"].dropna().size > 0
+        ]
+        if len(present) < 2:
+            continue
+        grouped = [
+            pd.to_numeric(
+                metric_df.loc[metric_df["category"].astype(str).eq(category), "prevalence_fraction"],
+                errors="coerce",
+            )
+            .dropna()
+            .values
+            for category in present
+        ]
+        try:
+            statistic, pvalue = stats.kruskal(*grouped)
+        except ValueError:
+            statistic, pvalue = np.nan, np.nan
+        rows.append(
+            {
+                "analysis_scope": "sample_prevalence_global",
+                "test": "Kruskal-Wallis",
+                "metric": metric,
+                "metric_label": MOBILITY_METRIC_LABELS.get(metric, metric),
+                "group_column": "category",
+                "n_groups": int(len(present)),
+                "groups": ";".join(map(str, present)),
+                "statistic": statistic,
+                "pvalue": pvalue,
+            }
+        )
+        for group_a, group_b in itertools.combinations(present, 2):
+            values_a = pd.to_numeric(
+                metric_df.loc[metric_df["category"].astype(str).eq(group_a), "prevalence_fraction"],
+                errors="coerce",
+            ).dropna()
+            values_b = pd.to_numeric(
+                metric_df.loc[metric_df["category"].astype(str).eq(group_b), "prevalence_fraction"],
+                errors="coerce",
+            ).dropna()
+            if values_a.empty or values_b.empty:
+                continue
+            try:
+                statistic, pvalue = stats.mannwhitneyu(values_a, values_b, alternative="two-sided")
+            except ValueError:
+                statistic, pvalue = np.nan, np.nan
+            rows.append(
+                {
+                    "analysis_scope": "sample_prevalence_pairwise",
+                    "test": "Mann-Whitney U",
+                    "metric": metric,
+                    "metric_label": MOBILITY_METRIC_LABELS.get(metric, metric),
+                    "group_column": "category",
+                    "group_a": group_a,
+                    "group_b": group_b,
+                    "n_a": int(values_a.size),
+                    "n_b": int(values_b.size),
+                    "group_a_median": float(values_a.median()),
+                    "group_b_median": float(values_b.median()),
+                    "median_difference_a_minus_b": float(values_a.median() - values_b.median()),
+                    "statistic": statistic,
+                    "pvalue": pvalue,
+                }
+            )
+
+    if mobility_long_df is not None and not mobility_long_df.empty:
+        for metric in sorted(mobility_long_df["metric"].dropna().unique(), key=mobility_metric_sort_key):
+            metric_df = mobility_long_df.loc[mobility_long_df["metric"].eq(metric)].copy()
+            present = [
+                category
+                for category in order
+                if metric_df.loc[metric_df["category"].astype(str).eq(category), "mobility_positive"].dropna().size > 0
+            ]
+            if len(present) < 2:
+                continue
+            try:
+                from scipy.stats import chi2_contingency, fisher_exact
+            except ImportError:
+                continue
+            table = []
+            for category in present:
+                values = pd.to_numeric(
+                    metric_df.loc[metric_df["category"].astype(str).eq(category), "mobility_positive"],
+                    errors="coerce",
+                ).dropna()
+                positives = int(values.sum())
+                table.append([positives, int(values.size - positives)])
+            try:
+                statistic, pvalue, _dof, _expected = chi2_contingency(table)
+            except ValueError:
+                statistic, pvalue = np.nan, np.nan
+            rows.append(
+                {
+                    "analysis_scope": "genome_binary_global",
+                    "test": "Chi-square",
+                    "metric": metric,
+                    "metric_label": MOBILITY_METRIC_LABELS.get(metric, metric),
+                    "group_column": "category",
+                    "n_groups": int(len(present)),
+                    "groups": ";".join(map(str, present)),
+                    "statistic": statistic,
+                    "pvalue": pvalue,
+                }
+            )
+            for group_a, group_b in itertools.combinations(present, 2):
+                values_a = pd.to_numeric(
+                    metric_df.loc[metric_df["category"].astype(str).eq(group_a), "mobility_positive"],
+                    errors="coerce",
+                ).dropna()
+                values_b = pd.to_numeric(
+                    metric_df.loc[metric_df["category"].astype(str).eq(group_b), "mobility_positive"],
+                    errors="coerce",
+                ).dropna()
+                pos_a = int(values_a.sum())
+                pos_b = int(values_b.sum())
+                table_2x2 = [[pos_a, int(values_a.size - pos_a)], [pos_b, int(values_b.size - pos_b)]]
+                try:
+                    statistic, pvalue = fisher_exact(table_2x2, alternative="two-sided")
+                except ValueError:
+                    statistic, pvalue = np.nan, np.nan
+                rows.append(
+                    {
+                        "analysis_scope": "genome_binary_pairwise",
+                        "test": "Fisher exact",
+                        "metric": metric,
+                        "metric_label": MOBILITY_METRIC_LABELS.get(metric, metric),
+                        "group_column": "category",
+                        "group_a": group_a,
+                        "group_b": group_b,
+                        "n_a": int(values_a.size),
+                        "n_b": int(values_b.size),
+                        "group_a_positive": pos_a,
+                        "group_b_positive": pos_b,
+                        "group_a_fraction": float(pos_a / values_a.size) if values_a.size else np.nan,
+                        "group_b_fraction": float(pos_b / values_b.size) if values_b.size else np.nan,
+                        "statistic": statistic,
+                        "pvalue": pvalue,
+                    }
+                )
+
+    if not rows:
+        return pd.DataFrame()
+    stats_df = pd.DataFrame(rows)
+    stats_df["qvalue_bh"] = np.nan
+    if "analysis_scope" in stats_df.columns:
+        for _scope, index in stats_df.groupby("analysis_scope").groups.items():
+            stats_df.loc[index, "qvalue_bh"] = benjamini_hochberg_adjust(stats_df.loc[index, "pvalue"]).values
+    else:
+        stats_df["qvalue_bh"] = benjamini_hochberg_adjust(stats_df["pvalue"])
+    stats_df["significant_p05"] = pd.to_numeric(stats_df["pvalue"], errors="coerce").lt(0.05)
+    stats_df["significant_q05"] = pd.to_numeric(stats_df["qvalue_bh"], errors="coerce").lt(0.05)
+    stats_df["significance_stars"] = stats_df["qvalue_bh"].map(significance_stars)
+    return stats_df
+
+
+def normalize_mobility_category_label(value):
+    text = str(value).strip()
+    if not text:
+        return ""
+    normalized = (
+        text.lower()
+        .replace("/", "_")
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    aliases = {
+        "plasmid_associated": "plasmid_associated",
+        "phage_prophage_associated": "phage_prophage_associated",
+        "generic_mge_associated": "generic_mge_associated",
+        "genomic_island_associated": "genomic_island_associated",
+        "optional_broad_screen": "optional_broad_screen",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def build_mobility_orf_burden_table(mobility_long_df, hit_df):
+    if mobility_long_df.empty or hit_df is None or hit_df.empty:
+        return pd.DataFrame()
+    required_long = {"sample", "category", "genome_id", "metric", "metric_label"}
+    required_hits = {"sample", "category", "genome_id", "orf_id"}
+    if not required_long.issubset(set(mobility_long_df.columns)):
+        return pd.DataFrame()
+    if not required_hits.issubset(set(hit_df.columns)):
+        return pd.DataFrame()
+    if "mobility_category" not in hit_df.columns:
+        return pd.DataFrame()
+
+    genome_metric_df = mobility_long_df.loc[:, ["sample", "category", "genome_id", "metric", "metric_label"]].copy()
+    genome_metric_df = genome_metric_df.drop_duplicates(subset=["sample", "category", "genome_id", "metric"])
+
+    hit_working = hit_df.copy()
+    hit_working["sample"] = hit_working["sample"].astype(str).str.strip()
+    hit_working["category"] = hit_working["category"].astype(str).str.strip().map(canonical_method_label)
+    hit_working["genome_id"] = hit_working["genome_id"].astype(str).str.strip()
+    hit_working["orf_id"] = hit_working["orf_id"].astype(str).str.strip()
+    hit_working["metric"] = hit_working["mobility_category"].map(normalize_mobility_category_label)
+    hit_working = hit_working.loc[
+        hit_working["metric"].isin(MOBILITY_METRIC_LABELS.keys())
+        & hit_working["orf_id"].ne("")
+    ].copy()
+    if hit_working.empty:
+        genome_metric_df["unique_mobility_orfs"] = 0
+        return genome_metric_df
+
+    burden_counts = (
+        hit_working.drop_duplicates(subset=["sample", "category", "genome_id", "metric", "orf_id"])
+        .groupby(["sample", "category", "genome_id", "metric"], dropna=False)
+        .size()
+        .reset_index(name="unique_mobility_orfs")
+    )
+    burden_df = genome_metric_df.merge(
+        burden_counts,
+        on=["sample", "category", "genome_id", "metric"],
+        how="left",
+    )
+    burden_df["unique_mobility_orfs"] = (
+        pd.to_numeric(burden_df["unique_mobility_orfs"], errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
+    return burden_df
+
+
+def build_mobility_orf_burden_summary(burden_df):
+    if burden_df.empty:
+        return pd.DataFrame()
+    values = burden_df.copy()
+    values["unique_mobility_orfs"] = pd.to_numeric(values["unique_mobility_orfs"], errors="coerce").fillna(0.0)
+    summary = (
+        values.groupby(["category", "metric", "metric_label"], dropna=False)
+        .agg(
+            n_genomes=("unique_mobility_orfs", "size"),
+            n_positive_genomes=("unique_mobility_orfs", lambda series: int(pd.to_numeric(series, errors="coerce").fillna(0).gt(0).sum())),
+            total_unique_mobility_orfs=("unique_mobility_orfs", "sum"),
+            mean_unique_mobility_orfs=("unique_mobility_orfs", "mean"),
+            median_unique_mobility_orfs=("unique_mobility_orfs", "median"),
+            q1_unique_mobility_orfs=("unique_mobility_orfs", lambda series: float(np.nanpercentile(pd.to_numeric(series, errors="coerce"), 25))),
+            q3_unique_mobility_orfs=("unique_mobility_orfs", lambda series: float(np.nanpercentile(pd.to_numeric(series, errors="coerce"), 75))),
+        )
+        .reset_index()
+    )
+    return summary
+
+
+def build_mobility_orf_burden_stats(burden_df):
+    if burden_df.empty:
+        return pd.DataFrame()
+    try:
+        from scipy import stats
+    except ImportError:
+        return pd.DataFrame()
+    working = burden_df.copy()
+    working["unique_mobility_orfs"] = pd.to_numeric(working["unique_mobility_orfs"], errors="coerce").fillna(0.0)
+    order = category_order(working, category_column="category")
+    rows = []
+    for metric in sorted(working["metric"].dropna().unique(), key=mobility_metric_sort_key):
+        if metric not in PRIMARY_MOBILITY_METRICS:
+            continue
+        metric_df = working.loc[working["metric"].eq(metric)].copy()
+        present = [
+            category
+            for category in order
+            if metric_df.loc[metric_df["category"].astype(str).eq(category), "unique_mobility_orfs"].dropna().size > 0
+        ]
+        if len(present) < 2:
+            continue
+        grouped = [
+            pd.to_numeric(
+                metric_df.loc[metric_df["category"].astype(str).eq(category), "unique_mobility_orfs"],
+                errors="coerce",
+            )
+            .dropna()
+            .values
+            for category in present
+        ]
+        try:
+            statistic, pvalue = stats.kruskal(*grouped)
+        except ValueError:
+            statistic, pvalue = np.nan, np.nan
+        rows.append(
+            {
+                "analysis_scope": "genome_orf_burden_global",
+                "test": "Kruskal-Wallis",
+                "metric": metric,
+                "metric_label": MOBILITY_METRIC_LABELS.get(metric, metric),
+                "group_column": "category",
+                "n_groups": int(len(present)),
+                "groups": ";".join(map(str, present)),
+                "statistic": statistic,
+                "pvalue": pvalue,
+            }
+        )
+        for group_a, group_b in itertools.combinations(present, 2):
+            values_a = pd.to_numeric(
+                metric_df.loc[metric_df["category"].astype(str).eq(group_a), "unique_mobility_orfs"],
+                errors="coerce",
+            ).dropna()
+            values_b = pd.to_numeric(
+                metric_df.loc[metric_df["category"].astype(str).eq(group_b), "unique_mobility_orfs"],
+                errors="coerce",
+            ).dropna()
+            if values_a.empty or values_b.empty:
+                continue
+            try:
+                statistic, pvalue = stats.mannwhitneyu(values_a, values_b, alternative="two-sided")
+            except ValueError:
+                statistic, pvalue = np.nan, np.nan
+            rows.append(
+                {
+                    "analysis_scope": "genome_orf_burden_pairwise",
+                    "test": "Mann-Whitney U",
+                    "metric": metric,
+                    "metric_label": MOBILITY_METRIC_LABELS.get(metric, metric),
+                    "group_column": "category",
+                    "group_a": group_a,
+                    "group_b": group_b,
+                    "n_a": int(values_a.size),
+                    "n_b": int(values_b.size),
+                    "group_a_mean": float(values_a.mean()),
+                    "group_b_mean": float(values_b.mean()),
+                    "group_a_median": float(values_a.median()),
+                    "group_b_median": float(values_b.median()),
+                    "median_difference_a_minus_b": float(values_a.median() - values_b.median()),
+                    "statistic": statistic,
+                    "pvalue": pvalue,
+                }
+            )
+    if not rows:
+        return pd.DataFrame()
+    stats_df = pd.DataFrame(rows)
+    stats_df["qvalue_bh"] = np.nan
+    if "analysis_scope" in stats_df.columns:
+        for _scope, index in stats_df.groupby("analysis_scope").groups.items():
+            stats_df.loc[index, "qvalue_bh"] = benjamini_hochberg_adjust(stats_df.loc[index, "pvalue"]).values
+    else:
+        stats_df["qvalue_bh"] = benjamini_hochberg_adjust(stats_df["pvalue"])
+    stats_df["significant_p05"] = pd.to_numeric(stats_df["pvalue"], errors="coerce").lt(0.05)
+    stats_df["significant_q05"] = pd.to_numeric(stats_df["qvalue_bh"], errors="coerce").lt(0.05)
+    stats_df["significance_stars"] = stats_df["qvalue_bh"].map(significance_stars)
+    return stats_df
+
+
+def mobility_panel_stats_for_plot(stats_df):
+    if stats_df is None or stats_df.empty:
+        return pd.DataFrame()
+    return stats_df.loc[stats_df["analysis_scope"].astype(str).eq("genome_binary_pairwise")].copy()
+
+
+def wilson_score_interval(k, n, z=1.96):
+    try:
+        k = float(k)
+        n = float(n)
+    except Exception:
+        return np.nan, np.nan
+    if n <= 0:
+        return np.nan, np.nan
+    proportion = k / n
+    denominator = 1.0 + (z ** 2 / n)
+    center = (proportion + (z ** 2 / (2.0 * n))) / denominator
+    half_width = (
+        z
+        * math.sqrt((proportion * (1.0 - proportion) / n) + (z ** 2 / (4.0 * n * n)))
+        / denominator
+    )
+    return max(0.0, center - half_width), min(1.0, center + half_width)
+
+
+def add_wilson_intervals(overall_summary_df):
+    if overall_summary_df.empty:
+        return overall_summary_df
+    working = overall_summary_df.copy()
+    lows = []
+    highs = []
+    for row in working.to_dict("records"):
+        low, high = wilson_score_interval(row.get("n_genomes_positive", np.nan), row.get("n_genomes_total", np.nan))
+        lows.append(low)
+        highs.append(high)
+    working["ci95_low"] = lows
+    working["ci95_high"] = highs
+    return working
+
+
+def plot_mobility_genome_prevalence_panel(overall_summary_df, output_base, stats_df=None, show_significance=False):
+    ensure_plotting()
+    if overall_summary_df.empty:
+        return False
+    required = {"category", "metric", "metric_label", "n_genomes_total", "n_genomes_positive", "prevalence_fraction"}
+    if not required.issubset(set(overall_summary_df.columns)):
+        return False
+    plot_df = add_wilson_intervals(overall_summary_df)
+    order = category_order(plot_df, category_column="category")
+    metric_specs = [
+        (metric, MOBILITY_METRIC_LABELS.get(metric, metric))
+        for metric in sorted(plot_df["metric"].dropna().unique(), key=mobility_metric_sort_key)
+        if metric in PRIMARY_MOBILITY_METRICS
+        if pd.to_numeric(
+            plot_df.loc[plot_df["metric"].eq(metric), "prevalence_fraction"],
+            errors="coerce",
+        ).fillna(0.0).gt(0).any()
+    ]
+    if not order or not metric_specs:
+        return False
+
+    n_cols = min(2, len(metric_specs))
+    n_rows = int(math.ceil(len(metric_specs) / float(n_cols)))
+    plt_local = ensure_plotting()
+    fig, axes = plt_local.subplots(
+        n_rows,
+        n_cols,
+        figsize=(max(8.5, n_cols * 4.3), max(4.8, n_rows * 2.9)),
+        squeeze=False,
+    )
+    axes = axes.ravel()
+    y_positions = np.arange(len(order), dtype=float)
+    category_colors = dict(zip(order, grayscale_palette(len(order))))
+    plot_stats_df = mobility_panel_stats_for_plot(stats_df)
+    wrote_any = False
+
+    for ax, (metric, title) in zip(axes, metric_specs):
+        metric_df = plot_df.loc[plot_df["metric"].eq(metric)].copy()
+        summary_lookup = {
+            str(row["category"]): {
+                "point": float(row["prevalence_fraction"]),
+                "low": float(row["ci95_low"]),
+                "high": float(row["ci95_high"]),
+            }
+            for row in metric_df.to_dict("records")
+            if pd.notna(row.get("prevalence_fraction", np.nan))
+        }
+        summaries = [summary_lookup.get(category) for category in order]
+        if not any(summary is not None for summary in summaries):
+            ax.axis("off")
+            continue
+        for y_pos, category, summary in zip(y_positions, order, summaries):
+            if summary is None:
+                continue
+            low = max(0.0, summary["low"])
+            high = min(1.0, summary["high"])
+            color = category_colors[category]
+            ax.hlines(y_pos, low, high, color=color, linewidth=3.0, zorder=2)
+            ax.scatter(
+                summary["point"],
+                y_pos,
+                s=52,
+                color=color,
+                edgecolors="black",
+                linewidths=0.75,
+                zorder=3,
+            )
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(order)
+        ax.invert_yaxis()
+        ax.set_xlim(-0.03, 1.03)
+        ax.set_title(title, fontsize=10.5, fontweight="bold", pad=8)
+        ax.set_xlabel("Prevalence fraction", fontsize=8.5)
+        style_benchmark_metric_axis(ax, metric)
+        if show_significance:
+            add_benchmark_significance_brackets(ax, metric, summaries, order, plot_stats_df)
+        wrote_any = True
+
+    for index in range(len(metric_specs), len(axes)):
+        axes[index].axis("off")
+    if not wrote_any:
+        plt_local.close(fig)
+        return False
+    fig.suptitle(
+        f"Experimental mobility-feature prevalence by category ({'significant pairs' if show_significance else 'genome-level prevalence'})",
+        fontsize=15,
+        fontweight="bold",
+        y=0.995,
+    )
+    fig.text(
+        0.5,
+        0.014,
+        "Points show the fraction of genomes positive; horizontal intervals show Wilson 95% confidence intervals."
+        + (" Stars mark BH-adjusted pairwise Fisher exact q<0.05." if show_significance else ""),
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="#4d4d4d",
+    )
+    fig.tight_layout(rect=[0, 0.05, 1, 0.94], w_pad=2.3, h_pad=2.0)
+    Path(output_base).parent.mkdir(parents=True, exist_ok=True)
+    save_figure(fig, output_base)
+    return True
+
+
+def mobility_orf_burden_panel_stats_for_plot(stats_df):
+    if stats_df is None or stats_df.empty:
+        return pd.DataFrame()
+    return stats_df.loc[stats_df["analysis_scope"].astype(str).eq("genome_orf_burden_pairwise")].copy()
+
+
+def plot_mobility_orf_burden_panel(burden_df, output_base, summary_mode="median", stats_df=None, show_significance=False):
+    ensure_plotting()
+    if burden_df.empty:
+        return False
+    required = {"category", "metric", "metric_label", "unique_mobility_orfs"}
+    if not required.issubset(set(burden_df.columns)):
+        return False
+    working = burden_df.copy()
+    working["unique_mobility_orfs"] = pd.to_numeric(working["unique_mobility_orfs"], errors="coerce").fillna(0.0)
+    order = category_order(working, category_column="category")
+    metric_specs = [
+        (metric, MOBILITY_METRIC_LABELS.get(metric, metric))
+        for metric in sorted(working["metric"].dropna().unique(), key=mobility_metric_sort_key)
+        if metric in PRIMARY_MOBILITY_METRICS
+        if working.loc[working["metric"].eq(metric), "unique_mobility_orfs"].gt(0).any()
+    ]
+    if not order or not metric_specs:
+        return False
+
+    n_cols = min(2, len(metric_specs))
+    n_rows = int(math.ceil(len(metric_specs) / float(n_cols)))
+    plt_local = ensure_plotting()
+    fig, axes = plt_local.subplots(
+        n_rows,
+        n_cols,
+        figsize=(max(8.5, n_cols * 4.3), max(4.8, n_rows * 2.9)),
+        squeeze=False,
+    )
+    axes = axes.ravel()
+    y_positions = np.arange(len(order), dtype=float)
+    category_colors = dict(zip(order, grayscale_palette(len(order))))
+    plot_stats_df = mobility_orf_burden_panel_stats_for_plot(stats_df)
+    point_label = "mean" if summary_mode == "mean" else "median"
+    interval_label = "approximate 95% confidence intervals" if summary_mode == "mean" else "interquartile ranges"
+    wrote_any = False
+
+    for ax, (metric, title) in zip(axes, metric_specs):
+        metric_df = working.loc[working["metric"].eq(metric)].copy()
+        grouped_values = [
+            metric_df.loc[metric_df["category"].astype(str).eq(category), "unique_mobility_orfs"]
+            .dropna()
+            .values
+            .astype(float)
+            for category in order
+        ]
+        summaries = [
+            metric_interval_summary(values, summary_mode=summary_mode)
+            for values in grouped_values
+        ]
+        if not any(summary is not None for summary in summaries):
+            ax.axis("off")
+            continue
+        for y_pos, category, summary in zip(y_positions, order, summaries):
+            if summary is None:
+                continue
+            color = category_colors[category]
+            ax.hlines(y_pos, summary["low"], summary["high"], color=color, linewidth=3.0, zorder=2)
+            ax.scatter(
+                summary["point"],
+                y_pos,
+                s=52,
+                color=color,
+                edgecolors="black",
+                linewidths=0.75,
+                zorder=3,
+            )
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(order)
+        ax.invert_yaxis()
+        ax.set_title(title, fontsize=10.5, fontweight="bold", pad=8)
+        ax.set_xlabel("Unique mobility-associated ORFs per genome", fontsize=8.5)
+        style_benchmark_metric_axis(ax, metric)
+        ax.set_xlim(left=0)
+        if show_significance:
+            add_benchmark_significance_brackets(ax, metric, summaries, order, plot_stats_df)
+        wrote_any = True
+
+    for index in range(len(metric_specs), len(axes)):
+        axes[index].axis("off")
+    if not wrote_any:
+        plt_local.close(fig)
+        return False
+    fig.suptitle(
+        f"Experimental mobility-associated ORF burden by category ({point_label}{'; significant pairs' if show_significance else ''})",
+        fontsize=15,
+        fontweight="bold",
+        y=0.995,
+    )
+    fig.text(
+        0.5,
+        0.014,
+        f"Points show category {point_label}s; horizontal intervals show {interval_label}."
+        + (" Stars mark BH-adjusted pairwise Mann-Whitney U q<0.05." if show_significance else ""),
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="#4d4d4d",
+    )
+    fig.tight_layout(rect=[0, 0.05, 1, 0.94], w_pad=2.3, h_pad=2.0)
+    Path(output_base).parent.mkdir(parents=True, exist_ok=True)
+    save_figure(fig, output_base)
+    return True
+
+
+def write_mobility_aggregation_outputs(output_dir, prefix, per_genome_df, hit_df=None, source_prevalence_df=None):
+    output_dir = Path(output_dir)
+    wrote_paths = []
+    if per_genome_df is None or per_genome_df.empty:
+        return wrote_paths
+    mobility_dir = output_dir / "experimental_mobility"
+    table_dir = mobility_dir / "tables"
+    plot_dir = mobility_dir / "plots"
+    table_dir.mkdir(parents=True, exist_ok=True)
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    long_df = build_mobility_long_table(per_genome_df)
+    if long_df.empty:
+        return wrote_paths
+    sample_summary_df, overall_summary_df = build_mobility_prevalence_summaries(long_df, hit_df=hit_df)
+    stats_df = build_mobility_prevalence_stats(sample_summary_df, long_df)
+    burden_df = build_mobility_orf_burden_table(long_df, hit_df)
+    burden_summary_df = build_mobility_orf_burden_summary(burden_df)
+    burden_stats_df = build_mobility_orf_burden_stats(burden_df)
+
+    outputs = [
+        (table_dir / f"{prefix}_experimental_candidate_mobility_per_genome.tsv", per_genome_df),
+        (table_dir / f"{prefix}_experimental_candidate_mobility_long.tsv", long_df),
+        (table_dir / f"{prefix}_experimental_candidate_mobility_sample_prevalence.tsv", sample_summary_df),
+        (table_dir / f"{prefix}_experimental_candidate_mobility_overall_prevalence.tsv", overall_summary_df),
+        (table_dir / f"{prefix}_experimental_candidate_mobility_stats.tsv", stats_df),
+    ]
+    if not burden_df.empty:
+        outputs.extend(
+            [
+                (table_dir / f"{prefix}_experimental_candidate_mobility_unique_orf_burden_per_genome.tsv", burden_df),
+                (table_dir / f"{prefix}_experimental_candidate_mobility_unique_orf_burden_summary.tsv", burden_summary_df),
+                (table_dir / f"{prefix}_experimental_candidate_mobility_unique_orf_burden_stats.tsv", burden_stats_df),
+            ]
+        )
+    if hit_df is not None and not hit_df.empty:
+        outputs.append((table_dir / f"{prefix}_experimental_candidate_mobility_hits.tsv", hit_df))
+    if source_prevalence_df is not None and not source_prevalence_df.empty:
+        outputs.append((table_dir / f"{prefix}_experimental_candidate_mobility_source_prevalence.tsv", source_prevalence_df))
+    for path, frame in outputs:
+        frame.to_csv(path, sep="\t", index=False)
+        wrote_paths.append(path)
+
+    for suffix, show_significance in [
+        ("genome_prevalence_ci95", False),
+        ("genome_prevalence_ci95_sig", True),
+    ]:
+        plot_base = plot_dir / f"{prefix}_experimental_candidate_mobility_{suffix}_panel"
+        if plot_mobility_genome_prevalence_panel(
+            overall_summary_df,
+            str(plot_base),
+            stats_df=stats_df,
+            show_significance=show_significance,
+        ):
+            wrote_paths.extend([Path(str(plot_base) + ".png"), Path(str(plot_base) + ".pdf")])
+    if not burden_df.empty:
+        for summary_mode, suffix, show_significance in [
+            ("median", "unique_orf_burden_median_iqr", False),
+            ("median", "unique_orf_burden_median_iqr_sig", True),
+            ("mean", "unique_orf_burden_mean_ci95", False),
+            ("mean", "unique_orf_burden_mean_ci95_sig", True),
+        ]:
+            plot_base = plot_dir / f"{prefix}_experimental_candidate_mobility_{suffix}_panel"
+            if plot_mobility_orf_burden_panel(
+                burden_df,
+                str(plot_base),
+                summary_mode=summary_mode,
+                stats_df=burden_stats_df,
+                show_significance=show_significance,
+            ):
+                wrote_paths.extend([Path(str(plot_base) + ".png"), Path(str(plot_base) + ".pdf")])
+    return wrote_paths
 
 
 def build_sample_category_summary(genome_df, category_column="category", sample_column="sample"):
@@ -4477,7 +5678,7 @@ def build_method_effectiveness_summary(genome_df, representative_df, category_co
         ("median_mimag_quality_index", "mimag_quality_index"),
         ("median_integrity_score", "integrity_score"),
         ("median_recoverability_score", "recoverability_score"),
-        ("median_qscore", "qscore"),
+        ("median_qscore", "Qscore"),
         ("median_quality_evidence_score", "quality_evidence_score"),
         ("median_functional_evidence_score", "functional_evidence_score"),
         ("median_combined_evidence_score", "combined_evidence_score"),
@@ -4747,6 +5948,21 @@ def run_combined_summary_plots(output_dir, prefix, combined_genome_df, combined_
             stats_df=compact_summary_stats_df,
         ):
             wrote_paths.extend([Path(str(plot_base) + ".png"), Path(str(plot_base) + ".pdf")])
+    for summary_mode, suffix, show_significance in [
+        ("median", "median_iqr", False),
+        ("median", "median_iqr_sig", True),
+        ("mean", "mean_ci95", False),
+        ("mean", "mean_ci95_sig", True),
+    ]:
+        benchmark_plot_base = single_metric_dir / f"{sanitize_label(prefix)}_compare_category_benchmark_metric_panel_{suffix}"
+        if plot_metapathways_benchmark_metric_panel(
+            scored_df,
+            str(benchmark_plot_base),
+            summary_mode=summary_mode,
+            stats_df=compact_summary_stats_df,
+            show_significance=show_significance,
+        ):
+            wrote_paths.extend([Path(str(benchmark_plot_base) + ".png"), Path(str(benchmark_plot_base) + ".pdf")])
     wrote_paths.extend(
         write_species_category_marker_comparisons(
             output_dir,
@@ -4887,6 +6103,9 @@ def main():
     combined_elemental_mode_pathway = []
     combined_pathway = []
     combined_pathway_orf = []
+    combined_mobility_per_genome = []
+    combined_mobility_hits = []
+    combined_mobility_source_prevalence = []
     skipped_inputs = []
     built_metapathways_best_sets = False
     marker_manifest_path = resolve_optional_path_arg(args.marker_manifest)
@@ -5031,6 +6250,16 @@ def main():
         combined_elemental_mode_pathway.append(add_context_columns(elemental_mode_pathway_summary, sample, category, input_dir_value))
         combined_pathway.append(add_context_columns(pathway_long, sample, category, input_dir_value))
         combined_pathway_orf.append(add_context_columns(pathway_orf_long, sample, category, input_dir_value))
+        mobility_per_genome_parts, mobility_hit_parts, mobility_prevalence_parts = collect_row_mobility_outputs(
+            input_paths,
+            sample,
+            category,
+            input_dir_value,
+            args.individual_subdir,
+        )
+        combined_mobility_per_genome.extend(mobility_per_genome_parts)
+        combined_mobility_hits.extend(mobility_hit_parts)
+        combined_mobility_source_prevalence.extend(mobility_prevalence_parts)
 
     combined_genome_df = (
         pd.concat(combined_genome, ignore_index=True)
@@ -5102,6 +6331,21 @@ def main():
         if combined_pathway_orf
         else pd.DataFrame()
     )
+    combined_mobility_per_genome_df = (
+        pd.concat(combined_mobility_per_genome, ignore_index=True)
+        if combined_mobility_per_genome
+        else pd.DataFrame()
+    )
+    combined_mobility_hits_df = (
+        pd.concat(combined_mobility_hits, ignore_index=True)
+        if combined_mobility_hits
+        else pd.DataFrame()
+    )
+    combined_mobility_source_prevalence_df = (
+        pd.concat(combined_mobility_source_prevalence, ignore_index=True)
+        if combined_mobility_source_prevalence
+        else pd.DataFrame()
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     written_paths = []
@@ -5163,6 +6407,18 @@ def main():
         combined_pathway_orf_df=combined_pathway_orf_df,
         combined_annotation_audit_df=combined_annotation_audit_df,
     ))
+    mobility_paths = write_mobility_aggregation_outputs(
+        output_dir=output_dir,
+        prefix=prefix,
+        per_genome_df=combined_mobility_per_genome_df,
+        hit_df=combined_mobility_hits_df,
+        source_prevalence_df=combined_mobility_source_prevalence_df,
+    )
+    written_paths.extend(mobility_paths)
+    if mobility_paths:
+        print(f"[done] experimental mobility aggregation: {len(mobility_paths)} files")
+    else:
+        print("[warn] no experimental mobility per-genome tables found to aggregate")
 
     print("[start] combined category summary/comparison plots")
     combined_plot_paths = run_combined_summary_plots(
@@ -5279,6 +6535,94 @@ def main():
             "[warn] best-ANI subset comparisons not run; no best-set table was found. "
             "Provide --best-subset-tsv or --genome-atlas-dir containing best_sets_review_selected_genomes.tsv."
         )
+
+    if atlas_best_ready:
+        try:
+            component_members_path, component_members_df = load_atlas_component_members(args)
+            species_cluster_subset_df = build_species_cluster_category_best_subset(
+                component_members_df,
+                best_set_scope="global",
+                best_set_name="best_of_best",
+            )
+        except Exception as exc:
+            component_members_path = None
+            species_cluster_subset_df = pd.DataFrame()
+            print(f"[warn] species-cluster category subset comparisons not run: {exc}")
+
+        if not species_cluster_subset_df.empty:
+            species_cluster_prefix = sanitize_label(f"{prefix}_species_cluster")
+            species_cluster_selected_out = output_dir / f"{species_cluster_prefix}_selected_genomes.tsv"
+            species_cluster_subset_df.to_csv(species_cluster_selected_out, sep="\t", index=False)
+            written_paths.append(species_cluster_selected_out)
+
+            print(f"[start] species-cluster category subset from: {component_members_path}")
+            species_cluster_lookup = build_best_subset_lookup(species_cluster_subset_df, args)
+            species_cluster_genome_df = filter_frame_by_best_subset(combined_genome_df, species_cluster_lookup)
+            species_cluster_annotation_df = filter_frame_by_best_subset(combined_annotation_df, species_cluster_lookup)
+            species_cluster_annotation_quality_df = filter_frame_by_best_subset(combined_annotation_quality_df, species_cluster_lookup)
+            species_cluster_annotation_audit_df = filter_frame_by_best_subset(combined_annotation_audit_df, species_cluster_lookup)
+            species_cluster_marker_df = filter_frame_by_best_subset(combined_marker_df, species_cluster_lookup)
+            species_cluster_reference_mode_df = filter_frame_by_best_subset(combined_reference_mode_df, species_cluster_lookup)
+            species_cluster_elemental_annotation_df = filter_frame_by_best_subset(combined_elemental_annotation_df, species_cluster_lookup)
+            species_cluster_elemental_mode_annotation_df = filter_frame_by_best_subset(combined_elemental_mode_annotation_df, species_cluster_lookup)
+            species_cluster_elemental_pathway_support_df = filter_frame_by_best_subset(
+                combined_elemental_pathway_support_df,
+                species_cluster_lookup,
+            )
+            species_cluster_elemental_mode_pathway_support_df = filter_frame_by_best_subset(
+                combined_elemental_mode_pathway_support_df,
+                species_cluster_lookup,
+            )
+            species_cluster_elemental_pathway_df = filter_frame_by_best_subset(combined_elemental_pathway_df, species_cluster_lookup)
+            species_cluster_elemental_mode_pathway_df = filter_frame_by_best_subset(
+                combined_elemental_mode_pathway_df,
+                species_cluster_lookup,
+            )
+            species_cluster_pathway_df = filter_frame_by_best_subset(combined_pathway_df, species_cluster_lookup)
+            species_cluster_pathway_orf_df = filter_frame_by_best_subset(combined_pathway_orf_df, species_cluster_lookup)
+
+            if species_cluster_genome_df.empty:
+                print("[warn] species-cluster category subset matched zero MetaPathways genomes; plots not written")
+            else:
+                species_cluster_paths = write_combined_tables(
+                    output_dir=output_dir,
+                    prefix=species_cluster_prefix,
+                    manifest_df=manifest,
+                    combined_genome_df=species_cluster_genome_df,
+                    combined_annotation_df=species_cluster_annotation_df,
+                    combined_annotation_quality_df=species_cluster_annotation_quality_df,
+                    combined_marker_df=species_cluster_marker_df,
+                    combined_reference_mode_df=species_cluster_reference_mode_df,
+                    combined_elemental_annotation_df=species_cluster_elemental_annotation_df,
+                    combined_elemental_mode_annotation_df=species_cluster_elemental_mode_annotation_df,
+                    combined_elemental_pathway_support_df=species_cluster_elemental_pathway_support_df,
+                    combined_elemental_mode_pathway_support_df=species_cluster_elemental_mode_pathway_support_df,
+                    combined_elemental_pathway_df=species_cluster_elemental_pathway_df,
+                    combined_elemental_mode_pathway_df=species_cluster_elemental_mode_pathway_df,
+                    combined_pathway_df=species_cluster_pathway_df,
+                    combined_pathway_orf_df=species_cluster_pathway_orf_df,
+                    combined_annotation_audit_df=species_cluster_annotation_audit_df,
+                )
+                written_paths.extend(species_cluster_paths)
+                print(
+                    "[done] species-cluster category subset tables: "
+                    f"{len(species_cluster_paths)} files; genomes={len(species_cluster_genome_df)}"
+                )
+
+                print("[start] species-cluster category summary/comparison plots")
+                species_cluster_plot_paths = run_combined_summary_plots(
+                    output_dir=output_dir,
+                    prefix=species_cluster_prefix,
+                    combined_genome_df=species_cluster_genome_df,
+                    combined_pathway_df=species_cluster_pathway_df,
+                )
+                written_paths.extend(species_cluster_plot_paths)
+                print(f"[done] species-cluster category plots: {len(species_cluster_plot_paths)} files")
+        elif component_members_path is not None:
+            print(
+                "[warn] species-cluster category subset comparisons not run; "
+                "no global best-of-best component members were available."
+            )
 
     if args.skip_atlas_linked:
         print("[skip] atlas-linked category comparisons skipped by --skip-atlas-linked")
