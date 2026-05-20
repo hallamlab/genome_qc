@@ -18,7 +18,7 @@ plt = None
 sns = None
 
 SCORE_COLUMN = "qscore"
-SCORE_LABEL = "Master qscore"
+SCORE_LABEL = "Qscore"
 TIER_PALETTE = {"low": "#d9d9d9", "medium": "#7f7f7f", "high": "#1a1a1a"}
 RIGHT_MARGIN = 0.70
 TAXONOMY_RANKS = ["Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
@@ -50,6 +50,8 @@ GUNC_DEFAULT_CSS_THRESHOLD = 0.45
 GUNC_STRICT_RRS_THRESHOLD = 0.5
 GUNC_STRICT_CSS_THRESHOLD = 0.85
 GUNC_ABOVE_GENUS_LEVELS = {"kingdom", "phylum", "class", "order", "family"}
+FASTANI_CONTAINMENT_AF_THRESHOLD = 0.90
+FASTANI_LARGER_GENOME_AF_FLOOR = 0.10
 GUNC_ASSESSMENT_ORDER = [
     "credible_chimeric_signal",
     "likely_not_chimeric",
@@ -1008,6 +1010,7 @@ def load_fastani_pairs(raw_output, frame):
     metadata_columns = ["ani_record_id", "ani_fasta_path", "Genome_Id"]
     optional_columns = [
         "Bin Id",
+        "sum_len",
         "source_dir",
         "Phylum",
         "Class",
@@ -1043,19 +1046,58 @@ def load_fastani_pairs(raw_output, frame):
         pair_df["fragments_mapped"] / pair_df["total_fragments"],
         np.nan,
     )
+    if "sum_len" in metadata_df.columns:
+        record_to_length = dict(
+            zip(
+                metadata_df["ani_record_id"].astype(str),
+                pd.to_numeric(metadata_df["sum_len"], errors="coerce"),
+            )
+        )
+        pair_df["query_length"] = pair_df["query_record"].map(record_to_length)
+        pair_df["reference_length"] = pair_df["reference_record"].map(record_to_length)
+        pair_df["larger_genome_length_directional"] = pair_df[["query_length", "reference_length"]].max(axis=1)
+        pair_df["smaller_genome_length_directional"] = pair_df[["query_length", "reference_length"]].min(axis=1)
+        pair_df["af_larger_directional"] = np.where(
+            pair_df["query_length"].ge(pair_df["reference_length"]),
+            pair_df["af_query"],
+            np.nan,
+        )
+        pair_df["af_smaller_directional"] = np.where(
+            pair_df["query_length"].le(pair_df["reference_length"]),
+            pair_df["af_query"],
+            np.nan,
+        )
     pair_df["record_a"] = pair_df[["query_record", "reference_record"]].min(axis=1)
     pair_df["record_b"] = pair_df[["query_record", "reference_record"]].max(axis=1)
 
+    agg_spec = {
+        "ani_mean": ("ani", "mean"),
+        "ani_max": ("ani", "max"),
+        "af_min": ("af_query", "min"),
+        "af_max": ("af_query", "max"),
+        "n_directions": ("af_query", "size"),
+    }
+    if "af_larger_directional" in pair_df.columns:
+        agg_spec.update(
+            {
+                "af_larger": ("af_larger_directional", "max"),
+                "af_smaller": ("af_smaller_directional", "max"),
+                "larger_genome_length": ("larger_genome_length_directional", "max"),
+                "smaller_genome_length": ("smaller_genome_length_directional", "min"),
+            }
+        )
     aggregated = (
         pair_df.groupby(["record_a", "record_b"], as_index=False)
-        .agg(
-            ani_mean=("ani", "mean"),
-            ani_max=("ani", "max"),
-            af_min=("af_query", "min"),
-            af_max=("af_query", "max"),
-            n_directions=("af_query", "size"),
-        )
+        .agg(**agg_spec)
     )
+    if "af_larger" not in aggregated.columns:
+        aggregated["af_larger"] = aggregated["af_min"]
+    else:
+        aggregated["af_larger"] = aggregated["af_larger"].fillna(aggregated["af_min"])
+    if "af_smaller" not in aggregated.columns:
+        aggregated["af_smaller"] = aggregated["af_max"]
+    else:
+        aggregated["af_smaller"] = aggregated["af_smaller"].fillna(aggregated["af_max"])
     left_meta = metadata_df.add_prefix("a_").rename(columns={"a_ani_record_id": "record_a"})
     right_meta = metadata_df.add_prefix("b_").rename(columns={"b_ani_record_id": "record_b"})
     aggregated = aggregated.merge(left_meta, on="record_a", how="left")
@@ -1090,6 +1132,338 @@ def connected_components(nodes, edges):
             stack.extend(sorted(adjacency.get(current, set()) - visited))
         components.append(sorted(component))
     return components
+
+
+def clean_text(value):
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def category_family(value):
+    text = re.sub(r"[^a-z0-9]+", "", clean_text(value).lower())
+    if "xpg" in text and "sag" in text:
+        return "xpg_sag"
+    if "xpg" in text and "mag" in text:
+        return "xpg_mag"
+    if "sag" in text:
+        return "sag"
+    if "mag" in text:
+        return "mag"
+    return ""
+
+
+def base_family_from_xpg(family):
+    if family == "xpg_sag":
+        return "sag"
+    if family == "xpg_mag":
+        return "mag"
+    return ""
+
+
+def normalized_anchor_token(value):
+    text = clean_text(value)
+    if not text:
+        return ""
+    text = Path(text).name
+    for suffix in [".fasta", ".fa", ".fna", ".fas", ".gz"]:
+        if text.lower().endswith(suffix):
+            text = text[: -len(suffix)]
+    text = re.sub(r"\.\d+$", "", text)
+    return text.strip()
+
+
+def base_anchor_aliases(row):
+    aliases = []
+
+    def add(value):
+        token = normalized_anchor_token(value)
+        if token and token not in aliases:
+            aliases.append(token)
+
+    for column in ["Genome_Id", "genome_id", "Bin Id", "SAG_ID"]:
+        if column in row:
+            add(row.get(column, ""))
+    return aliases
+
+
+def xpg_genesis_anchor(row, family):
+    values = [
+        clean_text(row.get(column, ""))
+        for column in ["Genome_Id", "genome_id", "Bin Id"]
+        if column in row
+    ]
+    for value in values:
+        if not value:
+            continue
+        text = normalized_anchor_token(value)
+        if family == "xpg_sag":
+            match = re.search(r"\.xpgs?\.([^.]+)", text, flags=re.IGNORECASE)
+            if match:
+                return normalized_anchor_token(match.group(1))
+        elif family == "xpg_mag":
+            match = re.match(
+                r"^(.+?)(?:\.best_cluster|\.majority_rule|\.best_match|\.ocsvm|\.intersect|\.xpg\b)",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                return normalized_anchor_token(match.group(1))
+            if "." in text:
+                return normalized_anchor_token(text.split(".", 1)[0])
+    return ""
+
+
+def apply_fastani_match_thresholds(
+    pair_summary,
+    ani_threshold,
+    af_threshold,
+    containment_af_threshold=FASTANI_CONTAINMENT_AF_THRESHOLD,
+    larger_genome_af_floor=FASTANI_LARGER_GENOME_AF_FLOOR,
+):
+    if pair_summary.empty:
+        result = pair_summary.copy()
+        if "passes_threshold" not in result.columns:
+            result["passes_threshold"] = pd.Series(dtype=bool)
+        return result
+
+    result = pair_summary.copy()
+    ani_values = pd.to_numeric(result.get("ani_mean"), errors="coerce")
+    af_min = pd.to_numeric(result.get("af_min"), errors="coerce")
+    af_larger = pd.to_numeric(result.get("af_larger", af_min), errors="coerce")
+    af_smaller = pd.to_numeric(result.get("af_smaller", result.get("af_max", af_min)), errors="coerce")
+
+    result["passes_ani_threshold"] = ani_values.ge(float(ani_threshold))
+    # The primary AF requirement is framed against the larger assembly so an
+    # incomplete genome is not penalized for being smaller than the comparison partner.
+    result["passes_af_larger_threshold"] = af_larger.ge(float(af_threshold))
+    # Containment rescue: if the smaller assembly is nearly contained, require
+    # at least 10% of the larger assembly so tiny fragments do not over-link.
+    result["passes_af_containment_threshold"] = (
+        af_smaller.ge(float(containment_af_threshold))
+        & af_larger.ge(float(larger_genome_af_floor))
+    )
+    result["passes_threshold"] = result["passes_ani_threshold"] & (
+        result["passes_af_larger_threshold"] | result["passes_af_containment_threshold"]
+    )
+    result["af_threshold_mode"] = np.select(
+        [
+            result["passes_af_larger_threshold"],
+            result["passes_af_containment_threshold"],
+        ],
+        [
+            "larger_af",
+            "smaller_contained_with_larger_floor",
+        ],
+        default="failed_af",
+    )
+    return result
+
+
+def sample_value_from_row(row):
+    for column in ["sample", "Sample", "sample_id", "Sample_ID"]:
+        if column in row:
+            value = clean_text(row.get(column, ""))
+            if value:
+                return value
+    return ""
+
+
+def category_value_from_row(row, category_column=None):
+    candidate_columns = []
+    if category_column:
+        candidate_columns.append(category_column)
+    candidate_columns.extend(["category", "Category", "method", "Method"])
+    for column in candidate_columns:
+        if column in row:
+            value = clean_text(row.get(column, ""))
+            if value:
+                return value
+    return ""
+
+
+def genesis_anchor_edges(compare_df, category_column=None):
+    if compare_df.empty or "ani_record_id" not in compare_df.columns:
+        return []
+
+    rows = compare_df.to_dict("records")
+    base_records = {}
+    xpg_records = []
+    for row in rows:
+        record_id = clean_text(row.get("ani_record_id", ""))
+        sample_value = sample_value_from_row(row)
+        family = category_family(category_value_from_row(row, category_column=category_column))
+        if not record_id or not sample_value or not family:
+            continue
+        if family in {"sag", "mag"}:
+            for alias in base_anchor_aliases(row):
+                base_records.setdefault((sample_value, family, alias), set()).add(record_id)
+        elif family in {"xpg_sag", "xpg_mag"}:
+            anchor = xpg_genesis_anchor(row, family)
+            base_family = base_family_from_xpg(family)
+            if anchor and base_family:
+                xpg_records.append((record_id, sample_value, base_family, anchor))
+
+    edges = set()
+    for xpg_record, sample_value, base_family, anchor in xpg_records:
+        for base_record in base_records.get((sample_value, base_family, anchor), set()):
+            if base_record != xpg_record:
+                edges.add(tuple(sorted((xpg_record, base_record))))
+    return sorted(edges)
+
+
+def merge_component_map_with_forced_edges(component_map, forced_edges, prefix):
+    if not forced_edges:
+        return component_map
+    parent = {component_id: component_id for component_id in set(component_map.values())}
+
+    def find(value):
+        parent.setdefault(value, value)
+        while parent[value] != value:
+            parent[value] = parent[parent[value]]
+            value = parent[value]
+        return value
+
+    def union(left, right):
+        root_left = find(left)
+        root_right = find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    for record_a, record_b in forced_edges:
+        component_a = component_map.get(record_a)
+        component_b = component_map.get(record_b)
+        if component_a and component_b:
+            union(component_a, component_b)
+
+    root_order = {}
+    relabeled = {}
+    for record_id, component_id in component_map.items():
+        root = find(component_id)
+        if root not in root_order:
+            root_order[root] = f"{prefix}_{len(root_order) + 1:04d}"
+        relabeled[record_id] = root_order[root]
+    return relabeled
+
+
+def summarize_component_pair_stats(component_map, pair_summary, forced_edges=None):
+    component_ids = sorted(set(component_map.values()))
+    if not component_ids:
+        return pd.DataFrame()
+
+    forced_edges = forced_edges or []
+    forced_component_counts = {component_id: 0 for component_id in component_ids}
+    for record_a, record_b in forced_edges:
+        component_a = component_map.get(record_a)
+        component_b = component_map.get(record_b)
+        if component_a and component_a == component_b:
+            forced_component_counts[component_a] = forced_component_counts.get(component_a, 0) + 1
+
+    summary = pd.DataFrame(
+        [
+            {
+                "component_id": component_id,
+                "n_component_members": len([record for record, mapped in component_map.items() if mapped == component_id]),
+                "n_possible_member_pairs": int(
+                    len([record for record, mapped in component_map.items() if mapped == component_id])
+                    * (len([record for record, mapped in component_map.items() if mapped == component_id]) - 1)
+                    / 2
+                ),
+                "n_forced_genesis_edges": int(forced_component_counts.get(component_id, 0)),
+            }
+            for component_id in component_ids
+        ]
+    )
+
+    if pair_summary is None or pair_summary.empty:
+        summary["n_observed_member_pairs"] = 0
+        summary["n_passing_member_pairs"] = 0
+        summary["ani_radius_from_100"] = np.nan
+        summary["af_larger_radius_from_1"] = np.nan
+        return summary
+
+    pairs = pair_summary.copy()
+    pairs["component_a"] = pairs["record_a"].astype(str).map(component_map)
+    pairs["component_b"] = pairs["record_b"].astype(str).map(component_map)
+    pairs = pairs.loc[pairs["component_a"].notna() & pairs["component_a"].eq(pairs["component_b"])].copy()
+    if pairs.empty:
+        summary["n_observed_member_pairs"] = 0
+        summary["n_passing_member_pairs"] = 0
+        summary["ani_radius_from_100"] = np.nan
+        summary["af_larger_radius_from_1"] = np.nan
+        return summary
+
+    for column in ["ani_mean", "af_min", "af_larger", "af_smaller"]:
+        if column in pairs.columns:
+            pairs[column] = pd.to_numeric(pairs[column], errors="coerce")
+    pairs["passes_threshold"] = pairs.get("passes_threshold", False).fillna(False).astype(bool)
+    passing_pairs = pairs.loc[pairs["passes_threshold"]].copy()
+
+    summary = summary.merge(
+        pairs.groupby("component_a").size().rename("n_observed_member_pairs"),
+        left_on="component_id",
+        right_index=True,
+        how="left",
+    )
+    summary = summary.merge(
+        passing_pairs.groupby("component_a").size().rename("n_passing_member_pairs"),
+        left_on="component_id",
+        right_index=True,
+        how="left",
+    )
+
+    if not passing_pairs.empty:
+        stats = (
+            passing_pairs.groupby("component_a")
+            .agg(
+                min_ani_mean=("ani_mean", "min"),
+                median_ani_mean=("ani_mean", "median"),
+                mean_ani_mean=("ani_mean", "mean"),
+                max_ani_mean=("ani_mean", "max"),
+                min_af_min=("af_min", "min"),
+                median_af_min=("af_min", "median"),
+                min_af_larger=("af_larger", "min"),
+                median_af_larger=("af_larger", "median"),
+                min_af_smaller=("af_smaller", "min"),
+                median_af_smaller=("af_smaller", "median"),
+            )
+            .reset_index()
+            .rename(columns={"component_a": "component_id"})
+        )
+        if "af_threshold_mode" in passing_pairs.columns:
+            mode_counts = (
+                passing_pairs.pivot_table(
+                    index="component_a",
+                    columns="af_threshold_mode",
+                    values="record_a",
+                    aggfunc="size",
+                    fill_value=0,
+                )
+                .reset_index()
+                .rename(columns={"component_a": "component_id"})
+            )
+            mode_counts = mode_counts.rename(
+                columns={
+                    "larger_af": "n_larger_af_mode_pairs",
+                    "smaller_contained_with_larger_floor": "n_containment_mode_pairs",
+                }
+            )
+            stats = stats.merge(mode_counts, on="component_id", how="left")
+        summary = summary.merge(stats, on="component_id", how="left")
+
+    for column in ["n_observed_member_pairs", "n_passing_member_pairs", "n_larger_af_mode_pairs", "n_containment_mode_pairs"]:
+        if column not in summary.columns:
+            summary[column] = 0
+        summary[column] = summary[column].fillna(0).astype(int)
+    if "min_ani_mean" in summary.columns:
+        summary["ani_radius_from_100"] = 100.0 - pd.to_numeric(summary["min_ani_mean"], errors="coerce")
+    else:
+        summary["ani_radius_from_100"] = np.nan
+    if "min_af_larger" in summary.columns:
+        summary["af_larger_radius_from_1"] = 1.0 - pd.to_numeric(summary["min_af_larger"], errors="coerce")
+    else:
+        summary["af_larger_radius_from_1"] = np.nan
+    return summary
 
 
 def summarize_fastani_matches(frame, pair_df, compare_column, ani_threshold, af_threshold):
@@ -1139,10 +1513,7 @@ def summarize_fastani_matches(frame, pair_df, compare_column, ani_threshold, af_
         lambda row: " | ".join([str(row["category_1"]), str(row["category_2"])]),
         axis=1,
     )
-    pair_summary["passes_threshold"] = (
-        pair_summary["ani_mean"].ge(ani_threshold)
-        & pair_summary["af_min"].ge(af_threshold)
-    )
+    pair_summary = apply_fastani_match_thresholds(pair_summary, ani_threshold, af_threshold)
 
     category_pair_summary = (
         pair_summary.groupby(["category_1", "category_2"], dropna=False)
@@ -1206,6 +1577,8 @@ def build_fastani_components(compare_df, pair_summary, compare_column):
     all_nodes = sorted(compare_df["ani_record_id"].astype(str).tolist())
     filtered_edges = pair_summary.loc[pair_summary["passes_threshold"], ["record_a", "record_b"]]
     edge_list = [tuple(row) for row in filtered_edges.itertuples(index=False, name=None)]
+    forced_edges = genesis_anchor_edges(compare_df, category_column=compare_column)
+    edge_list.extend(forced_edges)
     components = connected_components(all_nodes, edge_list)
     record_to_label = dict(
         zip(compare_df["ani_record_id"].astype(str), compare_df["Genome_Id"].astype(str))
@@ -1213,11 +1586,15 @@ def build_fastani_components(compare_df, pair_summary, compare_column):
 
     component_rows = []
     overlap_rows = []
+    component_map = {}
     for index, genomes in enumerate(components, start=1):
+        component_id = f"component_{index:04d}"
+        for genome in genomes:
+            component_map[genome] = component_id
         categories = sorted({record_to_category.get(genome, "Unassigned") for genome in genomes})
         component_rows.append(
             {
-                "component_id": f"component_{index:04d}",
+                "component_id": component_id,
                 "n_genomes": len(genomes),
                 "n_categories": len(categories),
                 "categories": ";".join(categories),
@@ -1227,7 +1604,7 @@ def build_fastani_components(compare_df, pair_summary, compare_column):
         )
         overlap_rows.append(
             {
-                "component_id": f"component_{index:04d}",
+                "component_id": component_id,
                 "categories": tuple(categories),
                 "overlap_key": " & ".join(categories),
                 "n_categories": len(categories),
@@ -1236,6 +1613,9 @@ def build_fastani_components(compare_df, pair_summary, compare_column):
         )
 
     component_df = pd.DataFrame(component_rows)
+    component_pair_stats = summarize_component_pair_stats(component_map, pair_summary, forced_edges=forced_edges)
+    if not component_pair_stats.empty:
+        component_df = component_df.merge(component_pair_stats, on="component_id", how="left")
     overlap_df = (
         pd.DataFrame(overlap_rows)
         .groupby(["overlap_key", "n_categories"], as_index=False)
@@ -1247,7 +1627,7 @@ def build_fastani_components(compare_df, pair_summary, compare_column):
     return component_df, overlap_df
 
 
-def component_map_from_pairs(compare_df, pair_summary):
+def component_map_from_pairs(compare_df, pair_summary, category_column=None):
     if compare_df.empty or "ani_record_id" not in compare_df.columns:
         return {}
 
@@ -1262,6 +1642,11 @@ def component_map_from_pairs(compare_df, pair_summary):
             for record_a, record_b in filtered_edges.itertuples(index=False, name=None)
             if record_a in node_set and record_b in node_set
         ]
+    edge_list.extend(
+        edge
+        for edge in genesis_anchor_edges(compare_df, category_column=category_column)
+        if edge[0] in node_set and edge[1] in node_set
+    )
     components = connected_components(all_nodes, edge_list)
     component_map = {}
     for index, nodes in enumerate(components, start=1):
@@ -1271,7 +1656,7 @@ def component_map_from_pairs(compare_df, pair_summary):
     return component_map
 
 
-def strict_component_map_from_pairs(compare_df, pair_summary, order_by=None, ascending=None):
+def strict_component_map_from_pairs(compare_df, pair_summary, order_by=None, ascending=None, category_column=None):
     if compare_df.empty or "ani_record_id" not in compare_df.columns:
         return {}
 
@@ -1294,6 +1679,14 @@ def strict_component_map_from_pairs(compare_df, pair_summary, order_by=None, asc
             if record_a in node_set and record_b in node_set and record_a != record_b:
                 adjacency[record_a].add(record_b)
                 adjacency[record_b].add(record_a)
+    forced_edges = [
+        edge
+        for edge in genesis_anchor_edges(working, category_column=category_column)
+        if edge[0] in node_set and edge[1] in node_set
+    ]
+    for record_a, record_b in forced_edges:
+        adjacency[record_a].add(record_b)
+        adjacency[record_b].add(record_a)
 
     remaining = set(ordered_nodes)
     component_map = {}
@@ -1315,7 +1708,7 @@ def strict_component_map_from_pairs(compare_df, pair_summary, order_by=None, asc
         component_index += 1
         for node in clique:
             component_map[node] = component_id
-    return component_map
+    return merge_component_map_with_forced_edges(component_map, forced_edges, "strict_component")
 
 
 def build_shared_best_genome_table(compare_df, pair_summary, compare_column):
@@ -1324,7 +1717,9 @@ def build_shared_best_genome_table(compare_df, pair_summary, compare_column):
 
     working = compare_df.copy()
     working["ani_record_id"] = working["ani_record_id"].astype(str)
-    working["component_id"] = working["ani_record_id"].map(component_map_from_pairs(working, pair_summary))
+    working["component_id"] = working["ani_record_id"].map(
+        component_map_from_pairs(working, pair_summary, category_column=compare_column)
+    )
     working = working.dropna(subset=["component_id"]).copy()
     if working.empty:
         return pd.DataFrame()
@@ -1412,12 +1807,30 @@ def capped_feature_score(series):
 
 
 def mimag_tier(frame):
-    tiers = np.full(len(frame), "low", dtype=object)
-    medium = (frame["Completeness"] >= 50) & (frame["Contamination"] < 10)
-    high = (frame["Completeness"] > 90) & (frame["Contamination"] < 5)
+    tiers = np.full(len(frame), "failed", dtype=object)
+
+    completeness = pd.to_numeric(frame["Completeness"], errors="coerce")
+    contamination = pd.to_numeric(frame["Contamination"], errors="coerce")
+    rrna_16s = pd.to_numeric(frame.get("rrna_16S_score", 0), errors="coerce").fillna(0)
+    rrna_23s = pd.to_numeric(frame.get("rrna_23S_score", 0), errors="coerce").fillna(0)
+    rrna_5s = pd.to_numeric(frame.get("rrna_5S_score", 0), errors="coerce").fillna(0)
+    trna_ge_18 = pd.to_numeric(frame.get("trna_ge_18", 0), errors="coerce").fillna(0).ge(1)
+
+    low = completeness.lt(50) & contamination.lt(10)
+    medium = completeness.ge(50) & contamination.lt(10)
+    # Strict MIMAG/MISAG HQ requires high assembly quality plus full hallmark recovery.
+    high = (
+        completeness.gt(90)
+        & contamination.lt(5)
+        & rrna_16s.ge(1)
+        & rrna_23s.ge(1)
+        & rrna_5s.ge(1)
+        & trna_ge_18
+    )
+    tiers[low] = "low"
     tiers[medium] = "medium"
     tiers[high] = "high"
-    return pd.Categorical(tiers, categories=["low", "medium", "high"], ordered=True)
+    return pd.Categorical(tiers, categories=["failed", "low", "medium", "high"], ordered=True)
 
 
 def compute_quality_index(frame):
@@ -1510,6 +1923,7 @@ def summarize(frame, group_column=None):
                 "high_quality_n": int((frame["mimag_tier"] == "high").sum()),
                 "medium_quality_n": int((frame["mimag_tier"] == "medium").sum()),
                 "low_quality_n": int((frame["mimag_tier"] == "low").sum()),
+                "failed_quality_n": int((frame["mimag_tier"] == "failed").sum()),
             }
         ]
     )
@@ -2246,6 +2660,263 @@ def atlas_single_metric_specs(compare_df):
     return [(metric, label) for metric, label in specs if metric in compare_df.columns and pd.to_numeric(compare_df[metric], errors="coerce").notna().any()]
 
 
+def atlas_benchmark_metric_specs(compare_df):
+    specs = [
+        (SCORE_COLUMN, "Qscore"),
+        ("Completeness", "Completeness (%)"),
+        ("Contamination", "Contamination (%)"),
+        ("integrity_score", "Integrity"),
+        ("recoverability_score", "Recoverability"),
+        ("mimag_quality_index", "MIMAG quality index"),
+    ]
+    return [
+        (metric, label)
+        for metric, label in specs
+        if metric in compare_df.columns and pd.to_numeric(compare_df[metric], errors="coerce").notna().any()
+    ]
+
+
+def metric_interval_summary(values, summary_mode="median"):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return None
+    if summary_mode == "mean":
+        mean_value = float(np.nanmean(values))
+        if values.size > 1:
+            ci_delta = 1.96 * float(np.nanstd(values, ddof=1)) / math.sqrt(float(values.size))
+        else:
+            ci_delta = 0.0
+        return {
+            "point": mean_value,
+            "low": mean_value - ci_delta,
+            "high": mean_value + ci_delta,
+        }
+    return {
+        "point": float(np.nanmedian(values)),
+        "low": float(np.nanpercentile(values, 25)),
+        "high": float(np.nanpercentile(values, 75)),
+    }
+
+
+def style_benchmark_axis(ax, metric):
+    ax.grid(axis="x", color="#e5e5e5", linestyle="-", linewidth=0.7, zorder=0)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#2f2f2f")
+    ax.spines["bottom"].set_color("#2f2f2f")
+    ax.tick_params(axis="both", labelsize=9, colors="#2f2f2f")
+    if metric in {"integrity_score", "recoverability_score", "mimag_quality_index"}:
+        ax.set_xlim(-0.03, 1.03)
+    elif metric in {"Completeness"}:
+        ax.set_xlim(0, 103)
+    elif metric in {"Contamination"}:
+        left, right = ax.get_xlim()
+        ax.set_xlim(max(0, left), right)
+
+
+def benchmark_significance_subset(metric, stats_df):
+    if stats_df is None or stats_df.empty or "metric" not in stats_df.columns:
+        return pd.DataFrame()
+    subset = stats_df.loc[stats_df["metric"].astype(str).eq(str(metric))].copy()
+    if "analysis_scope" in subset.columns:
+        subset = subset.loc[subset["analysis_scope"].astype(str).str.endswith("_pairwise")].copy()
+    if "significant_q05" in subset.columns:
+        subset = subset.loc[subset["significant_q05"].fillna(False)].copy()
+    elif "qvalue_bh" in subset.columns:
+        subset = subset.loc[pd.to_numeric(subset["qvalue_bh"], errors="coerce").lt(0.05)].copy()
+    elif "pvalue" in subset.columns:
+        subset = subset.loc[pd.to_numeric(subset["pvalue"], errors="coerce").lt(0.05)].copy()
+    else:
+        subset = pd.DataFrame()
+    return subset
+
+
+def add_benchmark_significance_brackets(ax, metric, summaries, order, stats_df):
+    subset = benchmark_significance_subset(metric, stats_df)
+    if subset.empty:
+        return
+    if "group_a" not in subset.columns or "group_b" not in subset.columns:
+        return
+
+    position_map = {category: float(index) for index, category in enumerate(order)}
+    subset["span"] = subset.apply(
+        lambda row: abs(position_map.get(str(row.get("group_b", "")), 0.0) - position_map.get(str(row.get("group_a", "")), 0.0)),
+        axis=1,
+    )
+    sort_columns = ["span"]
+    ascending = [True]
+    if "qvalue_bh" in subset.columns:
+        sort_columns.append("qvalue_bh")
+        ascending.append(True)
+    subset = subset.sort_values(by=sort_columns, ascending=ascending, kind="mergesort")
+
+    occupied = []
+    brackets = []
+    max_level = 0
+    for row in subset.to_dict("records"):
+        group_a = str(row.get("group_a", ""))
+        group_b = str(row.get("group_b", ""))
+        if group_a not in position_map or group_b not in position_map:
+            continue
+        y1 = position_map[group_a]
+        y2 = position_map[group_b]
+        if y1 == y2:
+            continue
+        if y1 > y2:
+            y1, y2 = y2, y1
+        star_label = str(row.get("significance", "") or row.get("significance_stars", "") or "").strip()
+        if not star_label:
+            star_label = atlas_significance_stars(row.get("qvalue_bh", row.get("pvalue", np.nan))) or "*"
+        star_count = len(star_label) if set(star_label) == {"*"} else 1
+        star_half_height = max(0.12, 0.075 * float(star_count))
+        label_center = (y1 + y2) / 2.0
+        footprint_start = min(y1, label_center - star_half_height)
+        footprint_end = max(y2, label_center + star_half_height)
+        level = 0
+        while any(
+            not (footprint_end < start or footprint_start > end) and used_level == level
+            for start, end, used_level in occupied
+        ):
+            level += 1
+        occupied.append((footprint_start, footprint_end, level))
+        max_level = max(max_level, level)
+        brackets.append((y1, y2, level, star_label))
+
+    if not brackets:
+        return
+
+    transform = ax.get_yaxis_transform()
+    x_start = 1.025
+    x_gap = 0.075
+    tick = 0.018
+    for y1, y2, level, star_label in brackets:
+        x = x_start + (level * x_gap)
+        vertical_stars = "\n".join(star_label) if set(star_label) == {"*"} else star_label
+        ax.plot(
+            [x, x + tick, x + tick, x],
+            [y1, y1, y2, y2],
+            color="black",
+            linewidth=0.8,
+            transform=transform,
+            clip_on=False,
+            zorder=4,
+        )
+        ax.text(
+            x + tick + 0.012,
+            (y1 + y2) / 2.0,
+            vertical_stars,
+            ha="left",
+            va="center",
+            fontsize=8,
+            linespacing=0.65,
+            transform=transform,
+            clip_on=False,
+            zorder=5,
+        )
+
+
+def export_compare_benchmark_metric_panel(compare_df, compare_column, compare_base, stats_df=None):
+    ensure_plotting()
+    if compare_df.empty or compare_column not in compare_df.columns:
+        return []
+    order = category_order(compare_df, compare_column)
+    metric_specs = atlas_benchmark_metric_specs(compare_df)
+    if not order or not metric_specs:
+        return []
+
+    output_dir = Path(compare_base + "_single_metrics")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    wrote = []
+
+    mode_specs = [
+        ("median", "median_iqr", "median", "interquartile ranges", False),
+        ("median", "median_iqr_sig", "median", "interquartile ranges", True),
+        ("mean", "mean_ci95", "mean", "approximate 95% confidence intervals", False),
+        ("mean", "mean_ci95_sig", "mean", "approximate 95% confidence intervals", True),
+    ]
+    for summary_mode, suffix, point_label, interval_label, show_significance in mode_specs:
+        n_cols = 3 if len(metric_specs) > 4 else 2
+        n_rows = int(math.ceil(len(metric_specs) / float(n_cols)))
+        fig, axes = plt.subplots(
+            n_rows,
+            n_cols,
+            figsize=(max(11.5, n_cols * 4.1), max(6.5, n_rows * 3.0)),
+            squeeze=False,
+        )
+        axes = axes.ravel()
+        y_positions = np.arange(len(order), dtype=float)
+        palette = grayscale_palette(len(order), start=0.18, stop=0.72)
+        category_colors = dict(zip(order, palette))
+
+        for ax, (metric, label) in zip(axes, metric_specs):
+            grouped_values = compare_metric_grouped_values(compare_df, compare_column, metric, order)
+            summaries = [
+                metric_interval_summary(values, summary_mode=summary_mode)
+                for values in grouped_values
+            ]
+            if not any(summary is not None for summary in summaries):
+                ax.axis("off")
+                continue
+
+            for y_pos, category, summary in zip(y_positions, order, summaries):
+                if summary is None:
+                    continue
+                color = category_colors[category]
+                ax.hlines(
+                    y_pos,
+                    summary["low"],
+                    summary["high"],
+                    color=color,
+                    linewidth=3.0,
+                    zorder=2,
+                )
+                ax.scatter(
+                    summary["point"],
+                    y_pos,
+                    s=58,
+                    color=color,
+                    edgecolors="black",
+                    linewidths=0.75,
+                    zorder=3,
+                )
+
+            ax.set_yticks(y_positions)
+            ax.set_yticklabels(order)
+            ax.invert_yaxis()
+            ax.set_title(label, fontsize=11, fontweight="bold", pad=8)
+            ax.set_xlabel(label, fontsize=9)
+            style_benchmark_axis(ax, metric)
+            if show_significance:
+                add_benchmark_significance_brackets(ax, metric, summaries, order, stats_df)
+
+        for index in range(len(metric_specs), len(axes)):
+            axes[index].axis("off")
+
+        fig.suptitle(
+            f"Genome quality benchmark by {compare_column} ({point_label}{'; significant pairs' if show_significance else ''})",
+            fontsize=15,
+            fontweight="bold",
+            y=0.995,
+        )
+        fig.text(
+            0.5,
+            0.018,
+            f"Points show category {point_label}s; horizontal intervals show {interval_label}."
+            + (" Stars mark BH-adjusted pairwise q<0.05." if show_significance else ""),
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color="#4d4d4d",
+        )
+        fig.tight_layout(rect=[0, 0.045, 1, 0.96], w_pad=2.4, h_pad=2.1)
+        out_base = output_dir / f"{Path(compare_base).name}_benchmark_metric_panel_{suffix}"
+        save_figure(fig, str(out_base))
+        wrote.extend([str(out_base) + ".png", str(out_base) + ".pdf"])
+    return wrote
+
+
 def export_compare_single_metric_plots(compare_df, compare_column, compare_base, stats_df=None):
     ensure_plotting()
     if compare_df.empty or compare_column not in compare_df.columns:
@@ -2274,6 +2945,8 @@ def export_compare_single_metric_plots(compare_df, compare_column, compare_base,
         wrote.extend([str(out_base) + ".png", str(out_base) + ".pdf"])
     hallmark_paths = export_compare_hallmark_bar_plot(compare_df, compare_column, compare_base, stats_df=stats_df)
     wrote.extend(hallmark_paths)
+    benchmark_paths = export_compare_benchmark_metric_panel(compare_df, compare_column, compare_base, stats_df=stats_df)
+    wrote.extend(benchmark_paths)
     return wrote
 
 
@@ -2957,12 +3630,13 @@ def build_best_sample_method_set_from_ani(
         pair_summary = pair_summary.loc[
             pair_summary["sample_a"].astype(str).eq(pair_summary["sample_b"].astype(str))
         ].copy()
-        pair_summary["passes_threshold"] = (
-            pd.to_numeric(pair_summary["ani_mean"], errors="coerce").ge(ani_threshold)
-            & pd.to_numeric(pair_summary["af_min"], errors="coerce").ge(ani_af_threshold)
+        pair_summary = apply_fastani_match_thresholds(
+            pair_summary,
+            ani_threshold,
+            ani_af_threshold,
         )
 
-    tier_rank = {"high": 0, "medium": 1, "low": 2}
+    tier_rank = {"high": 0, "medium": 1, "low": 2, "failed": 3}
     working["__mimag_rank"] = (
         working["mimag_tier"].astype(str).str.lower().map(tier_rank).fillna(3).astype(int)
     )
@@ -2996,6 +3670,7 @@ def build_best_sample_method_set_from_ani(
             subset_pairs,
             order_by=cluster_sort_columns,
             ascending=cluster_sort_ascending,
+            category_column=compare_column,
         )
         for record_id, local_component in local_component_map.items():
             record_to_component[str(record_id)] = f"{sample_value}|{local_component}"
@@ -3076,7 +3751,7 @@ def build_best_sample_method_set(compare_df, compare_column, sample_column=None,
     if working.empty:
         return None, selected_sample
 
-    tier_rank = {"high": 0, "medium": 1, "low": 2}
+    tier_rank = {"high": 0, "medium": 1, "low": 2, "failed": 3}
     working["__mimag_rank"] = (
         working["mimag_tier"].astype(str).str.lower().map(tier_rank).fillna(3).astype(int)
     )
@@ -3364,6 +4039,213 @@ def run_sample_count_tests(sample_counts, compare_column, sample_column):
             }
         )
     return annotate_pairwise_comparisons(pd.DataFrame(results)) if results else None
+
+
+def build_phylum_representation_tables(
+    compare_df,
+    compare_column,
+    sample_column=None,
+    min_total_count=5,
+):
+    selected_sample = choose_sample_column(compare_df, sample_column)
+    if not selected_sample or selected_sample not in compare_df.columns:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), selected_sample
+    if "Phylum" not in compare_df.columns:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), selected_sample
+
+    working = compare_df.copy()
+    working[selected_sample] = working[selected_sample].fillna("").astype(str).str.strip()
+    working[compare_column] = working[compare_column].fillna("").astype(str).str.strip()
+    working["phylum"] = resolve_grouping_series(working, "Phylum").fillna("").astype(str).str.strip()
+    working = working.loc[
+        working[selected_sample].ne("")
+        & working[compare_column].ne("")
+        & working["phylum"].ne("")
+        & ~working["phylum"].str.lower().isin({"nan", "none", "null", "unclassified_unknown"})
+        & ~working["phylum"].str.startswith("unclassified_")
+    ].copy()
+    if working.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), selected_sample
+
+    categories = category_order(working, compare_column)
+    if len(categories) < 2:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), selected_sample
+
+    totals = (
+        working.groupby([selected_sample, compare_column])
+        .size()
+        .rename("category_sample_total_genomes")
+        .reset_index()
+    )
+    counts = (
+        working.groupby([selected_sample, compare_column, "phylum"])
+        .size()
+        .rename("phylum_genomes")
+        .reset_index()
+    )
+    sample_category_index = totals[[selected_sample, compare_column]].drop_duplicates()
+    phylum_totals = working["phylum"].value_counts()
+    eligible_phyla = sorted(phylum_totals.loc[phylum_totals >= int(min_total_count)].index.tolist())
+    if not eligible_phyla:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), selected_sample
+
+    full_index = (
+        sample_category_index.assign(__key=1)
+        .merge(pd.DataFrame({"phylum": eligible_phyla, "__key": 1}), on="__key", how="inner")
+        .drop(columns=["__key"])
+    )
+    fraction_df = (
+        full_index.merge(counts, on=[selected_sample, compare_column, "phylum"], how="left")
+        .merge(totals, on=[selected_sample, compare_column], how="left")
+    )
+    fraction_df["phylum_genomes"] = fraction_df["phylum_genomes"].fillna(0).astype(int)
+    fraction_df["category_sample_total_genomes"] = fraction_df["category_sample_total_genomes"].fillna(0).astype(int)
+    fraction_df["phylum_fraction"] = np.where(
+        fraction_df["category_sample_total_genomes"].gt(0),
+        fraction_df["phylum_genomes"] / fraction_df["category_sample_total_genomes"],
+        np.nan,
+    )
+    fraction_df["phylum_total_genomes"] = fraction_df["phylum"].map(phylum_totals).astype(int)
+    fraction_df["min_total_count"] = int(min_total_count)
+    fraction_df = fraction_df.sort_values(
+        by=["phylum", selected_sample, compare_column],
+        key=lambda col: col.map({category: index for index, category in enumerate(categories)}) if col.name == compare_column else col,
+        kind="mergesort",
+    ).reset_index(drop=True)
+
+    summary_df = (
+        fraction_df.groupby(["phylum", compare_column], dropna=False)
+        .agg(
+            n_samples=(selected_sample, "nunique"),
+            total_phylum_genomes=("phylum_genomes", "sum"),
+            total_category_genomes=("category_sample_total_genomes", "sum"),
+            median_phylum_fraction=("phylum_fraction", "median"),
+            mean_phylum_fraction=("phylum_fraction", "mean"),
+            min_phylum_fraction=("phylum_fraction", "min"),
+            max_phylum_fraction=("phylum_fraction", "max"),
+            phylum_total_genomes=("phylum_total_genomes", "max"),
+        )
+        .reset_index()
+    )
+    order_map = {category: index for index, category in enumerate(categories)}
+    summary_df["__category_order"] = summary_df[compare_column].map(order_map).fillna(len(order_map)).astype(int)
+    summary_df = (
+        summary_df.sort_values(by=["phylum", "__category_order"], kind="mergesort")
+        .drop(columns=["__category_order"])
+        .reset_index(drop=True)
+    )
+
+    try:
+        from scipy import stats
+    except ImportError:
+        warnings.warn(
+            "scipy is not installed; skipping sample-blocked phylum representation tests.",
+            RuntimeWarning,
+        )
+        return fraction_df, summary_df, pd.DataFrame(), pd.DataFrame(), selected_sample
+
+    friedman_rows = []
+    pairwise_rows = []
+    for phylum in eligible_phyla:
+        phylum_df = fraction_df.loc[fraction_df["phylum"].eq(phylum)].copy()
+        pivot = phylum_df.pivot_table(
+            index=selected_sample,
+            columns=compare_column,
+            values="phylum_fraction",
+            aggfunc="first",
+        )
+        pivot.columns = pivot.columns.astype(str)
+        available_categories = [category for category in categories if category in pivot.columns]
+        if len(available_categories) < 2:
+            continue
+        full_pivot = pivot[available_categories].dropna()
+        if full_pivot.shape[0] >= 2 and full_pivot.shape[1] >= 2:
+            try:
+                statistic, pvalue = stats.friedmanchisquare(
+                    *[full_pivot[column] for column in full_pivot.columns]
+                )
+            except ValueError:
+                statistic, pvalue = np.nan, np.nan
+            max_category = full_pivot.median(axis=0).idxmax()
+            min_category = full_pivot.median(axis=0).idxmin()
+            friedman_rows.append(
+                {
+                    "analysis_scope": "sample_blocked_phylum_fraction_global",
+                    "test": "Friedman",
+                    "rank": "Phylum",
+                    "phylum": phylum,
+                    "metric": "phylum_fraction",
+                    "sample_column": selected_sample,
+                    "group_column": compare_column,
+                    "n_samples": int(full_pivot.shape[0]),
+                    "n_groups": int(full_pivot.shape[1]),
+                    "groups": ";".join(map(str, full_pivot.columns.tolist())),
+                    "max_median_category": max_category,
+                    "min_median_category": min_category,
+                    "max_minus_min_median_fraction": float(full_pivot[max_category].median() - full_pivot[min_category].median()),
+                    "statistic": statistic,
+                    "pvalue": pvalue,
+                    "phylum_total_genomes": int(phylum_totals.get(phylum, 0)),
+                    "min_total_count": int(min_total_count),
+                }
+            )
+        for group_a, group_b in itertools.combinations(available_categories, 2):
+            pair_pivot = pivot[[group_a, group_b]].dropna()
+            if pair_pivot.shape[0] < 2:
+                continue
+            differences = pair_pivot[group_a] - pair_pivot[group_b]
+            if np.allclose(differences.fillna(0).to_numpy(dtype=float), 0.0):
+                statistic, pvalue = 0.0, 1.0
+            else:
+                try:
+                    statistic, pvalue = stats.wilcoxon(
+                        pair_pivot[group_a],
+                        pair_pivot[group_b],
+                        alternative="two-sided",
+                    )
+                except ValueError:
+                    statistic, pvalue = np.nan, np.nan
+            median_a = float(pair_pivot[group_a].median())
+            median_b = float(pair_pivot[group_b].median())
+            mean_a = float(pair_pivot[group_a].mean())
+            mean_b = float(pair_pivot[group_b].mean())
+            pairwise_rows.append(
+                {
+                    "analysis_scope": "sample_blocked_phylum_fraction_pairwise",
+                    "test": "Wilcoxon signed-rank",
+                    "rank": "Phylum",
+                    "phylum": phylum,
+                    "metric": "phylum_fraction",
+                    "sample_column": selected_sample,
+                    "group_column": compare_column,
+                    "group_a": group_a,
+                    "group_b": group_b,
+                    "n_samples": int(pair_pivot.shape[0]),
+                    "group_a_median": median_a,
+                    "group_b_median": median_b,
+                    "group_a_mean": mean_a,
+                    "group_b_mean": mean_b,
+                    "median_difference_a_minus_b": float(differences.median()),
+                    "mean_difference_a_minus_b": float(differences.mean()),
+                    "winner_by_median": group_a if median_a > median_b else group_b if median_b > median_a else "tie",
+                    "statistic": statistic,
+                    "pvalue": pvalue,
+                    "phylum_total_genomes": int(phylum_totals.get(phylum, 0)),
+                    "min_total_count": int(min_total_count),
+                }
+            )
+
+    friedman_df = pd.DataFrame(friedman_rows)
+    if not friedman_df.empty:
+        friedman_df["qvalue_bh"] = benjamini_hochberg_adjust(friedman_df["pvalue"])
+        friedman_df["significant_p05"] = pd.to_numeric(friedman_df["pvalue"], errors="coerce").lt(0.05)
+        friedman_df["significant_q05"] = pd.to_numeric(friedman_df["qvalue_bh"], errors="coerce").lt(0.05)
+    pairwise_df = annotate_pairwise_comparisons(pd.DataFrame(pairwise_rows)) if pairwise_rows else pd.DataFrame()
+    if not pairwise_df.empty:
+        pairwise_df["qvalue_bh"] = benjamini_hochberg_adjust(pairwise_df["pvalue"])
+        pairwise_df["significant_p05"] = pd.to_numeric(pairwise_df["pvalue"], errors="coerce").lt(0.05)
+        pairwise_df["significant_q05"] = pd.to_numeric(pairwise_df["qvalue_bh"], errors="coerce").lt(0.05)
+    return fraction_df, summary_df, friedman_df, pairwise_df, selected_sample
 
 
 def benjamini_hochberg_adjust(series):
@@ -4216,6 +5098,41 @@ def save_compare_outputs(
         sep="\t",
         index=False,
     )
+    (
+        phylum_fraction_df,
+        phylum_summary_df,
+        phylum_friedman_df,
+        phylum_pairwise_df,
+        phylum_sample_column,
+    ) = build_phylum_representation_tables(
+        compare_df,
+        compare_column,
+        sample_column=sample_column,
+    )
+    if phylum_fraction_df is not None and not phylum_fraction_df.empty:
+        phylum_fraction_df.to_csv(
+            compare_base + "_phylum_representation_sample_fraction_summary.tsv",
+            sep="\t",
+            index=False,
+        )
+    if phylum_summary_df is not None and not phylum_summary_df.empty:
+        phylum_summary_df.to_csv(
+            compare_base + "_phylum_representation_summary.tsv",
+            sep="\t",
+            index=False,
+        )
+    if phylum_friedman_df is not None and not phylum_friedman_df.empty:
+        phylum_friedman_df.to_csv(
+            compare_base + "_phylum_representation_friedman_significance.tsv",
+            sep="\t",
+            index=False,
+        )
+    if phylum_pairwise_df is not None and not phylum_pairwise_df.empty:
+        phylum_pairwise_df.to_csv(
+            compare_base + "_phylum_representation_pairwise_significance.tsv",
+            sep="\t",
+            index=False,
+        )
     stats_df = run_nonparametric_test(compare_df, compare_column)
     if stats_df is not None:
         stats_df.to_csv(compare_base + "_stats.tsv", sep="\t", index=False)
@@ -4384,6 +5301,14 @@ def save_compare_outputs(
         wrote_files.append(compare_base + "_gunc_chimerism_summary.tsv")
     if variant_filter_audit_df is not None and not variant_filter_audit_df.empty:
         wrote_files.append(compare_base + "_variant_filter_audit.tsv")
+    if phylum_fraction_df is not None and not phylum_fraction_df.empty:
+        wrote_files.append(compare_base + "_phylum_representation_sample_fraction_summary.tsv")
+    if phylum_summary_df is not None and not phylum_summary_df.empty:
+        wrote_files.append(compare_base + "_phylum_representation_summary.tsv")
+    if phylum_friedman_df is not None and not phylum_friedman_df.empty:
+        wrote_files.append(compare_base + "_phylum_representation_friedman_significance.tsv")
+    if phylum_pairwise_df is not None and not phylum_pairwise_df.empty:
+        wrote_files.append(compare_base + "_phylum_representation_pairwise_significance.tsv")
     if stats_df is not None:
         wrote_files.append(compare_base + "_stats.tsv")
     if sample_count_stats is not None:
@@ -4780,8 +5705,18 @@ def summarize_ani_component_counts(compare_df, pair_summary, compare_column):
 
     all_nodes = sorted(compare_df["ani_record_id"].astype(str).tolist())
     node_set = set(all_nodes)
+    forced_edges = [
+        edge
+        for edge in genesis_anchor_edges(compare_df, category_column=compare_column)
+        if edge[0] in node_set and edge[1] in node_set
+    ]
     if pair_summary.empty:
-        component_map = {node: f"component_{index:04d}" for index, node in enumerate(all_nodes, start=1)}
+        components = connected_components(all_nodes, forced_edges)
+        component_map = {}
+        for index, nodes in enumerate(components, start=1):
+            component_id = f"component_{index:04d}"
+            for node in nodes:
+                component_map[node] = component_id
     else:
         filtered_edges = pair_summary.loc[pair_summary["passes_threshold"], ["record_a", "record_b"]]
         edge_list = [
@@ -4789,6 +5724,7 @@ def summarize_ani_component_counts(compare_df, pair_summary, compare_column):
             for record_a, record_b in filtered_edges.itertuples(index=False, name=None)
             if record_a in node_set and record_b in node_set
         ]
+        edge_list.extend(forced_edges)
         components = connected_components(all_nodes, edge_list)
         component_map = {}
         for index, nodes in enumerate(components, start=1):

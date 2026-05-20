@@ -1185,7 +1185,7 @@ def gunc_confident_call_mask(series):
 def select_best_per_component(frame, pair_summary, atlas_module, category_column, sample_column):
     working = frame.copy()
     working["ani_record_id"] = working["ani_record_id"].astype(str)
-    tier_rank = {"high": 0, "medium": 1, "low": 2}
+    tier_rank = {"high": 0, "medium": 1, "low": 2, "failed": 3}
     working["__mimag_rank"] = (
         working["mimag_tier"]
         .astype(str)
@@ -1223,13 +1223,21 @@ def select_best_per_component(frame, pair_summary, atlas_module, category_column
             pair_summary,
             order_by=sort_columns,
             ascending=sort_ascending,
+            category_column=category_column,
         )
     else:
-        component_map = atlas_module.component_map_from_pairs(working, pair_summary)
+        component_map = atlas_module.component_map_from_pairs(
+            working,
+            pair_summary,
+            category_column=category_column,
+        )
     working["component_id"] = working["ani_record_id"].map(component_map)
     working = working.dropna(subset=["component_id"]).copy()
     if working.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    forced_edges = []
+    if hasattr(atlas_module, "genesis_anchor_edges"):
+        forced_edges = atlas_module.genesis_anchor_edges(working, category_column=category_column)
 
     component_categories = (
         working.groupby("component_id")[category_column]
@@ -1342,6 +1350,14 @@ def select_best_per_component(frame, pair_summary, atlas_module, category_column
         .reset_index()
     )
     component_summary = component_summary.merge(tier_counts, on="component_id", how="left")
+    if hasattr(atlas_module, "summarize_component_pair_stats"):
+        component_pair_stats = atlas_module.summarize_component_pair_stats(
+            component_map,
+            pair_summary,
+            forced_edges=forced_edges,
+        )
+        if component_pair_stats is not None and not component_pair_stats.empty:
+            component_summary = component_summary.merge(component_pair_stats, on="component_id", how="left")
     component_summary = component_summary.merge(winner_table, on="component_id", how="left")
 
     member_table = member_table.drop(
@@ -1371,6 +1387,80 @@ def select_best_per_component(frame, pair_summary, atlas_module, category_column
         errors="ignore",
     )
     return selected, member_table, component_summary
+
+
+def select_best_per_component_category(member_table, atlas_module, category_column):
+    ensure_pandas()
+    if member_table is None or member_table.empty:
+        return pd.DataFrame()
+    required = {"component_id", category_column, "ani_record_id"}
+    if not required.issubset(set(member_table.columns)):
+        return pd.DataFrame()
+
+    working = member_table.copy()
+    working["ani_record_id"] = working["ani_record_id"].astype(str)
+    working["component_id"] = working["component_id"].astype(str).str.strip()
+    working[category_column] = working[category_column].astype(str).str.strip()
+    working = working.loc[
+        working["component_id"].ne("")
+        & working[category_column].ne("")
+        & working["ani_record_id"].ne("")
+    ].copy()
+    if working.empty:
+        return pd.DataFrame()
+
+    tier_rank = {"high": 0, "medium": 1, "low": 2}
+    working["__mimag_rank"] = (
+        working["mimag_tier"]
+        .astype(str)
+        .str.lower()
+        .map(tier_rank)
+        .fillna(3)
+        .astype(int)
+        if "mimag_tier" in working.columns else 3
+    )
+    working["__integrity_bin"] = coarse_quality_bin(working.get("integrity_score"), 0.02)
+    working["__recoverability_bin"] = coarse_quality_bin(working.get("recoverability_score"), 0.02)
+    working["__qscore_bin"] = coarse_quality_bin(working.get("qscore"), 5.0)
+    working["__has_16s"] = best_set_has_16s(working)
+    if "gunc_strict_assessment" in working.columns:
+        working["__gunc_strict_rank"] = gunc_assessment_rank(working["gunc_strict_assessment"])
+
+    sort_specs = [
+        ("__mimag_rank", True),
+        ("__gunc_strict_rank", True),
+        ("__integrity_bin", False),
+        ("__recoverability_bin", False),
+        ("__qscore_bin", False),
+        ("__has_16s", False),
+        ("integrity_score", False),
+        ("recoverability_score", False),
+        ("qscore", False),
+        ("Completeness", False),
+        ("Contamination", True),
+        ("Genome_Id", True),
+        ("Bin Id", True),
+    ]
+    sort_columns = [column for column, _ in sort_specs if column in working.columns]
+    sort_ascending = [ascending for column, ascending in sort_specs if column in working.columns]
+    if sort_columns:
+        working = working.sort_values(by=sort_columns, ascending=sort_ascending, kind="mergesort")
+
+    selected = (
+        working.groupby(["component_id", category_column], as_index=False, sort=False)
+        .head(1)
+        .copy()
+        .reset_index(drop=True)
+    )
+    selected["species_cluster_selection"] = "best_genome_per_category_per_component"
+    selected["best_selection_metric"] = (
+        "ani_strict_component+category>mimag_tier>"
+        "gunc(class_gate_only)>"
+        "coarse(integrity,recoverability,qscore)>16S_presence>"
+        "integrity>recoverability>qscore>completeness>contamination"
+    )
+    selected = selected.drop(columns=[column for column in selected.columns if column.startswith("__")], errors="ignore")
+    return selected
 
 
 def summarize_selected_set(selected, source_frame, sample_column, category_column):
@@ -2227,6 +2317,81 @@ def write_best_set_review_tables(review_entries, output_dir):
     ]
 
 
+def export_species_cluster_category_set(
+    member_table_path,
+    destination_dir,
+    python_exe,
+    atlas_script,
+    atlas_prefix,
+    group_column,
+    top_n_groups,
+    category_column,
+    sample_column,
+    atlas_module,
+):
+    ensure_pandas()
+    member_table = pd.read_csv(member_table_path, sep="\t")
+    selected = select_best_per_component_category(member_table, atlas_module, category_column)
+    if selected.empty:
+        log_step("[warn] species-cluster category atlas skipped: no category representatives selected")
+        return []
+
+    selected_dir = os.path.join(destination_dir, "selected_set")
+    audit_dir = os.path.join(destination_dir, "audit")
+    os.makedirs(selected_dir, exist_ok=True)
+    os.makedirs(audit_dir, exist_ok=True)
+
+    copied_fasta_df = copy_selected_fastas(
+        selected,
+        selected_dir,
+        include_sample=True,
+    )
+    if not copied_fasta_df.empty:
+        selected = selected.merge(copied_fasta_df, on="ani_record_id", how="left")
+
+    selected_audit_path = os.path.join(audit_dir, "selected_genomes.tsv")
+    selected_master_path = os.path.join(selected_dir, "master.tsv")
+    selected_summary_path = os.path.join(audit_dir, "selected_category_summary.tsv")
+    selected.to_csv(selected_audit_path, sep="\t", index=False)
+    selected.to_csv(selected_master_path, sep="\t", index=False)
+
+    summary = (
+        selected.groupby(category_column, dropna=False)
+        .agg(
+            n_selected_genomes=("ani_record_id", "size"),
+            n_species_clusters=("component_id", "nunique"),
+            median_qscore=("qscore", "median"),
+            mean_qscore=("qscore", "mean"),
+        )
+        .reset_index()
+        if category_column in selected.columns else pd.DataFrame()
+    )
+    summary.to_csv(selected_summary_path, sep="\t", index=False)
+
+    atlas_output_dir = os.path.join(selected_dir, "genome_atlas")
+    os.makedirs(atlas_output_dir, exist_ok=True)
+    run_selected_set_atlas(
+        python_exe=python_exe,
+        atlas_script=atlas_script,
+        master_path=selected_master_path,
+        output_dir=atlas_output_dir,
+        prefix=atlas_prefix,
+        group_column=group_column,
+        top_n_groups=top_n_groups,
+        category_column=category_column,
+        sample_column=sample_column,
+    )
+    return [
+        destination_dir,
+        selected_dir,
+        audit_dir,
+        selected_audit_path,
+        selected_master_path,
+        selected_summary_path,
+        atlas_output_dir,
+    ]
+
+
 def export_best_sets(
     output_dir,
     combined_master_path,
@@ -2378,6 +2543,32 @@ def export_best_sets(
         }
     )
     log_step(f"[done] best-of-best export: {best_global_root}")
+
+    species_cluster_root = os.path.join(output_dir, "species_cluster_category_best")
+    global_member_table_path = os.path.join(best_global_root, "audit", "component_members.tsv")
+    if os.path.exists(global_member_table_path):
+        log_step("[start] species-cluster category-best atlas export")
+        species_cluster_paths = export_species_cluster_category_set(
+            member_table_path=global_member_table_path,
+            destination_dir=species_cluster_root,
+            python_exe=python_exe,
+            atlas_script=atlas_script,
+            atlas_prefix="genome_quality_species_cluster",
+            group_column=group_column,
+            top_n_groups=top_n_groups,
+            category_column=category_column,
+            sample_column=sample_column,
+            atlas_module=atlas_module,
+        )
+        written_paths.extend(species_cluster_paths)
+        if species_cluster_paths:
+            log_step(f"[done] species-cluster category-best atlas export: {species_cluster_root}")
+    else:
+        log_step(
+            "[warn] species-cluster category-best atlas export skipped; "
+            f"missing global component member table: {global_member_table_path}"
+        )
+
     wrote_review_tables = write_best_set_review_tables(review_entries, output_dir)
     written_paths.extend(wrote_review_tables)
     log_step("[done] wrote consolidated best-set review tables")
