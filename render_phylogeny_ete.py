@@ -47,6 +47,7 @@ YAML_HEADER = """# ETE phylogeny render configuration
 # - Tighten Family/Species spacing: adjust spacing.between_text_columns.
 # - Add a small gap after Family: increase spacing.between_text_columns by 1-4 units.
 # - Mark best-of-best genomes: enable best_representatives and set mark_best_representative on a text column.
+# - Add HQ/MQ/LQ x category matrix: enable quality_category_matrix with a component table.
 #
 # Key sections:
 # tree / metadata: input files and metadata tables.
@@ -55,6 +56,7 @@ YAML_HEADER = """# ETE phylogeny render configuration
 # metadata_strips: colored blocks beside leaves, with optional custom palettes.
 # branch_colors: colors pure branches by a metadata column; mixed ancestral branches can stay black.
 # best_representatives: optional table used to append a marker to selected leaf labels.
+# quality_category_matrix: optional grouped Qscore matrix by quality tier and category.
 # text_columns: aligned leaf text columns; width: auto uses the longest value in that column.
 # legend: legend font sizes, swatch size, and padding.
 # canvas: figure size and outside margins.
@@ -153,6 +155,42 @@ DEFAULT_CONFIG = {
     "_help_metadata_strips": "Remove entries from metadata_strips to hide colored strips.",
     "heatmap_columns": [],
     "_help_heatmap_columns": "Optional grayscale heatmap cells between color strips and text columns.",
+    "quality_category_matrix": {
+        "_help": "Optional grouped matrix heatmap. Rows are tree leaves; columns are quality tiers x categories. Values are drawn from a table matched by component/species-cluster ID.",
+        "show": False,
+        "table": "",
+        "leaf_component_column": "component_id",
+        "leaf_match_columns": ["sample", "category", "Genome_Id"],
+        "table_component_column": "component_id",
+        "quality_column": "mimag_tier",
+        "category_column": "category",
+        "value_column": "qscore",
+        "selection": "best",
+        "auto_disambiguate_match_columns": True,
+        "quality_order": ["high", "medium", "low"],
+        "quality_labels": {"high": "HQ", "medium": "MQ", "low": "LQ"},
+        "categories": ["SAGs", "xPG_SAGs", "MAGs", "xPG_MAGs"],
+        "min_value": 0,
+        "max_value": 100,
+        "width": 8,
+        "height": 10,
+        "gap_after": 1,
+        "tier_gap_after": 4,
+        "missing_color": "#FFFFFF",
+        "missing_border": True,
+        "missing_border_color": "#BDBDBD",
+        "missing_border_width": 0.45,
+        "missing_border_dash": "0.35,1.4",
+        "label_font_size": 5,
+        "label_rotation": -90,
+        "tiered_labels": True,
+        "svg_header_labels": True,
+        "tier_label_font_size": 7,
+        "category_label_font_size": 5,
+        "category_label_rotation": -90,
+        "category_label_margin_bottom": 28,
+    },
+    "_help_quality_category_matrix": "Use to draw HQ/MQ/LQ x category Qscore presence matrices beside each tree leaf.",
     "best_representatives": {
         "_help": "Optional best-of-best marker source. All rows in table are treated as best representatives.",
         "show": False,
@@ -210,7 +248,7 @@ def load_ete():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     try:
         from ete4 import Tree
-        from ete4.treeview import NodeStyle, RectFace, StackedBarFace, TextFace, TreeStyle
+        from ete4.treeview import NodeStyle, RectFace, StackedBarFace, StaticItemFace, TextFace, TreeStyle
 
         return {
             "version": "ete4",
@@ -219,6 +257,7 @@ def load_ete():
             "TextFace": TextFace,
             "RectFace": RectFace,
             "StackedBarFace": StackedBarFace,
+            "StaticItemFace": StaticItemFace,
             "NodeStyle": NodeStyle,
         }
     except ImportError as ete4_exc:
@@ -241,6 +280,10 @@ def load_ete():
             from ete3 import StackedBarFace
         except ImportError:
             StackedBarFace = None
+        try:
+            from ete3 import StaticItemFace
+        except ImportError:
+            StaticItemFace = None
 
         return {
             "version": "ete3",
@@ -249,6 +292,7 @@ def load_ete():
             "TextFace": TextFace,
             "RectFace": RectFace,
             "StackedBarFace": StackedBarFace,
+            "StaticItemFace": StaticItemFace,
             "NodeStyle": NodeStyle,
         }
     except ImportError as exc:
@@ -349,6 +393,12 @@ def fasta_suffixless_name(path_text):
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return Path(name).stem
+
+
+def sanitize_token(value):
+    text = clean_value(value)
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+    return text.strip("_")
 
 
 def load_metadata(paths, id_column):
@@ -530,6 +580,66 @@ def make_rect_face(ete, width, height, color):
     return ete["RectFace"](int(width), int(height), fgcolor=color, bgcolor=color)
 
 
+def make_static_rect_face(
+    ete,
+    width,
+    height,
+    color,
+    border_color=None,
+    border_width=0,
+    border_style="solid",
+    dash_pattern=None,
+    fill=True,
+):
+    StaticItemFace = ete.get("StaticItemFace")
+    if StaticItemFace is None:
+        return make_rect_face(ete, width, height, color)
+    try:
+        from PyQt6 import QtCore, QtGui, QtWidgets
+    except ImportError:
+        try:
+            from PyQt5 import QtCore, QtGui, QtWidgets
+        except ImportError:
+            return make_rect_face(ete, width, height, color)
+
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication([])
+    width = int(width)
+    height = int(height)
+    container = QtWidgets.QGraphicsRectItem(0, 0, width, height)
+    container.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
+    container.setBrush(QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush))
+    if border_color and border_width:
+        inset = max(0.5, float(border_width) / 2.0)
+        rect = QtWidgets.QGraphicsRectItem(
+            inset,
+            inset,
+            max(0.0, float(width) - (2.0 * inset)),
+            max(0.0, float(height) - (2.0 * inset)),
+            container,
+        )
+        pen = QtGui.QPen(QtGui.QColor(border_color))
+        pen.setWidthF(float(border_width))
+        if str(border_style).lower() == "dash":
+            if dash_pattern:
+                try:
+                    pen.setDashPattern([float(value) for value in str(dash_pattern).split(",") if str(value).strip()])
+                except ValueError:
+                    pen.setStyle(QtCore.Qt.PenStyle.DotLine)
+            else:
+                pen.setStyle(QtCore.Qt.PenStyle.DotLine)
+        rect.setPen(pen)
+    else:
+        rect = QtWidgets.QGraphicsRectItem(0, 0, width, height, container)
+        rect.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
+    if fill:
+        rect.setBrush(QtGui.QBrush(QtGui.QColor(color)))
+    else:
+        rect.setBrush(QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush))
+    return StaticItemFace(container)
+
+
 def make_heatmap_colorbar_face(ete, legend_config):
     StackedBarFace = ete.get("StackedBarFace")
     if StackedBarFace is None:
@@ -540,6 +650,128 @@ def make_heatmap_colorbar_face(ete, legend_config):
     percents = [100.0 / steps] * steps
     colors = [grayscale_hex(index / (steps - 1), 0, 1) for index in range(steps)]
     return StackedBarFace(percents, width=width, height=height, colors=colors, line_color="#333333")
+
+
+def make_heatmap_colorbar_scale_face(ete, legend_config, item_size):
+    StaticItemFace = ete.get("StaticItemFace")
+    if StaticItemFace is None:
+        return None
+    width = int(legend_config.get("heatmap_colorbar_width", 90))
+    font_size = int(legend_config.get("heatmap_colorbar_tick_font_size", item_size))
+    height = int(legend_config.get("heatmap_colorbar_tick_height", font_size + 6))
+    tick_height = int(legend_config.get("heatmap_colorbar_tick_mark_height", 3))
+    label_color = str(legend_config.get("heatmap_colorbar_tick_color", "#333333"))
+    labels = legend_config.get("heatmap_colorbar_ticks", ["0.0", "0.5", "1.0"])
+    positions = legend_config.get("heatmap_colorbar_tick_positions", [0.0, 0.5, 1.0])
+    try:
+        from PyQt6 import QtCore, QtGui, QtWidgets
+    except ImportError:
+        try:
+            from PyQt5 import QtCore, QtGui, QtWidgets
+        except ImportError:
+            return None
+
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication([])
+    container = QtWidgets.QGraphicsRectItem(0, 0, width, height)
+    container.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
+    container.setBrush(QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush))
+    font = QtGui.QFont()
+    font.setPointSize(font_size)
+    pen = QtGui.QPen(QtGui.QColor(label_color))
+    for label, position in zip(labels, positions):
+        try:
+            fraction = min(1.0, max(0.0, float(position)))
+        except Exception:
+            continue
+        x = fraction * float(width)
+        tick = QtWidgets.QGraphicsLineItem(x, 0, x, tick_height, container)
+        tick.setPen(pen)
+        text_item = QtWidgets.QGraphicsSimpleTextItem(str(label), container)
+        text_item.setFont(font)
+        text_item.setBrush(QtGui.QBrush(QtGui.QColor(label_color)))
+        label_width = float(text_item.boundingRect().width())
+        if fraction <= 0.0:
+            label_x = 0.0
+        elif fraction >= 1.0:
+            label_x = float(width) - label_width
+        else:
+            label_x = x - (label_width / 2.0)
+        text_item.setPos(label_x, tick_height)
+    return StaticItemFace(container)
+
+
+def make_vertical_heatmap_colorbar_face(ete, legend_config, item_size):
+    StaticItemFace = ete.get("StaticItemFace")
+    if StaticItemFace is None:
+        return None
+    bar_width = int(legend_config.get("heatmap_colorbar_vertical_bar_width", legend_config.get("heatmap_colorbar_bar_height", 8)))
+    bar_height = int(legend_config.get("heatmap_colorbar_vertical_height", legend_config.get("heatmap_colorbar_width", 90)))
+    steps = max(8, int(legend_config.get("heatmap_colorbar_steps", 32)))
+    font_size = int(legend_config.get("heatmap_colorbar_tick_font_size", item_size))
+    tick_length = int(legend_config.get("heatmap_colorbar_tick_mark_height", 3))
+    label_gap = int(legend_config.get("heatmap_colorbar_tick_label_gap", 3))
+    label_color = str(legend_config.get("heatmap_colorbar_tick_color", "#333333"))
+    labels = legend_config.get("heatmap_colorbar_ticks", ["0.0", "0.5", "1.0"])
+    positions = legend_config.get("heatmap_colorbar_tick_positions", [0.0, 0.5, 1.0])
+    reverse_vertical = bool(legend_config.get("heatmap_colorbar_vertical_reverse", False))
+    try:
+        from PyQt6 import QtCore, QtGui, QtWidgets
+    except ImportError:
+        try:
+            from PyQt5 import QtCore, QtGui, QtWidgets
+        except ImportError:
+            return None
+
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication([])
+
+    font = QtGui.QFont()
+    font.setPointSize(font_size)
+    label_widths = []
+    for label in labels:
+        item = QtWidgets.QGraphicsSimpleTextItem(str(label))
+        item.setFont(font)
+        label_widths.append(float(item.boundingRect().width()))
+    max_label_width = max(label_widths or [0.0])
+    width = bar_width + tick_length + label_gap + int(math.ceil(max_label_width))
+    height = bar_height
+    container = QtWidgets.QGraphicsRectItem(0, 0, width, height)
+    container.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
+    container.setBrush(QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush))
+
+    gradient = QtGui.QLinearGradient(0, 0, 0, bar_height)
+    if reverse_vertical:
+        gradient.setColorAt(0.0, QtGui.QColor(grayscale_hex(0, 0, 1)))
+        gradient.setColorAt(1.0, QtGui.QColor(grayscale_hex(1, 0, 1)))
+    else:
+        gradient.setColorAt(0.0, QtGui.QColor(grayscale_hex(1, 0, 1)))
+        gradient.setColorAt(1.0, QtGui.QColor(grayscale_hex(0, 0, 1)))
+    bar = QtWidgets.QGraphicsRectItem(0, 0, bar_width, bar_height, container)
+    bar.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
+    bar.setBrush(QtGui.QBrush(gradient))
+
+    outline = QtWidgets.QGraphicsRectItem(0, 0, bar_width, bar_height, container)
+    outline.setPen(QtGui.QPen(QtGui.QColor(label_color)))
+    outline.setBrush(QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush))
+    pen = QtGui.QPen(QtGui.QColor(label_color))
+    for label, position in zip(labels, positions):
+        try:
+            fraction = min(1.0, max(0.0, float(position)))
+        except Exception:
+            continue
+        y = (1.0 - fraction if not reverse_vertical else fraction) * float(bar_height)
+        tick = QtWidgets.QGraphicsLineItem(bar_width, y, bar_width + tick_length, y, container)
+        tick.setPen(pen)
+        text_item = QtWidgets.QGraphicsSimpleTextItem(str(label), container)
+        text_item.setFont(font)
+        text_item.setBrush(QtGui.QBrush(QtGui.QColor(label_color)))
+        label_height = float(text_item.boundingRect().height())
+        label_y = min(max(0.0, y - (label_height / 2.0)), max(0.0, float(bar_height) - label_height))
+        text_item.setPos(bar_width + tick_length + label_gap, label_y)
+    return StaticItemFace(container)
 
 
 def svg_size_mm(svg_path):
@@ -654,10 +886,16 @@ def align_svg_heatmap_labels(svg_path, heatmap_configs, legend_config=None):
             (float(column.get("width", 8)), float(column.get("height", 10)))
             for column in visible_heatmaps
         }
-        expected_labels = {
-            clean_value(column.get("label", column.get("column", ""))) or clean_value(column.get("column", ""))
-            for column in visible_heatmaps
-        }
+        expected_labels = set()
+        category_labels = set()
+        for column in visible_heatmaps:
+            label = clean_value(column.get("label", column.get("column", ""))) or clean_value(column.get("column", ""))
+            if label:
+                expected_labels.add(label)
+            category_label = clean_value(column.get("category_label", ""))
+            if category_label:
+                expected_labels.add(category_label)
+                category_labels.add(category_label)
 
         legend_config = legend_config or {}
         visual_center_fraction = float(legend_config.get("heatmap_label_visual_center_fraction", 0.58))
@@ -688,7 +926,7 @@ def align_svg_heatmap_labels(svg_path, heatmap_configs, legend_config=None):
                 text_x = float(text_element.get("x", "0"))
                 text_y = float(text_element.get("y", "0"))
                 current_x = e + a * text_x + c * text_y
-                labels.append((current_x, group, matrix, text_x, text_y))
+                labels.append((current_x, group, matrix, text_x, text_y, text in category_labels))
 
         if not centers or not labels:
             return
@@ -702,9 +940,10 @@ def align_svg_heatmap_labels(svg_path, heatmap_configs, legend_config=None):
                 for label in labels
             ]
 
-        for target_center, (_current_x, group, matrix, text_x, text_y) in zip(repeated_centers, labels):
+        for target_center, (_current_x, group, matrix, text_x, text_y, is_category_label) in zip(repeated_centers, labels):
             a, b, c, d, _e, f = matrix
-            visual_center_y = text_y * visual_center_fraction
+            label_center_fraction = 1.0 if is_category_label else visual_center_fraction
+            visual_center_y = text_y * label_center_fraction
             matrix[4] = target_center + manual_offset_px - a * text_x - c * visual_center_y
             group.set("transform", format_matrix(matrix))
 
@@ -802,6 +1041,135 @@ def add_svg_heatmap_dividers(svg_path, heatmap_configs):
         log("[warn] could not add SVG heatmap divider")
 
 
+def add_svg_quality_matrix_labels(svg_path, matrix_columns):
+    visible_columns = [column for column in matrix_columns if column.get("show", True)]
+    if not visible_columns or not any(column.get("tiered_labels", True) for column in visible_columns):
+        return
+    try:
+        import xml.etree.ElementTree as ET
+
+        ET.register_namespace("", "http://www.w3.org/2000/svg")
+        svg_path = Path(svg_path)
+        root = ET.fromstring(svg_path.read_text(errors="ignore"))
+        namespace = "{http://www.w3.org/2000/svg}"
+
+        def parse_matrix(value):
+            match = re.search(r"matrix\(([^)]*)\)", value or "")
+            if not match:
+                return None
+            parts = [float(part) for part in re.split(r"[ ,]+", match.group(1).strip()) if part]
+            return parts if len(parts) == 6 else None
+
+        heatmap_sizes = {
+            (float(column.get("width", 8)), float(column.get("height", 10)))
+            for column in visible_columns
+        }
+        centers = Counter()
+        y_values = []
+        for group in root.iter(namespace + "g"):
+            matrix = parse_matrix(group.get("transform"))
+            if matrix is None:
+                continue
+            a, b, c, d, e, f = matrix
+            for rect in group.findall(namespace + "rect"):
+                width = float(rect.get("width", "0"))
+                height = float(rect.get("height", "0"))
+                if not any(abs(width - hw) < 0.01 and abs(height - hh) < 0.01 for hw, hh in heatmap_sizes):
+                    continue
+                x_value = float(rect.get("x", "0"))
+                y_value = float(rect.get("y", "0"))
+                corners = [
+                    (x_value, y_value),
+                    (x_value + width, y_value),
+                    (x_value, y_value + height),
+                    (x_value + width, y_value + height),
+                ]
+                transformed = [(e + a * x + c * y, f + b * x + d * y) for x, y in corners]
+                center_x = sum(point[0] for point in transformed) / 4.0
+                centers[round(center_x, 2)] += 1
+                y_values.extend(point[1] for point in transformed)
+
+        x_centers = sorted(center for center, count in centers.items() if count > 1)
+        if len(x_centers) < len(visible_columns) or not y_values:
+            return
+        x_centers = x_centers[: len(visible_columns)]
+        top_y = min(y_values)
+
+        first = visible_columns[0]
+        category_font_size = int(first.get("category_label_font_size", first.get("label_font_size", 5))) * 4
+        tier_font_size = int(first.get("tier_label_font_size", 7)) * 4
+        label_color = clean_value(first.get("label_color", "#333333")) or "#333333"
+        category_gap = float(first.get("category_label_svg_gap", 12))
+        tier_gap = float(first.get("tier_label_svg_gap", 18))
+        category_y = top_y - category_gap
+        max_category_label_height = max(
+            (
+                len(clean_value(column.get("category_label", column.get("category", ""))))
+                * category_font_size
+                * TEXT_WIDTH_FACTOR
+                for column in visible_columns
+            ),
+            default=0,
+        )
+
+        label_root = ET.SubElement(root, namespace + "g", {"id": "quality-category-matrix-svg-labels"})
+        for center_x, column in zip(x_centers, visible_columns):
+            label = clean_value(column.get("category_label", column.get("category", "")))
+            if not label:
+                continue
+            text = ET.SubElement(
+                label_root,
+                namespace + "text",
+                {
+                    "x": f"{center_x:.3f}",
+                    "y": f"{category_y:.3f}",
+                    "transform": f"rotate(-90 {center_x:.3f} {category_y:.3f})",
+                    "font-size": str(category_font_size),
+                    "font-family": "Arial, Helvetica, sans-serif",
+                    "fill": label_color,
+                    "text-anchor": "start",
+                    "dominant-baseline": "middle",
+                },
+            )
+            text.text = label
+
+        quality_to_indices = {}
+        for index, column in enumerate(visible_columns):
+            quality = clean_value(column.get("quality", ""))
+            quality_to_indices.setdefault(quality, []).append(index)
+        # Keep the quality tier labels in a separate header row above the
+        # rotated category labels. The tier row accounts for the estimated
+        # height of the longest rotated category label so the two header rows
+        # stay paired without colliding.
+        tier_y = category_y - max_category_label_height - tier_gap
+        for quality, indices in quality_to_indices.items():
+            if not quality or not indices:
+                continue
+            center_x = sum(x_centers[index] for index in indices) / float(len(indices))
+            label = clean_value(visible_columns[indices[0]].get("quality_label", quality.upper()))
+            text = ET.SubElement(
+                label_root,
+                namespace + "text",
+                {
+                    "x": f"{center_x:.3f}",
+                    "y": f"{tier_y:.3f}",
+                    "font-size": str(tier_font_size),
+                    "font-family": "Arial, Helvetica, sans-serif",
+                    "fill": label_color,
+                    "text-anchor": "middle",
+                    "dominant-baseline": "middle",
+                },
+            )
+            text.text = label
+
+        svg_path.write_text(
+            '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+            + ET.tostring(root, encoding="unicode")
+        )
+    except Exception:
+        log("[warn] could not add SVG quality-category matrix labels")
+
+
 def add_gap_face(ete, node, column, width, height=1, position="aligned"):
     if width and int(width) > 0:
         add_face(ete, make_blank_face(ete, int(width), int(height)), node, column, position)
@@ -854,7 +1222,7 @@ def heatmap_numeric_value(value, heatmap_config):
     return numeric
 
 
-def heatmap_start_column(strip_configs, heatmap_configs, text_configs, spacing_config):
+def heatmap_start_column(strip_configs, heatmap_configs, text_configs, spacing_config, matrix_configs=None):
     column_index = 0
     if int(spacing_config.get("before_strips", 0)) > 0:
         column_index += 1
@@ -862,18 +1230,34 @@ def heatmap_start_column(strip_configs, heatmap_configs, text_configs, spacing_c
         column_index += 1
         if int(spacing_config.get("between_strips", 0)) > 0:
             column_index += 1
-    if strip_configs and (text_configs or heatmap_configs) and int(spacing_config.get("between_strips_and_text", 0)) > 0:
+    matrix_configs = matrix_configs or []
+    if strip_configs and (text_configs or heatmap_configs or matrix_configs) and int(spacing_config.get("between_strips_and_text", 0)) > 0:
         column_index += 1
     return column_index
 
 
-def heatmap_column_indices(strip_configs, heatmap_configs, text_configs, spacing_config):
-    column_index = heatmap_start_column(strip_configs, heatmap_configs, text_configs, spacing_config)
+def heatmap_column_indices(strip_configs, heatmap_configs, text_configs, spacing_config, matrix_configs=None):
+    column_index = heatmap_start_column(strip_configs, heatmap_configs, text_configs, spacing_config, matrix_configs=matrix_configs)
     indices = []
     for heatmap_config in heatmap_configs:
         indices.append(column_index)
         column_index += 1
         if int(heatmap_config.get("gap_after", 0)) > 0:
+            column_index += 1
+    return indices
+
+
+def quality_matrix_column_indices(strip_configs, heatmap_configs, matrix_configs, text_configs, spacing_config):
+    column_index = heatmap_start_column(strip_configs, heatmap_configs, text_configs, spacing_config, matrix_configs=matrix_configs)
+    for heatmap_config in heatmap_configs:
+        column_index += 1
+        if int(heatmap_config.get("gap_after", 0)) > 0:
+            column_index += 1
+    indices = []
+    for matrix_config in matrix_configs:
+        indices.append(column_index)
+        column_index += 1
+        if int(matrix_config.get("gap_after", 0)) > 0:
             column_index += 1
     return indices
 
@@ -897,6 +1281,292 @@ def resolve_heatmap_columns(heatmap_configs, metadata):
             item["max_value"] = float(values.max()) if values.notna().any() else 1.0
         resolved.append(item)
     return resolved
+
+
+def normalize_quality_tier(value):
+    text = clean_value(value).lower()
+    aliases = {
+        "hq": "high",
+        "high": "high",
+        "high_quality": "high",
+        "mq": "medium",
+        "medium": "medium",
+        "medium_quality": "medium",
+        "lq": "low",
+        "low": "low",
+        "low_quality": "low",
+    }
+    return aliases.get(text, text)
+
+
+def infer_tree_id_from_row(row):
+    for column in ["tree_id", "copied_fasta_path", "fasta_path", "mp_fasta_path", "ani_fasta_path"]:
+        value = clean_value(row.get(column, ""))
+        if not value:
+            continue
+        if column == "tree_id":
+            return value
+        return fasta_suffixless_name(value)
+    genome_id = clean_value(row.get("Genome_Id", row.get("genome_id", row.get("mp_genome_id", ""))))
+    sample = clean_value(row.get("sample", ""))
+    category = clean_value(row.get("category", ""))
+    if genome_id:
+        return sanitize_token("__".join(part for part in [sample, category, genome_id] if part))
+    return ""
+
+
+def prepare_quality_category_matrix(matrix_config, metadata, id_column):
+    if not matrix_config or not matrix_config.get("show", False):
+        return metadata, [], {}
+    table_text = clean_value(matrix_config.get("table", ""))
+    if not table_text:
+        log("[warn] quality_category_matrix.show is true, but no table was provided")
+        return metadata, [], {}
+    table_path = Path(table_text).expanduser()
+    if not table_path.exists():
+        log(f"[warn] quality category matrix table not found: {table_path}")
+        return metadata, [], {}
+
+    table = pd.read_csv(table_path, sep="\t", dtype=str).fillna("")
+    component_column = clean_value(matrix_config.get("table_component_column", "component_id")) or "component_id"
+    quality_column = clean_value(matrix_config.get("quality_column", "mimag_tier")) or "mimag_tier"
+    category_column = clean_value(matrix_config.get("category_column", "category")) or "category"
+    value_column = clean_value(matrix_config.get("value_column", "qscore")) or "qscore"
+    required = {component_column, quality_column, category_column, value_column}
+    missing = [column for column in required if column not in table.columns]
+    if missing:
+        log(f"[warn] quality category matrix table missing columns: {', '.join(missing)}")
+        return metadata, [], {}
+
+    working = table.copy()
+    if "tree_id" not in working.columns:
+        working["tree_id"] = [infer_tree_id_from_row(row) for row in working.to_dict("records")]
+    working["_component_id"] = working[component_column].astype(str).str.strip()
+    working["_quality"] = working[quality_column].map(normalize_quality_tier)
+    working["_category"] = working[category_column].astype(str).str.strip()
+    working["_value"] = pd.to_numeric(working[value_column], errors="coerce")
+    working = working.loc[
+        working["_component_id"].ne("")
+        & working["_quality"].ne("")
+        & working["_category"].ne("")
+        & working["_value"].notna()
+    ].copy()
+    if working.empty:
+        log("[warn] quality category matrix table had no usable rows")
+        return metadata, [], {}
+
+    configured_match_columns = [
+        clean_value(column)
+        for column in matrix_config.get("match_columns", [component_column])
+        if clean_value(column)
+    ]
+    if not configured_match_columns:
+        configured_match_columns = [component_column]
+    missing_match_columns = [
+        column
+        for column in configured_match_columns
+        if column != component_column and column not in working.columns
+    ]
+    if missing_match_columns:
+        log(
+            "[warn] quality category matrix match columns missing from table: "
+            f"{', '.join(missing_match_columns)}; using component_id only"
+        )
+        configured_match_columns = [component_column]
+
+    auto_disambiguate = bool(matrix_config.get("auto_disambiguate_match_columns", True))
+    if auto_disambiguate:
+        # Component IDs can be reused across sample/global scopes. If a configured
+        # key merges multiple taxa, add the most specific shared taxonomy columns
+        # available in both the matrix table and tree metadata.
+        for tax_column in ["Species", "Genus", "Family"]:
+            if tax_column in configured_match_columns:
+                continue
+            if tax_column not in working.columns or tax_column not in metadata.columns:
+                continue
+            if not configured_match_columns:
+                continue
+            nonempty_tax = working.loc[working[tax_column].astype(str).str.strip().ne("")].copy()
+            if nonempty_tax.empty:
+                continue
+            tax_counts = (
+                nonempty_tax.groupby(configured_match_columns, dropna=False)[tax_column]
+                .nunique()
+            )
+            if int(tax_counts.gt(1).sum()) > 0:
+                configured_match_columns.append(tax_column)
+                log(
+                    "[info] quality-category matrix match key auto-disambiguated with "
+                    f"{tax_column}; using {','.join(configured_match_columns)}"
+                )
+
+        remaining_tax_collisions = []
+        for tax_column in ["Species", "Genus", "Family"]:
+            if tax_column not in working.columns:
+                continue
+            nonempty_tax = working.loc[working[tax_column].astype(str).str.strip().ne("")].copy()
+            if nonempty_tax.empty:
+                continue
+            tax_counts = (
+                nonempty_tax.groupby(configured_match_columns, dropna=False)[tax_column]
+                .nunique()
+            )
+            collision_count = int(tax_counts.gt(1).sum())
+            if collision_count:
+                remaining_tax_collisions.append(f"{tax_column}:{collision_count}")
+        if remaining_tax_collisions:
+            log(
+                "[warn] quality-category matrix match key still groups multiple taxa "
+                f"({'; '.join(remaining_tax_collisions)}); consider adding more match_columns"
+            )
+
+    def matrix_group_key_from_table(row):
+        values = []
+        for column in configured_match_columns:
+            if column == component_column:
+                values.append(row.get("_component_id", ""))
+            else:
+                values.append(row.get(column, ""))
+        return normalized_key(values)
+
+    working["_matrix_group_key"] = working.apply(matrix_group_key_from_table, axis=1)
+
+    quality_order = [
+        normalize_quality_tier(value)
+        for value in matrix_config.get("quality_order", ["high", "medium", "low"])
+        if clean_value(value)
+    ]
+    category_order_source = matrix_config.get("categories", matrix_config.get("category_order", []))
+    category_order_config = [
+        clean_value(value)
+        for value in category_order_source
+        if clean_value(value)
+    ]
+    if not category_order_config:
+        category_order_config = sorted(working["_category"].dropna().unique().tolist(), key=lambda value: value.lower())
+    quality_labels = matrix_config.get("quality_labels", {}) or {}
+    category_labels = matrix_config.get("category_labels", {}) or {}
+    width = int(matrix_config.get("width", 8))
+    height = int(matrix_config.get("height", 10))
+    gap_after = int(matrix_config.get("gap_after", matrix_config.get("gap_between_categories", 1)))
+    tier_gap_after = int(
+        matrix_config.get(
+            "tier_gap_after",
+            matrix_config.get("gap_between_quality_groups", gap_after),
+        )
+    )
+
+    columns = []
+    for quality in quality_order:
+        quality_label = clean_value(quality_labels.get(quality, quality.upper()))
+        for category_index, category in enumerate(category_order_config):
+            is_last_in_tier = category_index == len(category_order_config) - 1
+            category_label = clean_value(category_labels.get(category, category))
+            columns.append(
+                {
+                    "quality": quality,
+                    "quality_label": quality_label,
+                    "category": category,
+                    "category_label": category_label,
+                    "label": f"{quality_label} {category}",
+                    "width": width,
+                    "height": height,
+                    "gap_after": tier_gap_after if is_last_in_tier else gap_after,
+                    "divider_after": is_last_in_tier and quality != quality_order[-1],
+                    "min_value": matrix_config.get("min_value", 0),
+                    "max_value": matrix_config.get("max_value", 100),
+                    "missing_color": matrix_config.get("missing_color", "#FFFFFF"),
+                    "missing_border": bool(matrix_config.get("missing_border", True)),
+                    "missing_border_color": matrix_config.get("missing_border_color", matrix_config.get("border_color", "#BDBDBD")),
+                    "missing_border_width": matrix_config.get("missing_border_width", matrix_config.get("border_width", 1)),
+                    "missing_border_dash": matrix_config.get("missing_border_dash", "0.35,1.4"),
+                    "tiered_labels": bool(matrix_config.get("tiered_labels", True)),
+                    "svg_header_labels": bool(matrix_config.get("svg_header_labels", True)),
+                    "tier_label_font_size": matrix_config.get("tier_label_font_size", 7),
+                    "tier_label_margin_top": matrix_config.get("tier_label_margin_top", 1),
+                    "tier_label_margin_bottom": matrix_config.get("tier_label_margin_bottom", 1),
+                    "tier_label_svg_gap": matrix_config.get("tier_label_svg_gap", 18),
+                    "category_label_font_size": matrix_config.get("category_label_font_size", matrix_config.get("label_font_size", 5)),
+                    "category_label_rotation": matrix_config.get("category_label_rotation", matrix_config.get("label_rotation", -90)),
+                    "category_label_margin_top": matrix_config.get("category_label_margin_top", 1),
+                    "category_label_margin_bottom": matrix_config.get("category_label_margin_bottom", 28),
+                    "category_label_svg_gap": matrix_config.get("category_label_svg_gap", 12),
+                    "label_font_size": matrix_config.get("label_font_size", 5),
+                    "label_rotation": matrix_config.get("label_rotation", -90),
+                    "label_color": matrix_config.get("label_color", "#333333"),
+                }
+            )
+
+    # If tree metadata does not already carry the component ID, borrow it from
+    # the same table using the tree_id generated for the representative genome.
+    leaf_component_column = clean_value(matrix_config.get("leaf_component_column", "component_id")) or "component_id"
+    if leaf_component_column not in metadata.columns or metadata[leaf_component_column].astype(str).str.strip().eq("").all():
+        metadata = metadata.copy()
+        leaf_match_columns = [
+            clean_value(column)
+            for column in matrix_config.get("leaf_match_columns", ["sample", "category", "Genome_Id"])
+            if clean_value(column)
+        ]
+        if leaf_match_columns and all(column in metadata.columns for column in leaf_match_columns) and all(column in working.columns for column in leaf_match_columns):
+            table_keys = working.loc[:, leaf_match_columns].apply(lambda row: normalized_key(row.tolist()), axis=1)
+            key_to_component = {}
+            for key, component_id in zip(table_keys, working["_component_id"]):
+                key_to_component.setdefault(key, component_id)
+            metadata_keys = metadata.loc[:, leaf_match_columns].apply(lambda row: normalized_key(row.tolist()), axis=1)
+            metadata[leaf_component_column] = metadata_keys.map(lambda key: key_to_component.get(key, ""))
+            matched_components = int(metadata[leaf_component_column].astype(str).str.strip().ne("").sum())
+            log(f"[info] quality-category matrix leaf components matched by {','.join(leaf_match_columns)}: {matched_components}")
+        else:
+            id_to_component = (
+                working.loc[working["tree_id"].astype(str).str.strip().ne("")]
+                .drop_duplicates("tree_id")
+                .set_index("tree_id")["_component_id"]
+                .to_dict()
+            )
+            metadata = metadata.copy()
+            metadata[leaf_component_column] = metadata[id_column].map(lambda value: id_to_component.get(clean_value(value), ""))
+            matched_components = int(metadata[leaf_component_column].astype(str).str.strip().ne("").sum())
+            log(f"[info] quality-category matrix leaf components matched by tree_id: {matched_components}")
+
+    leaf_group_column = "_quality_category_matrix_group_key"
+    metadata = metadata.copy()
+
+    def matrix_group_key_from_leaf(row):
+        values = []
+        for column in configured_match_columns:
+            if column == component_column:
+                values.append(row.get(leaf_component_column, ""))
+            elif column in metadata.columns:
+                values.append(row.get(column, ""))
+            else:
+                values.append("")
+        return normalized_key(values)
+
+    metadata[leaf_group_column] = metadata.apply(matrix_group_key_from_leaf, axis=1)
+
+    selection = clean_value(matrix_config.get("selection", "best")).lower() or "best"
+    if selection not in {"best", "max", "highest"}:
+        log(f"[warn] unsupported quality_category_matrix.selection={selection!r}; using 'best'")
+        selection = "best"
+    value_lookup = {}
+    sorted_working = working.sort_values(by="_value", ascending=False, kind="mergesort")
+    duplicate_cells = 0
+    for row in sorted_working.to_dict("records"):
+        key = (row["_matrix_group_key"], row["_quality"], row["_category"])
+        if key not in value_lookup:
+            value_lookup[key] = float(row["_value"])
+        else:
+            duplicate_cells += 1
+    log(
+        "[info] quality-category matrix cells available: "
+        f"{len(value_lookup)}; collapsed duplicate linked genomes by best {value_column}: {duplicate_cells}"
+    )
+    return metadata, columns, {
+        "values": value_lookup,
+        "leaf_component_column": leaf_component_column,
+        "leaf_group_column": leaf_group_column,
+        "match_columns": configured_match_columns,
+    }
 
 
 def resolve_text_column_widths(text_configs, metadata):
@@ -1065,6 +1735,11 @@ def render_tree(config, dry_run=False):
     id_column = config.get("id_column", "tree_id")
     metadata = load_metadata(metadata_paths, id_column)
     metadata = annotate_best_representatives(metadata, config.get("best_representatives", {}), id_column)
+    metadata, quality_matrix_columns, quality_matrix_lookup = prepare_quality_category_matrix(
+        config.get("quality_category_matrix", {}),
+        metadata,
+        id_column,
+    )
     metadata_by_id = metadata.set_index(id_column).to_dict("index") if not metadata.empty else {}
     output_prefix = clean_value(config.get("output_prefix")) or str(tree_path.with_suffix(""))
     outputs = [Path(output_prefix).expanduser().with_suffix("." + str(output_format).lstrip(".")) for output_format in config.get("output_formats", ["svg"])]
@@ -1137,7 +1812,7 @@ def render_tree(config, dry_run=False):
                 add_face(ete, make_rect_face(ete, strip.get("width", 12), strip.get("height", 10), color), node, column_index, "aligned")
                 column_index += 1
                 column_index = add_gap_face(ete, node, column_index, spacing_config.get("between_strips", 4), position="aligned")
-            if strip_configs and (text_configs or heatmap_configs):
+            if strip_configs and (text_configs or heatmap_configs or quality_matrix_columns):
                 column_index = add_gap_face(ete, node, column_index, spacing_config.get("between_strips_and_text", 12), position="aligned")
             if heatmap_configs:
                 for heatmap_config in heatmap_configs:
@@ -1153,7 +1828,7 @@ def render_tree(config, dry_run=False):
                     )
                     add_face(
                         ete,
-                        make_rect_face(
+                        make_static_rect_face(
                             ete,
                             heatmap_config.get("width", 8),
                             heatmap_config.get("height", 10),
@@ -1165,8 +1840,60 @@ def render_tree(config, dry_run=False):
                     )
                     column_index += 1
                     column_index = add_gap_face(ete, node, column_index, heatmap_config.get("gap_after", 1), position="aligned")
-                if text_configs:
-                    column_index = add_gap_face(ete, node, column_index, spacing_config.get("between_heatmap_and_text", 8), position="aligned")
+            if quality_matrix_columns:
+                matrix_group_key = row.get(
+                    quality_matrix_lookup.get("leaf_group_column", quality_matrix_lookup.get("leaf_component_column", "component_id")),
+                    "",
+                )
+                matrix_values = quality_matrix_lookup.get("values", {})
+                for matrix_column in quality_matrix_columns:
+                    matrix_value = matrix_values.get((matrix_group_key, matrix_column["quality"], matrix_column["category"]), math.nan)
+                    try:
+                        matrix_value_float = float(matrix_value)
+                    except (TypeError, ValueError):
+                        matrix_value_float = math.nan
+                    is_missing_matrix_value = not math.isfinite(matrix_value_float)
+                    color = grayscale_hex(
+                        matrix_value_float,
+                        matrix_column.get("min_value", 0),
+                        matrix_column.get("max_value", 100),
+                        missing_color=matrix_column.get("missing_color", "#FFFFFF"),
+                    )
+                    border_color = None
+                    border_width = 0
+                    fill_cell = True
+                    if is_missing_matrix_value and matrix_column.get("missing_border", True):
+                        border_color = matrix_column.get("missing_border_color", "#BDBDBD")
+                        border_width = matrix_column.get("missing_border_width", 1)
+                        fill_cell = False
+                    add_face(
+                        ete,
+                        make_static_rect_face(
+                            ete,
+                            matrix_column.get("width", 8),
+                            matrix_column.get("height", 10),
+                            color,
+                            border_color=border_color,
+                            border_width=border_width,
+                            border_style="dash",
+                            dash_pattern=matrix_column.get("missing_border_dash", "0.35,1.4"),
+                            fill=fill_cell,
+                        ),
+                        node,
+                        column_index,
+                        "aligned",
+                    )
+                    column_index += 1
+                    column_index = add_gap_face(
+                        ete,
+                        node,
+                        column_index,
+                        matrix_column.get("gap_after", 1),
+                        height=matrix_column.get("height", 10),
+                        position="aligned",
+                    )
+            if (heatmap_configs or quality_matrix_columns) and text_configs:
+                column_index = add_gap_face(ete, node, column_index, spacing_config.get("between_heatmap_and_text", 8), position="aligned")
             for bar in config.get("numeric_bars", []):
                 value = row.get(bar.get("column", ""), "")
                 try:
@@ -1251,8 +1978,11 @@ def render_tree(config, dry_run=False):
         tree_style.arc_start = int(canvas_config.get("arc_start", 0))
         tree_style.arc_span = int(canvas_config.get("arc_span", 359))
         add_circular_heatmap_title_labels(ete, tree_style, heatmap_configs, config.get("legend", {}))
-    heatmap_label_columns = heatmap_column_indices(strip_configs, heatmap_configs, text_configs, spacing_config)
+    heatmap_label_columns = heatmap_column_indices(strip_configs, heatmap_configs, text_configs, spacing_config, matrix_configs=quality_matrix_columns)
     add_heatmap_labels(ete, tree_style, heatmap_configs, config.get("legend", {}), heatmap_label_columns)
+    matrix_label_columns = quality_matrix_column_indices(strip_configs, heatmap_configs, quality_matrix_columns, text_configs, spacing_config)
+    add_quality_category_matrix_labels(ete, tree_style, quality_matrix_columns, matrix_label_columns)
+    heatmap_postprocess_configs = list(heatmap_configs) + list(quality_matrix_columns)
 
     if config.get("legend", {}).get("show", True):
         add_legend(
@@ -1262,7 +1992,7 @@ def render_tree(config, dry_run=False):
             strip_color_maps,
             config.get("legend", {}),
             branch_color_legends=branch_color_legends,
-            heatmap_configs=heatmap_configs,
+            heatmap_configs=heatmap_postprocess_configs,
             heatmap_labels_in_legend=(tree_style.mode == "c"),
         )
 
@@ -1277,8 +2007,9 @@ def render_tree(config, dry_run=False):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         tree.render(str(out_path), w=int(canvas_config.get("width_mm", 320)), units="mm", dpi=int(canvas_config.get("dpi", 300)), tree_style=tree_style)
         if out_path.suffix.lower() == ".svg":
-            align_svg_heatmap_labels(out_path, heatmap_configs, config.get("legend", {}))
-            add_svg_heatmap_dividers(out_path, heatmap_configs)
+            align_svg_heatmap_labels(out_path, heatmap_postprocess_configs, config.get("legend", {}))
+            add_svg_quality_matrix_labels(out_path, quality_matrix_columns)
+            add_svg_heatmap_dividers(out_path, heatmap_postprocess_configs)
             if rendered_svg_path is None:
                 rendered_svg_path = out_path
     temporary_svg_path = None
@@ -1293,8 +2024,9 @@ def render_tree(config, dry_run=False):
             dpi=int(canvas_config.get("dpi", 300)),
             tree_style=tree_style,
         )
-        align_svg_heatmap_labels(temporary_svg_path, heatmap_configs, config.get("legend", {}))
-        add_svg_heatmap_dividers(temporary_svg_path, heatmap_configs)
+        align_svg_heatmap_labels(temporary_svg_path, heatmap_postprocess_configs, config.get("legend", {}))
+        add_svg_quality_matrix_labels(temporary_svg_path, quality_matrix_columns)
+        add_svg_heatmap_dividers(temporary_svg_path, heatmap_postprocess_configs)
         rendered_svg_path = temporary_svg_path
     for out_path in pdf_outputs:
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1390,10 +2122,22 @@ def add_legend(
             add_legend_row(make_blank_face(ete, 1, section_gap), make_blank_face(ete, 1, section_gap))
         if heatmap_configs and legend_config.get("show_heatmap_colorbar", True):
             add_title_row(legend_config.get("heatmap_colorbar_label", "Heatmap scale"))
-            colorbar_face = make_heatmap_colorbar_face(ete, legend_config)
-            if colorbar_face is not None:
+            colorbar_orientation = clean_value(legend_config.get("heatmap_colorbar_orientation", "horizontal")).lower()
+            added_vertical_colorbar = False
+            if colorbar_orientation in {"vertical", "v"}:
+                colorbar_face = make_vertical_heatmap_colorbar_face(ete, legend_config, item_size)
+                if colorbar_face is not None:
+                    add_legend_row(colorbar_face, make_blank_face(ete, 1, int(legend_config.get("heatmap_colorbar_vertical_height", legend_config.get("heatmap_colorbar_width", 90)))))
+                    added_vertical_colorbar = True
+            else:
+                colorbar_face = make_heatmap_colorbar_face(ete, legend_config)
+            if added_vertical_colorbar:
+                pass
+            elif colorbar_face is not None:
                 add_legend_row(colorbar_face, make_blank_face(ete, 1, int(legend_config.get("heatmap_colorbar_bar_height", 8))))
-                scale_face = make_text_face(ete, "0.0        0.5        1.0", item_size, "#333333")
+                scale_face = make_heatmap_colorbar_scale_face(ete, legend_config, item_size)
+                if scale_face is None:
+                    scale_face = make_text_face(ete, "0.0        0.5        1.0", item_size, "#333333")
                 add_legend_row(scale_face, make_blank_face(ete, 1, item_size + 2))
             else:
                 for value, label in [(1.0, "1.0"), (0.5, "0.5"), (0.0, "0.0")]:
@@ -1426,6 +2170,87 @@ def add_heatmap_labels(ete, tree_style, heatmap_configs, legend_config, label_co
             tree_style.aligned_foot.add_face(face, column=int(heatmap_config.get("label_column", label_columns[_index])))
     except Exception:
         log("[warn] could not attach heatmap labels")
+
+
+def add_quality_category_matrix_labels(ete, tree_style, matrix_columns, label_columns=None):
+    if not matrix_columns:
+        return
+    if any(matrix_column.get("tiered_labels", True) and matrix_column.get("svg_header_labels", True) for matrix_column in matrix_columns):
+        return
+    label_columns = label_columns or list(range(len(matrix_columns)))
+    try:
+        if any(matrix_column.get("tiered_labels", True) for matrix_column in matrix_columns):
+            quality_to_indices = {}
+            for index, matrix_column in enumerate(matrix_columns):
+                quality = clean_value(matrix_column.get("quality", ""))
+                quality_to_indices.setdefault(quality, []).append(index)
+
+            for quality, indices in quality_to_indices.items():
+                if not quality or not indices:
+                    continue
+                center_index = indices[len(indices) // 2]
+                quality_label = clean_value(matrix_columns[center_index].get("quality_label", quality.upper()))
+                for index in indices:
+                    column = int(matrix_columns[index].get("label_column", label_columns[index]))
+                    if index == center_index:
+                        face = make_text_face(
+                            ete,
+                            quality_label,
+                            int(matrix_columns[index].get("tier_label_font_size", 7)),
+                            matrix_columns[index].get("label_color", "#333333"),
+                        )
+                        face.hz_align = 1
+                        face.vt_align = 1
+                        face.margin_top = int(matrix_columns[index].get("tier_label_margin_top", 2))
+                        face.margin_bottom = int(matrix_columns[index].get("tier_label_margin_bottom", 2))
+                    else:
+                        face = make_blank_face(
+                            ete,
+                            int(matrix_columns[index].get("width", 8)),
+                            int(matrix_columns[index].get("tier_label_font_size", 7)) + 4,
+                        )
+                    tree_style.aligned_header.add_face(face, column=column)
+
+            for index, matrix_column in enumerate(matrix_columns):
+                label = clean_value(matrix_column.get("category_label", matrix_column.get("category", "")))
+                if not label:
+                    continue
+                face = make_text_face(
+                    ete,
+                    label,
+                    int(matrix_column.get("category_label_font_size", matrix_column.get("label_font_size", 5))),
+                    matrix_column.get("label_color", "#333333"),
+                )
+                face.rotation = int(matrix_column.get("category_label_rotation", -90))
+                face.rotable = True
+                face.hz_align = int(matrix_column.get("label_hz_align", 1))
+                face.vt_align = int(matrix_column.get("label_vt_align", 1))
+                face.margin_top = int(matrix_column.get("category_label_margin_top", 1))
+                face.margin_bottom = int(matrix_column.get("category_label_margin_bottom", 28))
+                face.margin_left = int(matrix_column.get("label_margin_left", 0))
+                face.margin_right = int(matrix_column.get("label_margin_right", 0))
+                tree_style.aligned_header.add_face(face, column=int(matrix_column.get("label_column", label_columns[index])))
+            return
+
+        for index, matrix_column in enumerate(matrix_columns):
+            label = clean_value(matrix_column.get("label", ""))
+            if not label:
+                continue
+            face = make_text_face(
+                ete,
+                label,
+                int(matrix_column.get("label_font_size", 5)),
+                matrix_column.get("label_color", "#333333"),
+            )
+            face.rotation = int(matrix_column.get("label_rotation", -90))
+            face.hz_align = int(matrix_column.get("label_hz_align", 1))
+            face.vt_align = int(matrix_column.get("label_vt_align", 1))
+            face.margin_top = int(matrix_column.get("label_margin_top", 4))
+            face.margin_left = int(matrix_column.get("label_margin_left", 0))
+            face.margin_right = int(matrix_column.get("label_margin_right", 0))
+            tree_style.aligned_foot.add_face(face, column=int(matrix_column.get("label_column", label_columns[index])))
+    except Exception:
+        log("[warn] could not attach quality-category matrix labels")
 
 
 def add_circular_heatmap_title_labels(ete, tree_style, heatmap_configs, legend_config):

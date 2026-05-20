@@ -15,6 +15,15 @@ def log(message):
     print(message, file=sys.stderr, flush=True)
 
 
+def prepend_python_env_bin_to_path():
+    bin_dir = Path(sys.executable).resolve().parent
+    current_path = os.environ.get("PATH", "")
+    path_parts = current_path.split(os.pathsep) if current_path else []
+    bin_text = str(bin_dir)
+    if bin_text not in path_parts:
+        os.environ["PATH"] = os.pathsep.join([bin_text] + path_parts)
+
+
 def ensure_dir(path):
     Path(path).mkdir(parents=True, exist_ok=True)
 
@@ -208,6 +217,26 @@ def add_tree_ids(frame):
     return working
 
 
+def taxonomy_species_is_informative(value):
+    text = str(value).strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered in {"nan", "none", "na", "n/a", "null", "unknown"}:
+        return False
+    if lowered.startswith("unclassified"):
+        return False
+    return True
+
+
+def filter_resolved_species(selected_df):
+    if selected_df.empty or "Species" not in selected_df.columns:
+        return selected_df.copy(), 0
+    keep_mask = selected_df["Species"].map(taxonomy_species_is_informative)
+    removed = int((~keep_mask).sum())
+    return selected_df.loc[keep_mask].copy().reset_index(drop=True), removed
+
+
 TREE_METADATA_TABLES = {
     "core": [
         "tree_id",
@@ -290,6 +319,13 @@ def ensure_selected_fastas(set_dir, selected_df):
             if str(value).strip() and str(value).strip().lower() not in {"nan", "none", "null"}
         ]
         if copied_paths and all(path.exists() for path in copied_paths):
+            expected_paths = {path.resolve() for path in copied_paths}
+            for existing_fasta in list(fasta_dir.iterdir()):
+                if existing_fasta.is_file() and existing_fasta.name.lower().endswith(
+                    (".fasta", ".fa", ".fna", ".fasta.gz", ".fa.gz", ".fna.gz")
+                ):
+                    if existing_fasta.resolve() not in expected_paths:
+                        existing_fasta.unlink()
             return fasta_dir
 
     for existing_fasta in list(fasta_dir.iterdir()):
@@ -323,11 +359,12 @@ def build_selected_manifest(selected_df, fasta_dir, out_path):
     rows = []
     for row in selected_df.to_dict("records"):
         path_text = str(row.get("copied_fasta_path", "")).strip()
+        genome_id = str(row.get("Genome_Id", row.get("genome_id", row.get("mp_genome_id", "")))).strip()
+        sample = str(row.get("sample", "")).strip()
+        category = str(row.get("category", "")).strip()
+        tree_id = sanitize_token("__".join(part for part in [sample, category, genome_id] if part))
         if not path_text or path_text.lower() in {"nan", "none", "null"}:
-            genome_id = str(row.get("Genome_Id", row.get("genome_id", row.get("mp_genome_id", "")))).strip()
-            sample = str(row.get("sample", "")).strip()
-            category = str(row.get("category", "")).strip()
-            fallback_stem = sanitize_token("__".join(part for part in [sample, category, genome_id] if part))
+            fallback_stem = tree_id
             path = fasta_dir / f"{fallback_stem}.fasta"
         else:
             path = Path(path_text).expanduser()
@@ -336,9 +373,10 @@ def build_selected_manifest(selected_df, fasta_dir, out_path):
         rows.append(
             {
                 "fasta_path": str(path),
-                "genome_id": str(row.get("Genome_Id", row.get("genome_id", row.get("mp_genome_id", path.stem)))),
-                "sample": str(row.get("sample", "")),
-                "category": str(row.get("category", "")),
+                "genome_id": genome_id or path.stem,
+                "tree_id": tree_id or fasta_suffixless_name(path.name),
+                "sample": sample,
+                "category": category,
                 "Domain": str(row.get("Domain", row.get("mp_Domain", ""))),
             }
         )
@@ -378,7 +416,7 @@ def run_16s_phylogeny(set_dir, manifest_df, threads):
         if not fasta_path.exists():
             status_rows.append({"genome_id": row.get("genome_id", fasta_path.stem), "status": "missing_fasta", "reason": str(fasta_path)})
             continue
-        genome_id = str(row.get("genome_id", fasta_path.stem)).strip() or fasta_path.stem
+        genome_id = str(row.get("tree_id", row.get("genome_id", fasta_path.stem))).strip() or fasta_path.stem
         genome_dir = phylo_dir / sanitize_token(genome_id)
         ensure_dir(genome_dir)
         gff_path = genome_dir / f"{sanitize_token(genome_id)}.barrnap.gff"
@@ -484,6 +522,59 @@ def read_fasta_count(path):
     return count
 
 
+def read_fasta_headers(path):
+    opener = gzip.open if str(path).endswith(".gz") else open
+    headers = []
+    with opener(path, "rt") as handle:
+        for line in handle:
+            if line.startswith(">"):
+                headers.append(line[1:].strip().split()[0])
+    return headers
+
+
+def existing_gtdb_msa_matches_fastas(align_dir, fasta_dir):
+    fasta_ids = {
+        fasta_suffixless_name(path.name)
+        for path in sorted(fasta_dir.iterdir())
+        if path.is_file() and path.name.lower().endswith((".fasta", ".fa", ".fna", ".fasta.gz", ".fa.gz", ".fna.gz"))
+    }
+    if not fasta_ids:
+        return False
+    msa_paths = [
+        path
+        for domain_label in ["bac120", "ar53"]
+        for path in [find_gtdb_user_msa(align_dir, domain_label)]
+        if path is not None and path.exists()
+    ]
+    if not msa_paths:
+        return False
+    msa_ids = set()
+    for msa_path in msa_paths:
+        msa_ids.update(read_fasta_headers(msa_path))
+    return msa_ids == fasta_ids
+
+
+def remove_stale_gtdb_tree_outputs(phylo_dir):
+    stale_names = [
+        "bac120_alignment.fasta",
+        "bac120_tree.nwk",
+        "bac120_tree_core_metadata.tsv",
+        "bac120_tree_taxonomy_metadata.tsv",
+        "bac120_tree_quality_metadata.tsv",
+        "bac120_tree_gunc_metadata.tsv",
+        "ar53_alignment.fasta",
+        "ar53_tree.nwk",
+        "ar53_tree_core_metadata.tsv",
+        "ar53_tree_taxonomy_metadata.tsv",
+        "ar53_tree_quality_metadata.tsv",
+        "ar53_tree_gunc_metadata.tsv",
+    ]
+    for name in stale_names:
+        path = phylo_dir / name
+        if path.exists():
+            path.unlink()
+
+
 def maybe_copy_gzip_fasta(path, destination):
     if str(path).endswith(".gz"):
         with gzip.open(path, "rt") as src, open(destination, "w") as dst:
@@ -512,14 +603,9 @@ def run_gtdb_marker_phylogeny(set_dir, fasta_dir, threads, gtdbtk_data_path=None
     ensure_dir(phylo_dir)
     status_rows = []
     wrote = []
-    fasttree_bin = resolve_fasttree()
-    if fasttree_bin is None:
-        status_rows.append({"status": "skipped", "reason": "fasttree_not_found"})
-        status_path = phylo_dir / "status.tsv"
-        write_status(status_path, status_rows)
-        return [status_path]
     fasta_files = sorted([path for path in fasta_dir.iterdir() if path.is_file()])
     if len(fasta_files) < 2:
+        remove_stale_gtdb_tree_outputs(phylo_dir)
         status_rows.append({"status": "skipped", "reason": "fewer_than_two_genomes"})
         status_path = phylo_dir / "status.tsv"
         write_status(status_path, status_rows)
@@ -530,7 +616,20 @@ def run_gtdb_marker_phylogeny(set_dir, fasta_dir, threads, gtdbtk_data_path=None
     env = os.environ.copy()
     if gtdbtk_data_path:
         env["GTDBTK_DATA_PATH"] = str(Path(gtdbtk_data_path).expanduser().resolve())
-    existing_msa = any(find_gtdb_user_msa(align_dir, domain_label) is not None for domain_label in ["bac120", "ar53"])
+    existing_msa = existing_gtdb_msa_matches_fastas(align_dir, fasta_dir)
+    if not existing_msa:
+        for stale_dir in [identify_dir, align_dir]:
+            if stale_dir.exists():
+                shutil.rmtree(stale_dir)
+        remove_stale_gtdb_tree_outputs(phylo_dir)
+    fasttree_bin = resolve_fasttree()
+    if fasttree_bin is None:
+        if not existing_msa:
+            remove_stale_gtdb_tree_outputs(phylo_dir)
+        status_rows.append({"status": "skipped", "reason": "fasttree_not_found"})
+        status_path = phylo_dir / "status.tsv"
+        write_status(status_path, status_rows)
+        return [status_path]
     if not existing_msa:
         if not command_exists("gtdbtk"):
             status_rows.append({"status": "skipped", "reason": "gtdbtk_not_found"})
@@ -595,17 +694,22 @@ def run_gtdb_marker_phylogeny(set_dir, fasta_dir, threads, gtdbtk_data_path=None
 def process_phylogeny_set(set_dir, threads, gtdbtk_data_path=None):
     set_dir = Path(set_dir).expanduser().absolute()
     selected_table = resolve_selected_table(set_dir)
-    selected_df = read_tsv(selected_table)
+    original_selected_df = read_tsv(selected_table)
+    selected_df, unresolved_removed = filter_resolved_species(original_selected_df)
+    if unresolved_removed:
+        log(f"[info] filtered unresolved Species from {set_dir}: {unresolved_removed} genome(s)")
     phylo_dir = set_dir / "phylogeny"
     ensure_dir(phylo_dir)
+    filtered_selected_path = phylo_dir / "selected_genomes_species_resolved.tsv"
+    selected_df.to_csv(filtered_selected_path, sep="\t", index=False)
     if selected_df.empty:
         status_path = phylo_dir / "status.tsv"
-        write_status(status_path, [{"status": "skipped", "reason": "no_selected_genomes"}])
-        return [status_path]
+        write_status(status_path, [{"status": "skipped", "reason": "no_selected_genomes_after_species_filter"}])
+        return [filtered_selected_path, status_path]
     fasta_dir = ensure_selected_fastas(set_dir, selected_df)
     manifest_path = phylo_dir / "selected_manifest.tsv"
     manifest_df = build_selected_manifest(selected_df, fasta_dir, manifest_path)
-    wrote = [manifest_path]
+    wrote = [filtered_selected_path, manifest_path]
     wrote.extend(run_16s_phylogeny(set_dir, manifest_df, threads=threads))
     wrote.extend(run_gtdb_marker_phylogeny(
         set_dir,
@@ -628,6 +732,7 @@ def build_parser():
 
 
 def main():
+    prepend_python_env_bin_to_path()
     args = build_parser().parse_args()
     root = Path(args.root_dir).expanduser().absolute()
     set_dirs = discover_phylogeny_set_dirs(root)
