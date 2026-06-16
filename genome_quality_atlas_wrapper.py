@@ -1829,13 +1829,9 @@ def plot_best_set_selection_preferences(overall_df, pairwise_df, destination_dir
 
     fig.suptitle("Category selection preference across competing components", fontsize=16, y=0.98)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
-    written = []
-    for extension in ("png", "pdf"):
-        out_path = os.path.join(destination_dir, f"{label}.selection_preference.{extension}")
-        fig.savefig(out_path, dpi=300 if extension == "png" else None, bbox_inches="tight")
-        written.append(out_path)
-    plt.close(fig)
-    return written
+    out_base = os.path.join(destination_dir, f"{label}.selection_preference")
+    atlas_module.save_figure(fig, out_base)
+    return [out_base + ".png", out_base + ".pdf"]
 
 
 def build_best_set_excluded_hqmq_table(source_frame, member_table, category_column, sample_column):
@@ -1976,13 +1972,9 @@ def plot_best_set_category_contributions(category_df, sample_df, destination_dir
     fig.suptitle(f"{label.replace('_', ' ')} category contributions", fontsize=16, y=0.98)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
 
-    written = []
-    for extension in ("png", "pdf"):
-        out_path = os.path.join(destination_dir, f"{label}.category_contributions.{extension}")
-        fig.savefig(out_path, dpi=300 if extension == "png" else None, bbox_inches="tight")
-        written.append(out_path)
-    plt.close(fig)
-    return written
+    out_base = os.path.join(destination_dir, f"{label}.category_contributions")
+    atlas_module.save_figure(fig, out_base)
+    return [out_base + ".png", out_base + ".pdf"]
 
 
 def plot_best_set_selected_category_counts(category_df, destination_dir, label, category_column, atlas_module):
@@ -2025,13 +2017,9 @@ def plot_best_set_selected_category_counts(category_df, destination_dir, label, 
     fig.suptitle(f"{label.replace('_', ' ')} selected genomes by category", fontsize=16, y=0.98)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
 
-    written = []
-    for extension in ("png", "pdf"):
-        out_path = os.path.join(destination_dir, f"{label}.selected_category_count_summary.{extension}")
-        fig.savefig(out_path, dpi=300 if extension == "png" else None, bbox_inches="tight")
-        written.append(out_path)
-    plt.close(fig)
-    return written
+    out_base = os.path.join(destination_dir, f"{label}.selected_category_count_summary")
+    atlas_module.save_figure(fig, out_base)
+    return [out_base + ".png", out_base + ".pdf"]
 
 
 def copy_selected_fastas(selected, destination_dir, include_sample=False):

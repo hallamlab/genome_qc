@@ -7,6 +7,7 @@ import glob
 import os
 import pickle
 import re
+import subprocess
 import time
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
@@ -18,6 +19,19 @@ import pandas as pd
 
 plt = None
 
+PLOT_FONT_FAMILY = "Times New Roman"
+PLOT_FONT_SIZES = {
+    "base": 10,
+    "axis_label": 10,
+    "tick": 9,
+    "legend": 9,
+    "legend_title": 10,
+    "title": 11,
+    "suptitle": 16,
+    "annotation": 8,
+    "panel_label": 16,
+}
+PANEL_LABELS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -1776,9 +1790,60 @@ def read_table(path):
     return pd.read_csv(path, sep="\t", low_memory=False)
 
 
+def plot_font_rc():
+    return {
+        "font.family": PLOT_FONT_FAMILY,
+        "font.serif": [PLOT_FONT_FAMILY],
+        "font.size": PLOT_FONT_SIZES["base"],
+        "axes.titlesize": PLOT_FONT_SIZES["title"],
+        "axes.labelsize": PLOT_FONT_SIZES["axis_label"],
+        "xtick.labelsize": PLOT_FONT_SIZES["tick"],
+        "ytick.labelsize": PLOT_FONT_SIZES["tick"],
+        "legend.fontsize": PLOT_FONT_SIZES["legend"],
+        "legend.title_fontsize": PLOT_FONT_SIZES["legend_title"],
+        "figure.titlesize": PLOT_FONT_SIZES["suptitle"],
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    }
+
+
+def register_times_new_roman_font():
+    try:
+        from matplotlib import font_manager
+
+        try:
+            font_manager.findfont(
+                font_manager.FontProperties(family=[PLOT_FONT_FAMILY]),
+                fallback_to_default=False,
+            )
+            return
+        except ValueError:
+            pass
+
+        result = subprocess.run(
+            ["fc-match", "-f", "%{file}\n", PLOT_FONT_FAMILY],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        font_path = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+        if font_path and Path(font_path).is_file():
+            font_manager.fontManager.addfont(font_path)
+    except Exception:
+        return
+
+
+def apply_plot_style():
+    plt_local = ensure_plotting()
+    register_times_new_roman_font()
+    plt_local.rcParams.update(plot_font_rc())
+
+
 def ensure_plotting():
     global plt
     if plt is not None:
+        register_times_new_roman_font()
+        plt.rcParams.update(plot_font_rc())
         return plt
     try:
         import matplotlib
@@ -1790,7 +1855,61 @@ def ensure_plotting():
             "Plotting dependencies could not be imported. Install matplotlib in the runtime environment."
         ) from exc
     plt = plt_mod
+    register_times_new_roman_font()
+    plt.rcParams.update(plot_font_rc())
     return plt
+
+
+def is_panel_axis(ax):
+    if ax is None or not ax.get_visible():
+        return False
+    if ax.get_label() == "<colorbar>":
+        return False
+    if not ax.axison:
+        return False
+    bbox = ax.get_position()
+    if bbox.width <= 0.04 or bbox.height <= 0.04:
+        return False
+    return True
+
+
+def panel_label_for_index(index):
+    if index < len(PANEL_LABELS):
+        return PANEL_LABELS[index]
+    return str(index + 1)
+
+
+def label_multi_panel_axes(fig, axes=None):
+    candidate_axes = list(np.atleast_1d(axes).ravel()) if axes is not None else list(fig.axes)
+    panel_axes = [ax for ax in candidate_axes if is_panel_axis(ax)]
+    if len(panel_axes) <= 1:
+        return
+    for index, ax in enumerate(panel_axes):
+        existing = getattr(ax, "_mp_panel_label_artist", None)
+        if existing is not None:
+            try:
+                existing.remove()
+            except ValueError:
+                pass
+        ax._mp_panel_label_artist = ax.text(
+            0.015,
+            1.025,
+            panel_label_for_index(index),
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=PLOT_FONT_SIZES["panel_label"],
+            fontfamily=PLOT_FONT_FAMILY,
+            fontweight="bold",
+            color="black",
+            zorder=20,
+            clip_on=False,
+        )
+
+
+def apply_figure_typography(fig):
+    for text in fig.findobj(match=lambda artist: hasattr(artist, "set_fontfamily")):
+        text.set_fontfamily(PLOT_FONT_FAMILY)
 
 
 def sanitize_label(value):
@@ -4752,6 +4871,9 @@ def annotate_bar_values(ax, values):
 
 
 def save_figure(fig, output_base):
+    apply_plot_style()
+    label_multi_panel_axes(fig)
+    apply_figure_typography(fig)
     fig.savefig(str(output_base) + ".png", dpi=300, bbox_inches="tight")
     fig.savefig(str(output_base) + ".pdf", bbox_inches="tight")
     plt.close(fig)

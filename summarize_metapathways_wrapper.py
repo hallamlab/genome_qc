@@ -5507,12 +5507,241 @@ def plot_species_category_marker_heatmap(
     return True
 
 
+def atlas_taxonomy_table_from_args(args):
+    explicit = getattr(args, "atlas_annotated_tsv", None)
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    atlas_dir = getattr(args, "genome_atlas_dir", None)
+    if atlas_dir:
+        atlas_path = Path(atlas_dir).expanduser()
+        if atlas_path.exists():
+            candidates.extend(sorted(atlas_path.rglob("*_annotated.tsv")))
+    for path in candidates:
+        if not path.exists():
+            continue
+        columns = pd.read_csv(path, sep="\t", nrows=0).columns
+        required = {"Species", "Family", "Genus"}
+        if required.issubset(set(columns)):
+            taxonomy = pd.read_csv(path, sep="\t", usecols=["Species", "Family", "Genus"])
+            for column in ["Species", "Family", "Genus"]:
+                taxonomy[column] = taxonomy[column].astype(str).str.strip()
+            taxonomy = taxonomy.loc[taxonomy["Species"].map(taxonomy_value_is_informative)].copy()
+            taxonomy = taxonomy.drop_duplicates(subset=["Species"], keep="first")
+            return taxonomy, path
+    return pd.DataFrame(), None
+
+
+def attach_rank_taxonomy(best_df, atlas_taxonomy_df=None):
+    if best_df.empty:
+        return best_df
+    working = best_df.copy()
+    if atlas_taxonomy_df is not None and not atlas_taxonomy_df.empty and "species_key" in working.columns:
+        taxonomy = atlas_taxonomy_df.copy()
+        taxonomy = taxonomy.loc[:, [column for column in ["Species", "Family", "Genus"] if column in taxonomy.columns]]
+        if {"Species", "Family", "Genus"}.issubset(set(taxonomy.columns)):
+            taxonomy["Species"] = taxonomy["Species"].astype(str).str.strip()
+            taxonomy = taxonomy.drop_duplicates(subset=["Species"], keep="first")
+            working = working.merge(
+                taxonomy.rename(columns={"Family": "__atlas_family", "Genus": "__atlas_genus"}),
+                left_on="species_key",
+                right_on="Species",
+                how="left",
+            )
+            for rank, atlas_column in [("Family", "__atlas_family"), ("Genus", "__atlas_genus")]:
+                if rank not in working.columns:
+                    working[rank] = np.nan
+                working[rank] = working[rank].where(
+                    working[rank].map(taxonomy_value_is_informative),
+                    working.get(atlas_column),
+                )
+            working = working.drop(columns=["Species_y", "__atlas_family", "__atlas_genus"], errors="ignore")
+            if "Species_x" in working.columns:
+                working = working.rename(columns={"Species_x": "Species"})
+    for rank in ["Family", "Genus"]:
+        if rank in working.columns:
+            working[rank] = working[rank].astype(str).str.strip()
+    return working
+
+
+def taxon_mode_evidence_specs(frame):
+    specs = [
+        ("marker_specific", "marker", "specific_gene_count", "Specific marker genes"),
+        ("marker_generic", "marker", "generic_gene_count", "Generic marker genes"),
+        ("reference_mode", "reference_mode", "accession_count", "Reference accessions"),
+    ]
+    return [
+        (evidence_id, value_prefix, value_suffix, label)
+        for evidence_id, value_prefix, value_suffix, label in specs
+        if any(f"{value_prefix}_{mode_id}_{value_suffix}" in frame.columns for mode_id in ELEMENTAL_MODE_ORDER)
+    ]
+
+
+def build_taxon_mode_evidence_summary(best_df, rank, evidence_id, value_prefix, value_suffix):
+    if best_df.empty or rank not in best_df.columns:
+        return pd.DataFrame()
+    working = best_df.loc[best_df[rank].map(taxonomy_value_is_informative)].copy()
+    if working.empty:
+        return pd.DataFrame()
+    rows = []
+    for mode_id in ELEMENTAL_MODE_ORDER:
+        column = f"{value_prefix}_{mode_id}_{value_suffix}"
+        if column not in working.columns:
+            continue
+        temp = working[[rank, "category", "species_key", "genome_id"]].copy()
+        temp["mode_id"] = mode_id
+        temp["mode_label"] = ELEMENTAL_MODE_LABELS.get(mode_id, mode_id)
+        temp["value"] = pd.to_numeric(working[column], errors="coerce").fillna(0.0)
+        rows.append(temp)
+    if not rows:
+        return pd.DataFrame()
+    long_df = pd.concat(rows, ignore_index=True)
+    summary = (
+        long_df.groupby([rank, "category", "mode_id", "mode_label"], dropna=False)
+        .agg(
+            mean_count=("value", "mean"),
+            median_count=("value", "median"),
+            max_count=("value", "max"),
+            n_genomes=("genome_id", "nunique"),
+            n_species=("species_key", "nunique"),
+        )
+        .reset_index()
+        .rename(columns={rank: "taxon"})
+    )
+    summary["rank"] = rank
+    summary["evidence"] = evidence_id
+    return summary[
+        [
+            "rank",
+            "taxon",
+            "category",
+            "mode_id",
+            "mode_label",
+            "evidence",
+            "mean_count",
+            "median_count",
+            "max_count",
+            "n_genomes",
+            "n_species",
+        ]
+    ]
+
+
+def select_taxon_heatmap_rows(summary_df, max_rows=45):
+    score = (
+        summary_df.groupby("taxon", dropna=False)
+        .agg(n_species=("n_species", "max"), n_genomes=("n_genomes", "max"), signal=("mean_count", "mean"))
+        .reset_index()
+        .sort_values(["n_species", "n_genomes", "signal", "taxon"], ascending=[False, False, False, True])
+    )
+    taxa = score["taxon"].astype(str).tolist()
+    if max_rows and max_rows > 0:
+        taxa = taxa[:max_rows]
+    return sorted(taxa)
+
+
+def plot_taxon_mode_evidence_heatmap(summary_df, output_base, rank, evidence_label, max_rows=45):
+    ensure_plotting()
+    if summary_df.empty:
+        return False
+    taxa = select_taxon_heatmap_rows(summary_df, max_rows=max_rows)
+    categories = category_order(summary_df, category_column="category")
+    modes = [mode_id for mode_id in ELEMENTAL_MODE_ORDER if summary_df["mode_id"].astype(str).eq(mode_id).any()]
+    if not taxa or not categories or not modes:
+        return False
+    vmax = max(1.0, float(pd.to_numeric(summary_df["mean_count"], errors="coerce").max()))
+    plt_local = ensure_plotting()
+    n_cols = min(2, len(categories))
+    n_rows = int(np.ceil(len(categories) / float(n_cols)))
+    fig, axes = plt_local.subplots(
+        n_rows,
+        n_cols,
+        figsize=(max(12.5, n_cols * len(modes) * 0.42), max(6.2, n_rows * len(taxa) * 0.13 + 1.9)),
+        squeeze=False,
+        sharex=False,
+        sharey=True,
+    )
+    axes_flat = axes.ravel()
+    cmap = plt_local.colormaps["Greys"].copy() if hasattr(plt_local, "colormaps") else plt_local.cm.get_cmap("Greys").copy()
+    cmap.set_bad(color="#ffffff")
+    image = None
+    for ax, category in zip(axes_flat, categories):
+        subset = summary_df.loc[summary_df["category"].astype(str).eq(str(category))].copy()
+        matrix = (
+            subset.pivot_table(index="taxon", columns="mode_id", values="mean_count", aggfunc="mean")
+            .reindex(index=taxa, columns=modes)
+            .astype(float)
+        )
+        image = ax.imshow(matrix.values, cmap=cmap, vmin=0.0, vmax=vmax, aspect="auto")
+        ax.set_title(str(category))
+        ax.set_xticks(np.arange(len(modes)))
+        ax.set_xticklabels([ELEMENTAL_MODE_LABELS.get(mode, mode) for mode in modes], rotation=90, fontsize=7)
+        ax.set_yticks(np.arange(len(taxa)))
+        ax.set_yticklabels(taxa, fontsize=6)
+        ax.set_xlabel("Functional mode")
+        ax.set_ylabel(rank)
+    for index in range(len(categories), len(axes_flat)):
+        axes_flat[index].axis("off")
+    if image is not None:
+        cbar = fig.colorbar(image, ax=axes_flat[: len(categories)].tolist(), fraction=0.018, pad=0.015)
+        cbar.set_label("Mean count per best representative")
+    fig.suptitle(f"{rank}-level average {evidence_label} by category", fontsize=14, y=0.995)
+    fig.text(
+        0.5,
+        0.012,
+        "Rows are taxa; cells are category-specific means across best species-category representatives.",
+        ha="center",
+        va="bottom",
+        fontsize=8,
+    )
+    fig.subplots_adjust(left=0.18, right=0.94, bottom=0.20, top=0.90, wspace=0.10, hspace=0.42)
+    save_figure(fig, output_base)
+    return True
+
+
+def write_taxon_mode_evidence_comparisons(
+    output_dir,
+    prefix,
+    best_genomes_df,
+    atlas_taxonomy_df=None,
+    max_rows=45,
+):
+    output_dir = Path(output_dir)
+    root_dir = output_dir / "taxon_function_summary"
+    root_dir.mkdir(parents=True, exist_ok=True)
+    wrote_paths = []
+    best_with_taxonomy = attach_rank_taxonomy(best_genomes_df, atlas_taxonomy_df=atlas_taxonomy_df)
+    best_path = root_dir / f"{sanitize_label(prefix)}_taxon_function_best_genomes.tsv"
+    best_with_taxonomy.to_csv(best_path, sep="\t", index=False)
+    wrote_paths.append(best_path)
+    all_summaries = []
+    for rank in ["Family", "Genus"]:
+        for evidence_id, value_prefix, value_suffix, evidence_label in taxon_mode_evidence_specs(best_with_taxonomy):
+            summary = build_taxon_mode_evidence_summary(best_with_taxonomy, rank, evidence_id, value_prefix, value_suffix)
+            if summary.empty:
+                continue
+            table_path = root_dir / f"{sanitize_label(prefix)}_{sanitize_label(rank.lower())}_{evidence_id}_summary.tsv"
+            summary.to_csv(table_path, sep="\t", index=False)
+            wrote_paths.append(table_path)
+            all_summaries.append(summary)
+            plot_base = root_dir / f"{sanitize_label(prefix)}_{sanitize_label(rank.lower())}_{evidence_id}_heatmap"
+            if plot_taxon_mode_evidence_heatmap(summary, str(plot_base), rank, evidence_label, max_rows=max_rows):
+                wrote_paths.extend([Path(str(plot_base) + ".png"), Path(str(plot_base) + ".pdf")])
+    if all_summaries:
+        combined = pd.concat(all_summaries, ignore_index=True)
+        combined_path = root_dir / f"{sanitize_label(prefix)}_family_genus_function_summary.tsv"
+        combined.to_csv(combined_path, sep="\t", index=False)
+        wrote_paths.append(combined_path)
+    return wrote_paths
+
+
 def write_species_category_marker_comparisons(
     output_dir,
     prefix,
     combined_genome_df,
     category_column="category",
     sample_column="sample",
+    atlas_taxonomy_df=None,
 ):
     output_dir = Path(output_dir)
     root_dir = output_dir / "species_category_comparison"
@@ -5586,6 +5815,14 @@ def write_species_category_marker_comparisons(
         )
         if wrote:
             wrote_paths.extend([Path(str(plot_base) + ".png"), Path(str(plot_base) + ".pdf")])
+    wrote_paths.extend(
+        write_taxon_mode_evidence_comparisons(
+            output_dir=output_dir,
+            prefix=prefix,
+            best_genomes_df=best_genomes_df,
+            atlas_taxonomy_df=atlas_taxonomy_df,
+        )
+    )
     return wrote_paths
 
 
@@ -5873,7 +6110,7 @@ def plot_method_effectiveness_panel(summary_df, output_base, category_column="ca
     return True
 
 
-def run_combined_summary_plots(output_dir, prefix, combined_genome_df, combined_pathway_df):
+def run_combined_summary_plots(output_dir, prefix, combined_genome_df, combined_pathway_df, atlas_taxonomy_df=None):
     output_dir = Path(output_dir)
     wrote_paths = []
     base = output_dir / f"{sanitize_label(prefix)}_compare_category"
@@ -5968,6 +6205,7 @@ def run_combined_summary_plots(output_dir, prefix, combined_genome_df, combined_
             output_dir,
             prefix,
             scored_df,
+            atlas_taxonomy_df=atlas_taxonomy_df,
         )
     )
     return wrote_paths
@@ -6420,12 +6658,19 @@ def main():
     else:
         print("[warn] no experimental mobility per-genome tables found to aggregate")
 
+    atlas_taxonomy_df, atlas_taxonomy_path = atlas_taxonomy_table_from_args(args)
+    if atlas_taxonomy_path:
+        print(f"[done] loaded atlas family/genus taxonomy for taxon functional heatmaps: {atlas_taxonomy_path}")
+    else:
+        print("[warn] no atlas family/genus taxonomy found; taxon functional heatmaps will use available MP taxonomy columns only")
+
     print("[start] combined category summary/comparison plots")
     combined_plot_paths = run_combined_summary_plots(
         output_dir=output_dir,
         prefix=prefix,
         combined_genome_df=combined_genome_df,
         combined_pathway_df=combined_pathway_df,
+        atlas_taxonomy_df=atlas_taxonomy_df,
     )
     written_paths.extend(combined_plot_paths)
     print(f"[done] combined category plots: {len(combined_plot_paths)} files")

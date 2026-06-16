@@ -8,6 +8,22 @@ import sys
 import numpy as np 
 import gzip
 
+from summarize_metapathways_genomes import apply_figure_typography, plot_font_rc
+
+
+def apply_plot_style():
+    plt.rcParams.update(plot_font_rc())
+    sns.set_theme(style="whitegrid", context="notebook", rc=plot_font_rc())
+
+
+def save_current_plot(pdf_path, png_path):
+    apply_plot_style()
+    apply_figure_typography(plt.gcf())
+    plt.savefig(pdf_path, bbox_inches='tight', format='pdf')
+    plt.savefig(png_path, bbox_inches='tight', format='png', dpi=300)
+    plt.close()
+
+
 def json_to_dataframe(json_file_path):
     if json_file_path.rsplit('.', 1)[1] == 'gz':
         with gzip.open(json_file_path, 'rt', encoding='utf-8') as file:
@@ -83,6 +99,7 @@ def extract_taxonomy_level(taxonomy, level_index):
     return 'Unknown'
 
 def create_contamination_completeness_plot(mag_file, output_path):
+    apply_plot_style()
     # Load the data
     mag_data = pd.read_csv(mag_file, sep='\t', header=0)
     group_data = mag_data[['MAG_ID', 'sample_id', 'Genome ID', 'GTDB classification', 'completeness', 'contamination', 'coverage', 'quality', '16S_rRNA', 'ASV_PAIR']]
@@ -180,9 +197,7 @@ def create_contamination_completeness_plot(mag_file, output_path):
     plt.subplots_adjust(right=0.75)
 
     # Save the plot
-    plt.savefig(output_path + '_All.pdf', bbox_inches='tight', format='pdf')
-    plt.savefig(output_path + '_All.png', bbox_inches='tight', format='png', dpi=300,)
-    plt.close()
+    save_current_plot(output_path + '_All.pdf', output_path + '_All.png')
 
 
     # Filter data based on specified criteria
@@ -248,9 +263,7 @@ def create_contamination_completeness_plot(mag_file, output_path):
     plt.subplots_adjust(right=0.75)
 
     # Save the plot
-    plt.savefig(output_path + '_MQHQ_RPM.pdf', bbox_inches='tight', format='pdf')
-    plt.savefig(output_path + '_MQHQ_RPM.png', bbox_inches='tight', format='png', dpi=300,)
-    plt.close()
+    save_current_plot(output_path + '_MQHQ_RPM.pdf', output_path + '_MQHQ_RPM.png')
 
     # Create a scatterplot
     plt.figure(figsize=(10, 8))
@@ -311,9 +324,7 @@ def create_contamination_completeness_plot(mag_file, output_path):
     plt.subplots_adjust(right=0.75)
 
     # Save the plot
-    plt.savefig(output_path + '_MQHQ_16S.pdf', bbox_inches='tight', format='pdf')
-    plt.savefig(output_path + '_MQHQ_16S.png', bbox_inches='tight', format='png', dpi=300,)
-    plt.close()
+    save_current_plot(output_path + '_MQHQ_16S.pdf', output_path + '_MQHQ_16S.png')
 
     # Create a scatterplot
     plt.figure(figsize=(10, 8))
@@ -375,9 +386,7 @@ def create_contamination_completeness_plot(mag_file, output_path):
     plt.subplots_adjust(right=0.75)
 
     # Save the plot
-    plt.savefig(output_path + '_MQHQ_ASV_PAIR.pdf', bbox_inches='tight', format='pdf')
-    plt.savefig(output_path + '_MQHQ_ASV_PAIR.png', bbox_inches='tight', format='png', dpi=300,)
-    plt.close()
+    save_current_plot(output_path + '_MQHQ_ASV_PAIR.pdf', output_path + '_MQHQ_ASV_PAIR.png')
 
     # Create a scatterplot
     plt.figure(figsize=(10, 8))
@@ -436,9 +445,7 @@ def create_contamination_completeness_plot(mag_file, output_path):
     plt.subplots_adjust(right=0.75)
 
     # Save the plot
-    plt.savefig(output_path + '_MQHQ_Phylum.pdf', bbox_inches='tight', format='pdf')
-    plt.savefig(output_path + '_MQHQ_Phylum.png', bbox_inches='tight', format='png', dpi=300,)
-    plt.close()
+    save_current_plot(output_path + '_MQHQ_Phylum.pdf', output_path + '_MQHQ_Phylum.png')
 
 
 
@@ -493,7 +500,6 @@ print(merge_df.head())
 merge_df.to_csv(mag_file, sep='\t', index=False)
 
 create_contamination_completeness_plot(mag_file, output_path)
-
 
 
 

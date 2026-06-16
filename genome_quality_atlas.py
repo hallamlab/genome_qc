@@ -19,6 +19,19 @@ sns = None
 
 SCORE_COLUMN = "qscore"
 SCORE_LABEL = "Qscore"
+PLOT_FONT_FAMILY = "Times New Roman"
+PLOT_FONT_SIZES = {
+    "base": 10,
+    "axis_label": 10,
+    "tick": 9,
+    "legend": 9,
+    "legend_title": 10,
+    "title": 11,
+    "suptitle": 16,
+    "annotation": 8,
+    "panel_label": 16,
+}
+PANEL_LABELS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 TIER_PALETTE = {"low": "#d9d9d9", "medium": "#7f7f7f", "high": "#1a1a1a"}
 RIGHT_MARGIN = 0.70
 TAXONOMY_RANKS = ["Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
@@ -76,6 +89,23 @@ GUNC_ASSESSMENT_COLORS = {
     "low_reference_uncertain": "#bdbdbd",
     "unscored": "#e0e0e0",
 }
+GUNC_PROFILE_CATEGORY_COLORS = {
+    "sag_base": "#1a1a1a",
+    "sag_variant": "#0072B2",
+    "mag_base": "#D55E00",
+    "mag_variant": "#009E73",
+    "other": "#7f7f7f",
+}
+GUNC_PROFILE_QUALITY_COLORS = {
+    "high": "#1a1a1a",
+    "medium": "#7f7f7f",
+    "low": "#bdbdbd",
+}
+GUNC_PROFILE_QUALITY_LABELS = {
+    "high": "HQ",
+    "medium": "MQ",
+    "low": "LQ",
+}
 GUNC_QUALITY_SCOPES = [
     ("all", "All genomes"),
     ("high", "HQ genomes"),
@@ -95,9 +125,61 @@ REQUIRED_COLUMNS = [
 ]
 
 
+def plot_font_rc():
+    return {
+        "font.family": PLOT_FONT_FAMILY,
+        "font.serif": [PLOT_FONT_FAMILY],
+        "font.size": PLOT_FONT_SIZES["base"],
+        "axes.titlesize": PLOT_FONT_SIZES["title"],
+        "axes.labelsize": PLOT_FONT_SIZES["axis_label"],
+        "xtick.labelsize": PLOT_FONT_SIZES["tick"],
+        "ytick.labelsize": PLOT_FONT_SIZES["tick"],
+        "legend.fontsize": PLOT_FONT_SIZES["legend"],
+        "legend.title_fontsize": PLOT_FONT_SIZES["legend_title"],
+        "figure.titlesize": PLOT_FONT_SIZES["suptitle"],
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    }
+
+
+def register_times_new_roman_font():
+    try:
+        from matplotlib import font_manager
+
+        try:
+            font_manager.findfont(
+                font_manager.FontProperties(family=[PLOT_FONT_FAMILY]),
+                fallback_to_default=False,
+            )
+            return
+        except ValueError:
+            pass
+
+        result = subprocess.run(
+            ["fc-match", "-f", "%{file}\n", PLOT_FONT_FAMILY],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        font_path = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+        if font_path and Path(font_path).is_file():
+            font_manager.fontManager.addfont(font_path)
+    except Exception:
+        return
+
+
+def apply_plot_style():
+    ensure_plotting()
+    register_times_new_roman_font()
+    plt.rcParams.update(plot_font_rc())
+    sns.set_theme(style="whitegrid", context="notebook", rc=plot_font_rc())
+
+
 def ensure_plotting():
     global plt, sns
     if plt is not None and sns is not None:
+        register_times_new_roman_font()
+        plt.rcParams.update(plot_font_rc())
         return plt, sns
 
     try:
@@ -114,7 +196,62 @@ def ensure_plotting():
 
     plt = plt_mod
     sns = sns_mod
+    register_times_new_roman_font()
+    plt.rcParams.update(plot_font_rc())
+    sns.set_theme(style="whitegrid", context="notebook", rc=plot_font_rc())
     return plt, sns
+
+
+def is_panel_axis(ax):
+    if ax is None or not ax.get_visible():
+        return False
+    if ax.get_label() == "<colorbar>":
+        return False
+    if not ax.axison:
+        return False
+    bbox = ax.get_position()
+    if bbox.width <= 0.04 or bbox.height <= 0.04:
+        return False
+    return True
+
+
+def panel_label_for_index(index):
+    if index < len(PANEL_LABELS):
+        return PANEL_LABELS[index]
+    return str(index + 1)
+
+
+def label_multi_panel_axes(fig, axes=None):
+    candidate_axes = list(np.atleast_1d(axes).ravel()) if axes is not None else list(fig.axes)
+    panel_axes = [ax for ax in candidate_axes if is_panel_axis(ax)]
+    if len(panel_axes) <= 1:
+        return
+    for index, ax in enumerate(panel_axes):
+        existing = getattr(ax, "_atlas_panel_label_artist", None)
+        if existing is not None:
+            try:
+                existing.remove()
+            except ValueError:
+                pass
+        ax._atlas_panel_label_artist = ax.text(
+            0.015,
+            1.055,
+            panel_label_for_index(index),
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=PLOT_FONT_SIZES["panel_label"],
+            fontfamily=PLOT_FONT_FAMILY,
+            fontweight="bold",
+            color="black",
+            zorder=20,
+            clip_on=False,
+        )
+
+
+def apply_figure_typography(fig):
+    for text in fig.findobj(match=lambda artist: hasattr(artist, "set_fontfamily")):
+        text.set_fontfamily(PLOT_FONT_FAMILY)
 
 
 def clean_group_series(series):
@@ -653,6 +790,38 @@ def classify_method_label(label):
         "method_family": family,
         "variant_status": variant_status,
     }
+
+
+def display_method_label(label):
+    text = str(label).strip()
+    lowered = text.lower()
+    has_sag = "sag" in lowered
+    has_mag = "mag" in lowered
+    has_xpg = "xpg" in lowered
+    if has_sag and has_xpg:
+        return "SAG\nxPGs"
+    if has_mag and has_xpg:
+        return "MAG\nxPGs"
+    if has_sag:
+        return "SAGs"
+    if has_mag:
+        return "MAGs"
+    return text.replace("_", " ")
+
+
+def profile_category_color(label):
+    info = classify_method_label(label)
+    family = info.get("method_family")
+    variant_status = info.get("variant_status")
+    if family == "SAG" and variant_status == "base":
+        return GUNC_PROFILE_CATEGORY_COLORS["sag_base"]
+    if family == "SAG" and variant_status == "variant":
+        return GUNC_PROFILE_CATEGORY_COLORS["sag_variant"]
+    if family == "MAG" and variant_status == "base":
+        return GUNC_PROFILE_CATEGORY_COLORS["mag_base"]
+    if family == "MAG" and variant_status == "variant":
+        return GUNC_PROFILE_CATEGORY_COLORS["mag_variant"]
+    return GUNC_PROFILE_CATEGORY_COLORS["other"]
 
 
 def classify_method_pair(group_a, group_b):
@@ -2375,6 +2544,72 @@ def plot_compare_qscore(ax, frame, compare_column):
     style_long_ticklabels(ax, axis="x", rotation=90, size=8)
 
 
+def hallmark_metric_specs(compare_df):
+    specs = [
+        ("rrna_16S_score", "16S"),
+        ("rrna_23S_score", "23S"),
+        ("rrna_5S_score", "5S"),
+        ("trna_ge_18", "tRNA>=18"),
+    ]
+    return [
+        (metric, label)
+        for metric, label in specs
+        if metric in compare_df.columns and pd.to_numeric(compare_df[metric], errors="coerce").notna().any()
+    ]
+
+
+def clipped_fraction_summary(values, summary_mode="mean"):
+    summary = metric_interval_summary(values, summary_mode=summary_mode)
+    if summary is None:
+        return None
+    summary["point"] = min(1.0, max(0.0, float(summary["point"])))
+    summary["low"] = min(1.0, max(0.0, float(summary["low"])))
+    summary["high"] = min(1.0, max(0.0, float(summary["high"])))
+    return summary
+
+
+def draw_hallmark_interval_axis(ax, compare_df, compare_column, metric, label, order, stats_df=None):
+    grouped_values = compare_metric_grouped_values(compare_df, compare_column, metric, order)
+    summaries = [clipped_fraction_summary(values, summary_mode="mean") for values in grouped_values]
+    if not any(summary is not None for summary in summaries):
+        ax.axis("off")
+        return False
+
+    y_positions = np.arange(len(order), dtype=float)
+    category_colors = dict(zip(order, grayscale_palette(len(order), start=0.18, stop=0.72)))
+    for y_pos, category, summary in zip(y_positions, order, summaries):
+        if summary is None:
+            continue
+        color = category_colors[category]
+        ax.hlines(
+            y_pos,
+            summary["low"],
+            summary["high"],
+            color=color,
+            linewidth=3.0,
+            zorder=2,
+        )
+        ax.scatter(
+            summary["point"],
+            y_pos,
+            s=58,
+            color=color,
+            edgecolors="black",
+            linewidths=0.75,
+            zorder=3,
+        )
+
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(order)
+    ax.invert_yaxis()
+    ax.set_xlim(-0.03, 1.03)
+    ax.set_xlabel("Fraction present")
+    ax.set_title(label, fontsize=11, fontweight="bold", pad=8)
+    style_benchmark_axis(ax, metric)
+    add_benchmark_significance_brackets(ax, metric, summaries, order, stats_df)
+    return True
+
+
 def plot_compare_hallmarks(ax, frame, compare_column, title=None, show_legend=True):
     compare_df = prepare_compare_frame(frame, compare_column)
     if compare_df.empty:
@@ -2382,42 +2617,58 @@ def plot_compare_hallmarks(ax, frame, compare_column, title=None, show_legend=Tr
         ax.text(0.5, 0.5, "No genomes available", ha="center", va="center")
         return
     order = category_order(compare_df, compare_column)
-    feature_df = (
-        compare_df.groupby(compare_column)[
-            ["rrna_16S_score", "rrna_23S_score", "rrna_5S_score", "trna_ge_18"]
-        ]
-        .mean()
-        .reindex(order)
-        .rename(
-            columns={
-                "rrna_16S_score": "16S",
-                "rrna_23S_score": "23S",
-                "rrna_5S_score": "5S",
-                "trna_ge_18": "tRNA>=18",
-            }
+    available_specs = hallmark_metric_specs(compare_df)
+    if not order or not available_specs:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "No hallmark data available", ha="center", va="center")
+        return
+
+    row_records = []
+    category_colors = dict(zip(order, grayscale_palette(len(order), start=0.18, stop=0.72)))
+    for metric, label in available_specs:
+        grouped_values = compare_metric_grouped_values(compare_df, compare_column, metric, order)
+        for category, values in zip(order, grouped_values):
+            summary = clipped_fraction_summary(values, summary_mode="mean")
+            if summary is None:
+                continue
+            row_records.append((label, category, summary))
+    if not row_records:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "No hallmark data available", ha="center", va="center")
+        return
+
+    y_positions = np.arange(len(row_records), dtype=float)
+    y_labels = [f"{feature} | {category}" for feature, category, _ in row_records]
+    for y_pos, (_, category, summary) in zip(y_positions, row_records):
+        color = category_colors.get(category, "#4d4d4d")
+        ax.hlines(y_pos, summary["low"], summary["high"], color=color, linewidth=2.6, zorder=2)
+        ax.scatter(
+            summary["point"],
+            y_pos,
+            s=42,
+            color=color,
+            edgecolors="black",
+            linewidths=0.65,
+            zorder=3,
         )
-        .reset_index()
-        .melt(id_vars=compare_column, var_name="feature", value_name="value")
-    )
-    sns.barplot(
-        data=feature_df,
-        x=compare_column,
-        y="value",
-        hue="feature",
-        order=order,
-        hue_order=["16S", "23S", "5S", "tRNA>=18"],
-        palette=["#1a1a1a", "#4d4d4d", "#808080", "#b3b3b3"],
-        ax=ax,
-    )
-    ax.set_ylim(0, 1)
-    ax.set_xlabel(compare_column)
-    ax.set_ylabel("Mean contribution")
+    feature_boundaries = []
+    cursor = 0
+    for _, label in available_specs:
+        count = sum(1 for feature, _, _ in row_records if feature == label)
+        if count:
+            cursor += count
+            feature_boundaries.append(cursor - 0.5)
+    for boundary in feature_boundaries[:-1]:
+        ax.axhline(boundary, color="#d9d9d9", linewidth=0.8, zorder=1)
+
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(y_labels, fontsize=7)
+    ax.invert_yaxis()
+    ax.set_xlim(-0.03, 1.03)
+    ax.set_xlabel("Fraction present")
+    ax.set_ylabel("Hallmark | category")
+    style_benchmark_axis(ax, "rrna_16S_score")
     ax.set_title(title or f"Hallmark contributions by {compare_column}")
-    style_long_ticklabels(ax, axis="x", rotation=90, size=8)
-    if show_legend:
-        place_axis_legend_right(ax, title="Feature")
-    elif ax.get_legend() is not None:
-        ax.get_legend().remove()
 
 
 def plot_compare_recovery_patterns(ax, frame, compare_column):
@@ -2707,8 +2958,18 @@ def style_benchmark_axis(ax, metric):
     ax.spines["left"].set_color("#2f2f2f")
     ax.spines["bottom"].set_color("#2f2f2f")
     ax.tick_params(axis="both", labelsize=9, colors="#2f2f2f")
-    if metric in {"integrity_score", "recoverability_score", "mimag_quality_index"}:
+    if metric in {
+        "integrity_score",
+        "recoverability_score",
+        "mimag_quality_index",
+        "rrna_16S_score",
+        "rrna_23S_score",
+        "rrna_5S_score",
+        "trna_ge_18",
+    }:
         ax.set_xlim(-0.03, 1.03)
+    elif metric in {SCORE_COLUMN}:
+        ax.set_xlim(0, 103)
     elif metric in {"Completeness"}:
         ax.set_xlim(0, 103)
     elif metric in {"Contamination"}:
@@ -2952,17 +3213,7 @@ def export_compare_single_metric_plots(compare_df, compare_column, compare_base,
 
 def export_compare_hallmark_bar_plot(compare_df, compare_column, compare_base, stats_df=None):
     ensure_plotting()
-    hallmark_specs = [
-        ("rrna_16S_score", "16S"),
-        ("rrna_23S_score", "23S"),
-        ("rrna_5S_score", "5S"),
-        ("trna_ge_18", "tRNA>=18"),
-    ]
-    available_specs = [
-        (metric, label)
-        for metric, label in hallmark_specs
-        if metric in compare_df.columns and pd.to_numeric(compare_df[metric], errors="coerce").notna().any()
-    ]
+    available_specs = hallmark_metric_specs(compare_df)
     if not available_specs:
         return []
 
@@ -2981,43 +3232,23 @@ def export_compare_hallmark_bar_plot(compare_df, compare_column, compare_base, s
         squeeze=False,
     )
     axes = axes.ravel()
-    x_positions = np.arange(1, len(order) + 1)
     for ax, (metric, label) in zip(axes, available_specs):
-        grouped_values = compare_metric_grouped_values(compare_df, compare_column, metric, order)
-        if not grouped_values or not any(len(values) for values in grouped_values):
-            ax.axis("off")
-            continue
-        means = [
-            float(np.nanmean(values)) if len(values) else np.nan
-            for values in grouped_values
-        ]
-        ax.bar(
-            x_positions,
-            means,
-            color="#bdbdbd",
-            edgecolor="black",
-            linewidth=0.8,
-            width=0.72,
-            zorder=2,
-        )
-        ax.set_xticks(x_positions)
-        ax.set_xticklabels(order, rotation=90)
-        ax.set_ylim(0, 1.05)
-        ax.set_ylabel("Fraction present")
-        ax.set_title(label)
-        ax.grid(axis="y", color="#d9d9d9", linestyle="-", linewidth=0.6, zorder=0)
-        for index, value in enumerate(means, start=1):
-            if pd.isna(value):
-                continue
-            ax.text(index, float(value) + 0.025, f"{float(value):.2f}", ha="center", va="bottom", fontsize=8)
-        add_compare_significance_brackets(ax, metric, grouped_values, order, stats_df)
-        bottom, top = ax.get_ylim()
-        ax.set_ylim(0, max(1.05, top))
+        draw_hallmark_interval_axis(ax, compare_df, compare_column, metric, label, order, stats_df=stats_df)
 
     for index in range(len(available_specs), len(axes)):
         axes[index].axis("off")
-    fig.suptitle(f"Hallmark feature contributions by {compare_column}", fontsize=16, y=0.99)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.suptitle(f"Hallmark feature contributions by {compare_column} (mean)", fontsize=16, y=0.99)
+    fig.text(
+        0.5,
+        0.014,
+        "Points show category means; horizontal intervals show approximate 95% confidence intervals. "
+        "Stars mark BH-adjusted pairwise q<0.05.",
+        ha="center",
+        va="bottom",
+        fontsize=9,
+        color="#4d4d4d",
+    )
+    fig.tight_layout(rect=[0, 0.05, 1, 0.95], w_pad=2.3, h_pad=2.0)
     out_base = output_dir / f"{Path(compare_base).name}_hallmark_contributions"
     save_figure(fig, str(out_base))
     return [str(out_base) + ".png", str(out_base) + ".pdf"]
@@ -3225,43 +3456,43 @@ def plot_compare_gunc_chimerism_facets(compare_df, compare_column, output_base):
         return False
 
     fig, axes = plt.subplots(
-        len(scopes_in_summary),
+        len(order),
         2,
-        figsize=(max(16, len(order) * 1.3), max(11, len(scopes_in_summary) * 3.3)),
+        figsize=(max(15.5, len(order) * 3.4), max(13.2, len(order) * 3.3)),
         sharex=False,
         sharey=False,
+        subplot_kw={"projection": "polar"},
     )
-    if len(scopes_in_summary) == 1:
+    if len(order) == 1:
         axes = np.array([axes])
 
-    for row_index, (quality_scope, quality_label) in enumerate(scopes_in_summary):
-        subset = summary.loc[summary["quality_scope"].astype(str) == quality_scope].copy()
+    for row_index, category in enumerate(order):
+        subset = summary.loc[summary[compare_column].astype(str) == str(category)].copy()
         subset[compare_column] = pd.Categorical(
             subset[compare_column].astype(str),
             categories=order,
             ordered=True,
         )
-        subset = subset.sort_values(compare_column, kind="mergesort")
+        subset = subset.sort_values("quality_scope", kind="mergesort")
 
         draw_gunc_default_panel(
             axes[row_index, 0],
             subset,
             compare_column,
-            quality_label,
+            display_method_label(category).replace("\n", "-"),
             y_max=shared_ymax,
-            show_legend=(row_index == 0),
+            show_legend=False,
         )
         draw_gunc_strict_panel(
             axes[row_index, 1],
             subset,
             compare_column,
-            quality_label,
+            display_method_label(category).replace("\n", "-"),
             y_max=shared_ymax,
             show_legend=(row_index == 0),
         )
 
-    fig.suptitle(f"GUNC chimerism summary by {compare_column}", fontsize=16, y=0.995)
-    apply_tight_layout(fig, rect=[0, 0, RIGHT_MARGIN, 0.98])
+    fig.subplots_adjust(left=0.07, right=0.86, bottom=0.06, top=0.96, wspace=0.24, hspace=0.30)
     save_figure(fig, output_base + "_gunc_chimerism_facets")
     return True
 
@@ -3272,6 +3503,26 @@ def resolve_gunc_plot_ymax(summary):
         return 1.0
     headroom = max(2.0, math.ceil(max_total * 0.14))
     return max_total + headroom
+
+
+def wilson_score_interval(k, n, z=1.96):
+    try:
+        k = float(k)
+        n = float(n)
+    except (TypeError, ValueError):
+        return np.nan, np.nan
+    if not np.isfinite(k) or not np.isfinite(n) or n <= 0:
+        return np.nan, np.nan
+    k = min(max(k, 0.0), n)
+    proportion = k / n
+    denominator = 1.0 + (z ** 2 / n)
+    center = (proportion + (z ** 2 / (2.0 * n))) / denominator
+    delta = (
+        z
+        * math.sqrt((proportion * (1.0 - proportion) / n) + (z ** 2 / (4.0 * n * n)))
+        / denominator
+    )
+    return max(0.0, center - delta), min(1.0, center + delta)
 
 
 def annotate_bar_totals(ax, x_positions, totals, y_max):
@@ -3299,40 +3550,118 @@ def draw_gunc_default_panel(ax, subset, compare_column, quality_label, y_max, sh
         quality_label=quality_label,
         title_suffix="default (RRS >= 0.3, CSS > 0.45)",
         prefix="n_gunc_",
-        legend_title="Assessment",
+        legend_title="Category",
         y_max=y_max,
         show_legend=show_legend,
     )
 
 
-def draw_gunc_assessment_panel(ax, subset, compare_column, quality_label, title_suffix, prefix, legend_title, y_max, show_legend=True):
-    default_plot = subset[[compare_column]].copy()
-    default_plot[compare_column] = default_plot[compare_column].astype(str)
-    x_positions = np.arange(len(default_plot))
-    bottoms = np.zeros(len(default_plot), dtype=float)
-    for assessment in GUNC_ASSESSMENT_ORDER:
-        values = subset[f"{prefix}{assessment}"].fillna(0).astype(float).to_numpy()
-        ax.bar(
-            x_positions,
-            values,
-            bottom=bottoms,
-            color=GUNC_ASSESSMENT_COLORS[assessment],
-            edgecolor="black",
-            linewidth=0.4,
-            label=GUNC_ASSESSMENT_SHORT_LABELS[assessment],
+def draw_gunc_assessment_panel(
+    ax,
+    subset,
+    compare_column,
+    quality_label,
+    title_suffix,
+    prefix,
+    legend_title,
+    y_max,
+    show_legend=True,
+):
+    subset = subset.loc[pd.to_numeric(subset.get("n_genomes", 0), errors="coerce").fillna(0).gt(0)].copy()
+    subset = subset.loc[subset["quality_scope"].astype(str).isin(GUNC_PROFILE_QUALITY_LABELS)].copy()
+    if subset.empty:
+        ax.axis("off")
+        ax.text(0.5, 0.5, f"No genomes available\n{quality_label}", ha="center", va="center")
+        return
+    present_scopes = [
+        scope for scope, _ in GUNC_QUALITY_SCOPES
+        if scope in GUNC_PROFILE_QUALITY_LABELS and scope in set(subset["quality_scope"].astype(str))
+    ]
+    if not present_scopes:
+        ax.axis("off")
+        return
+    assessment_labels = [GUNC_ASSESSMENT_SHORT_LABELS[assessment] for assessment in GUNC_ASSESSMENT_ORDER]
+    angles = np.linspace(0, 2.0 * np.pi, len(GUNC_ASSESSMENT_ORDER), endpoint=False)
+    closed_angles = np.concatenate([angles, angles[:1]])
+    ax.set_theta_offset(np.pi / 2.0)
+    ax.set_theta_direction(-1)
+    scope_rows = {
+        str(row.get("quality_scope", "")): row
+        for row in subset.to_dict("records")
+    }
+    for scope in present_scopes:
+        row = scope_rows.get(scope)
+        if row is None:
+            continue
+        total = float(row.get("n_genomes", 0) or 0)
+        if total <= 0:
+            continue
+        fractions = []
+        for assessment in GUNC_ASSESSMENT_ORDER:
+            count_column = f"{prefix}{assessment}"
+            count = float(row.get(count_column, 0) or 0) if count_column in subset.columns else 0.0
+            fractions.append(count / total)
+        values = np.asarray(fractions, dtype=float)
+        if not np.isfinite(values).any():
+            continue
+        values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+        closed_values = np.concatenate([values, values[:1]])
+        color = GUNC_PROFILE_QUALITY_COLORS[scope]
+        ax.plot(
+            closed_angles,
+            closed_values,
+            color=color,
+            linewidth=2.0,
+            marker="o",
+            markersize=4.5,
+            markeredgecolor="black",
+            markeredgewidth=0.55,
+            label=GUNC_PROFILE_QUALITY_LABELS[scope],
+            zorder=3,
         )
-        bottoms = bottoms + values
-    totals = subset["n_genomes"].fillna(0).astype(float).to_numpy()
-    ax.set_ylim(0, y_max)
-    ax.set_ylabel("Genome count")
-    ax.set_xlabel(compare_column)
-    ax.set_title(f"{quality_label}: {title_suffix}")
-    ax.set_xticks(x_positions)
-    ax.set_xticklabels(default_plot[compare_column].tolist())
-    style_long_ticklabels(ax, axis="x", rotation=90, size=8)
-    annotate_bar_totals(ax, x_positions, totals, y_max)
+        ax.fill(closed_angles, closed_values, color=color, alpha=0.16, zorder=2)
+    ax.set_ylim(0, 1.0)
+    ax.set_xticks(angles)
+    ax.set_xticklabels([])
+    label_radius = 1.08
+    for angle, assessment in zip(angles, assessment_labels):
+        if assessment == "Clean":
+            ha = "left"
+        elif assessment == "Unscored":
+            ha = "right"
+        else:
+            ha = "center"
+        ax.text(
+            angle,
+            label_radius,
+            assessment,
+            ha=ha,
+            va="center",
+            fontsize=8,
+            clip_on=False,
+        )
+    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
+    ax.set_yticklabels(["0.25", "0.50", "0.75", "1.00"], fontsize=8)
+    ax.set_rlabel_position(135)
+    ax.grid(color="#d9d9d9", linestyle="-", linewidth=0.7)
+    ax.spines["polar"].set_color("#bdbdbd")
+    ax.set_title(quality_label, fontsize=11, pad=24)
     if show_legend:
-        place_axis_legend_right(ax, title=legend_title)
+        handles = [
+            plt.Line2D(
+                [0],
+                [0],
+                marker="o",
+                color=GUNC_PROFILE_QUALITY_COLORS[scope],
+                markerfacecolor=GUNC_PROFILE_QUALITY_COLORS[scope],
+                markeredgecolor="black",
+                linewidth=2.0,
+                markersize=6,
+                label=GUNC_PROFILE_QUALITY_LABELS[scope],
+            )
+            for scope in GUNC_PROFILE_QUALITY_LABELS
+        ]
+        ax.legend(handles=handles, title="Quality", frameon=False, loc="center left", bbox_to_anchor=(1.18, 0.5))
     else:
         legend = ax.get_legend()
         if legend is not None:
@@ -3347,7 +3676,7 @@ def draw_gunc_strict_panel(ax, subset, compare_column, quality_label, y_max, sho
         quality_label=quality_label,
         title_suffix="strict (RRS >= 0.5, CSS >= 0.85, above genus)",
         prefix="n_gunc_strict_",
-        legend_title="Assessment",
+        legend_title="Category",
         y_max=y_max,
         show_legend=show_legend,
     )
@@ -3356,90 +3685,84 @@ def draw_gunc_strict_panel(ax, subset, compare_column, quality_label, y_max, sho
 def plot_compare_gunc_default_facets(summary, compare_column, order, output_base):
     ensure_plotting()
     shared_ymax = resolve_gunc_plot_ymax(summary)
-    scopes_in_summary = [
-        (scope, label) for scope, label in GUNC_QUALITY_SCOPES
-        if scope in set(summary["quality_scope"].astype(str))
-    ]
-    if not scopes_in_summary:
+    if not order:
         return False
 
-    n_panels = len(scopes_in_summary)
+    n_panels = len(order)
     ncols = 2
     nrows = int(math.ceil(n_panels / float(ncols)))
     fig, axes = plt.subplots(
         nrows,
         ncols,
-        figsize=(max(14, len(order) * 1.7), max(9, nrows * 4.6)),
+        figsize=(max(11.2, len(order) * 2.45), max(8.8, nrows * 3.9)),
         sharex=False,
         sharey=False,
+        subplot_kw={"projection": "polar"},
     )
     axes = np.atleast_1d(axes).ravel()
 
-    for row_index, (quality_scope, quality_label) in enumerate(scopes_in_summary):
-        subset = summary.loc[summary["quality_scope"].astype(str) == quality_scope].copy()
+    legend_panel_index = min(1, n_panels - 1)
+    for row_index, category in enumerate(order):
+        subset = summary.loc[summary[compare_column].astype(str) == str(category)].copy()
         subset[compare_column] = pd.Categorical(
             subset[compare_column].astype(str),
             categories=order,
             ordered=True,
         )
-        subset = subset.sort_values(compare_column, kind="mergesort")
+        subset = subset.sort_values("quality_scope", kind="mergesort")
         draw_gunc_default_panel(
             axes[row_index],
             subset,
             compare_column,
-            quality_label,
+            display_method_label(category).replace("\n", "-"),
             y_max=shared_ymax,
-            show_legend=(row_index == 0),
+            show_legend=(row_index == legend_panel_index),
         )
     for index in range(n_panels, len(axes)):
         axes[index].axis("off")
-    fig.suptitle(f"GUNC default assessment by {compare_column}", fontsize=16, y=0.995)
-    apply_tight_layout(fig, rect=[0, 0, RIGHT_MARGIN, 0.98])
+    fig.subplots_adjust(left=0.09, right=0.84, bottom=0.08, top=0.93, wspace=0.28, hspace=0.30)
     save_figure(fig, output_base + "_gunc_default_facets")
     return True
 
 def plot_compare_gunc_strict_facets(summary, compare_column, order, output_base):
     ensure_plotting()
     shared_ymax = resolve_gunc_plot_ymax(summary)
-    scopes_in_summary = [
-        (scope, label) for scope, label in GUNC_QUALITY_SCOPES
-        if scope in set(summary["quality_scope"].astype(str))
-    ]
-    if not scopes_in_summary:
+    if not order:
         return False
 
-    n_panels = len(scopes_in_summary)
+    n_panels = len(order)
     ncols = 2
     nrows = int(math.ceil(n_panels / float(ncols)))
     fig, axes = plt.subplots(
         nrows,
         ncols,
-        figsize=(max(14, len(order) * 1.7), max(9, nrows * 4.6)),
+        figsize=(max(11.2, len(order) * 2.45), max(8.8, nrows * 3.9)),
         sharex=False,
         sharey=False,
+        subplot_kw={"projection": "polar"},
     )
     axes = np.atleast_1d(axes).ravel()
 
-    for row_index, (quality_scope, quality_label) in enumerate(scopes_in_summary):
-        subset = summary.loc[summary["quality_scope"].astype(str) == quality_scope].copy()
+    legend_panel_index = min(1, n_panels - 1)
+    for row_index, category in enumerate(order):
+        subset = summary.loc[summary[compare_column].astype(str) == str(category)].copy()
         subset[compare_column] = pd.Categorical(
             subset[compare_column].astype(str),
             categories=order,
             ordered=True,
         )
-        subset = subset.sort_values(compare_column, kind="mergesort")
+        subset = subset.sort_values("quality_scope", kind="mergesort")
         draw_gunc_strict_panel(
             axes[row_index],
             subset,
             compare_column,
-            quality_label,
+            display_method_label(category).replace("\n", "-"),
             y_max=shared_ymax,
-            show_legend=(row_index == 0),
+            show_legend=(row_index == legend_panel_index),
         )
     for index in range(n_panels, len(axes)):
         axes[index].axis("off")
-    fig.suptitle(f"GUNC strict and coverage by {compare_column}", fontsize=16, y=0.995)
-    apply_tight_layout(fig, rect=[0, 0, RIGHT_MARGIN, 0.98])
+    fig.subplots_adjust(left=0.09, right=0.84, bottom=0.08, top=0.93, wspace=0.28, hspace=0.30)
     save_figure(fig, output_base + "_gunc_strict_facets")
     return True
 
@@ -4895,6 +5218,8 @@ def save_taxonomy_clustermap(frame, output_base):
         rank_token = sanitize_token(rank)
         png_path = output_base + f"_taxonomy_clustermap_{rank_token}.png"
         pdf_path = output_base + f"_taxonomy_clustermap_{rank_token}.pdf"
+        apply_plot_style()
+        apply_figure_typography(grid.fig)
         grid.fig.savefig(png_path, dpi=300, bbox_inches="tight")
         grid.fig.savefig(pdf_path, bbox_inches="tight")
         plt.close(grid.fig)
@@ -6620,6 +6945,9 @@ def add_qscore_colorbar(fig, mappable, axes=None, cax_rect=None):
 
 
 def save_figure(fig, output_base):
+    apply_plot_style()
+    label_multi_panel_axes(fig)
+    apply_figure_typography(fig)
     fig.savefig(output_base + ".png", dpi=300, bbox_inches="tight")
     fig.savefig(output_base + ".pdf", bbox_inches="tight")
     plt.close(fig)
@@ -6666,7 +6994,7 @@ def save_individual_plots(frame, output_base, group_column=None, top_n_groups=12
 
 def save_atlas(frame, output_base, group_column=None, top_n_groups=12):
     ensure_plotting()
-    sns.set_theme(style="whitegrid", context="notebook")
+    apply_plot_style()
     if "category" in frame.columns and frame["category"].astype(str).nunique() > 1:
         save_grouped_atlas(
             frame,
