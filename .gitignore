@@ -46,6 +46,8 @@ dag.*
 
 # local editor state
 .vscode/
+.codex
+trash/
 
 # generated reference payloads built on demand
 reference_mappings/
