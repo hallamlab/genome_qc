@@ -21,6 +21,7 @@ from summarize_metapathways_genomes import (
     DEFAULT_REFERENCE_MAPPINGS_DIR,
     ELEMENTAL_MODE_LABELS,
     ELEMENTAL_MODE_ORDER,
+    PLOT_FONT_SIZES,
     build_annotation_quality_table,
     build_annotation_source_table,
     build_elemental_mode_summary_table,
@@ -2391,7 +2392,7 @@ def annotate_bar_values(ax, values, fmt="int"):
             label = f"{numeric:.1f}"
         else:
             label = f"{int(round(numeric))}"
-        ax.text(index, numeric, label, ha="center", va="bottom", fontsize=8)
+        ax.text(index, numeric, label, ha="center", va="bottom", fontsize=PLOT_FONT_SIZES["annotation"])
 
 
 def benjamini_hochberg_adjust(pvalues):
@@ -2636,7 +2637,15 @@ def add_significance_brackets(ax, metric_name, grouped_values, order, stats_df):
 
     for x1, x2, y, star_label in brackets:
         ax.plot([x1, x1, x2, x2], [y, y + line_height, y + line_height, y], color="black", linewidth=0.9, zorder=4)
-        ax.text((x1 + x2) / 2.0, y + line_height, star_label, ha="center", va="bottom", fontsize=9, zorder=5)
+        ax.text(
+            (x1 + x2) / 2.0,
+            y + line_height,
+            star_label,
+            ha="center",
+            va="bottom",
+            fontsize=PLOT_FONT_SIZES["annotation"],
+            zorder=5,
+        )
 
     current_bottom, current_top = ax.get_ylim()
     required_top = data_max + top_padding + ((max_level + 1.9) * level_height)
@@ -2802,7 +2811,7 @@ def style_benchmark_metric_axis(ax, metric):
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_color("#2f2f2f")
     ax.spines["bottom"].set_color("#2f2f2f")
-    ax.tick_params(axis="both", labelsize=8, colors="#2f2f2f")
+    ax.tick_params(axis="both", labelsize=PLOT_FONT_SIZES["tick"], colors="#2f2f2f")
     bounded_metrics = {
         "mimag_quality_index",
         "integrity_score",
@@ -2912,7 +2921,7 @@ def add_benchmark_significance_brackets(ax, metric, summaries, order, stats_df):
             vertical_stars,
             ha="left",
             va="center",
-            fontsize=8,
+            fontsize=PLOT_FONT_SIZES["annotation"],
             linespacing=0.65,
             transform=transform,
             clip_on=False,
@@ -2998,8 +3007,8 @@ def plot_metapathways_benchmark_metric_panel(
         ax.set_yticks(y_positions)
         ax.set_yticklabels(order)
         ax.invert_yaxis()
-        ax.set_title(title, fontsize=10.5, fontweight="bold", pad=8)
-        ax.set_xlabel(title, fontsize=8.5)
+        ax.set_title(title, fontsize=PLOT_FONT_SIZES["title"], fontweight="bold", pad=8)
+        ax.set_xlabel(title, fontsize=PLOT_FONT_SIZES["axis_label"])
         style_benchmark_metric_axis(ax, metric)
         if show_significance:
             add_benchmark_significance_brackets(ax, metric, summaries, order, stats_df)
@@ -3013,7 +3022,7 @@ def plot_metapathways_benchmark_metric_panel(
         return False
     fig.suptitle(
         f"MetaPathways benchmark by category ({point_label}{'; significant pairs' if show_significance else ''})",
-        fontsize=15,
+        fontsize=PLOT_FONT_SIZES["suptitle"],
         fontweight="bold",
         y=0.995,
     )
@@ -3024,7 +3033,7 @@ def plot_metapathways_benchmark_metric_panel(
         + (" Stars mark BH-adjusted pairwise q<0.05." if show_significance else ""),
         ha="center",
         va="bottom",
-        fontsize=9,
+        fontsize=PLOT_FONT_SIZES["annotation"],
         color="#4d4d4d",
     )
     fig.tight_layout(rect=[0, 0.04, 1, 0.965], w_pad=2.3, h_pad=2.0)
@@ -3721,8 +3730,8 @@ def plot_mobility_genome_prevalence_panel(overall_summary_df, output_base, stats
         ax.set_yticklabels(order)
         ax.invert_yaxis()
         ax.set_xlim(-0.03, 1.03)
-        ax.set_title(title, fontsize=10.5, fontweight="bold", pad=8)
-        ax.set_xlabel("Prevalence fraction", fontsize=8.5)
+        ax.set_title(title, fontsize=PLOT_FONT_SIZES["title"], fontweight="bold", pad=8)
+        ax.set_xlabel("Prevalence fraction", fontsize=PLOT_FONT_SIZES["axis_label"])
         style_benchmark_metric_axis(ax, metric)
         if show_significance:
             add_benchmark_significance_brackets(ax, metric, summaries, order, plot_stats_df)
@@ -3735,7 +3744,7 @@ def plot_mobility_genome_prevalence_panel(overall_summary_df, output_base, stats
         return False
     fig.suptitle(
         f"Experimental mobility-feature prevalence by category ({'significant pairs' if show_significance else 'genome-level prevalence'})",
-        fontsize=15,
+        fontsize=PLOT_FONT_SIZES["suptitle"],
         fontweight="bold",
         y=0.995,
     )
@@ -3746,7 +3755,7 @@ def plot_mobility_genome_prevalence_panel(overall_summary_df, output_base, stats
         + (" Stars mark BH-adjusted pairwise Fisher exact q<0.05." if show_significance else ""),
         ha="center",
         va="bottom",
-        fontsize=9,
+        fontsize=PLOT_FONT_SIZES["annotation"],
         color="#4d4d4d",
     )
     fig.tight_layout(rect=[0, 0.05, 1, 0.94], w_pad=2.3, h_pad=2.0)
@@ -3830,8 +3839,8 @@ def plot_mobility_orf_burden_panel(burden_df, output_base, summary_mode="median"
         ax.set_yticks(y_positions)
         ax.set_yticklabels(order)
         ax.invert_yaxis()
-        ax.set_title(title, fontsize=10.5, fontweight="bold", pad=8)
-        ax.set_xlabel("Unique mobility-associated ORFs per genome", fontsize=8.5)
+        ax.set_title(title, fontsize=PLOT_FONT_SIZES["title"], fontweight="bold", pad=8)
+        ax.set_xlabel("Unique mobility-associated ORFs per genome", fontsize=PLOT_FONT_SIZES["axis_label"])
         style_benchmark_metric_axis(ax, metric)
         ax.set_xlim(left=0)
         if show_significance:
@@ -3845,7 +3854,7 @@ def plot_mobility_orf_burden_panel(burden_df, output_base, summary_mode="median"
         return False
     fig.suptitle(
         f"Experimental mobility-associated ORF burden by category ({point_label}{'; significant pairs' if show_significance else ''})",
-        fontsize=15,
+        fontsize=PLOT_FONT_SIZES["suptitle"],
         fontweight="bold",
         y=0.995,
     )
@@ -3856,7 +3865,7 @@ def plot_mobility_orf_burden_panel(burden_df, output_base, summary_mode="median"
         + (" Stars mark BH-adjusted pairwise Mann-Whitney U q<0.05." if show_significance else ""),
         ha="center",
         va="bottom",
-        fontsize=9,
+        fontsize=PLOT_FONT_SIZES["annotation"],
         color="#4d4d4d",
     )
     fig.tight_layout(rect=[0, 0.05, 1, 0.94], w_pad=2.3, h_pad=2.0)
@@ -4208,7 +4217,7 @@ def plot_variant_improvement_deltas(by_sample_df, output_base):
                 zorder=3,
             )
         ax.set_yticks(np.arange(len(entity_labels)))
-        ax.set_yticklabels(entity_labels, fontsize=8)
+        ax.set_yticklabels(entity_labels, fontsize=PLOT_FONT_SIZES["tick"])
         ax.set_title(metric_label)
         ax.set_xlabel("Variant - base")
         ax.grid(axis="x", color="#dddddd", linestyle="-", linewidth=0.6)
@@ -4227,14 +4236,14 @@ def plot_variant_improvement_deltas(by_sample_df, output_base):
             transform=ax.transAxes,
             ha="left",
             va="bottom",
-            fontsize=8,
+            fontsize=PLOT_FONT_SIZES["annotation"],
             bbox={"facecolor": "white", "edgecolor": "#999999", "alpha": 0.85, "pad": 2.0},
         )
 
     for index in range(len(metric_order), len(axes)):
         axes[index].axis("off")
 
-    fig.suptitle("Base-to-variant MetaPathways improvement deltas by sample", fontsize=16, y=0.995)
+    fig.suptitle("Base-to-variant MetaPathways improvement deltas by sample", fontsize=PLOT_FONT_SIZES["suptitle"], y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     save_figure(fig, output_base)
     return True
@@ -4292,7 +4301,7 @@ def plot_variant_improvement_before_after(by_sample_df, output_base):
             ax.scatter(base_value, y_pos, s=34, color=base_color, edgecolors="black", linewidths=0.3, zorder=2)
             ax.scatter(variant_value, y_pos, s=34, color=variant_color, edgecolors="black", linewidths=0.3, zorder=3)
         ax.set_yticks(np.arange(len(entity_labels)))
-        ax.set_yticklabels(entity_labels, fontsize=8)
+        ax.set_yticklabels(entity_labels, fontsize=PLOT_FONT_SIZES["tick"])
         ax.set_title(metric_label)
         ax.set_xlabel("Per-sample median" if metric_id != "n_genomes" else "Per-sample count")
         ax.grid(axis="x", color="#dddddd", linestyle="-", linewidth=0.6)
@@ -4305,14 +4314,14 @@ def plot_variant_improvement_before_after(by_sample_df, output_base):
             transform=ax.transAxes,
             ha="left",
             va="bottom",
-            fontsize=8,
+            fontsize=PLOT_FONT_SIZES["annotation"],
             bbox={"facecolor": "white", "edgecolor": "#999999", "alpha": 0.85, "pad": 2.0},
         )
 
     for index in range(len(metric_order), len(axes)):
         axes[index].axis("off")
 
-    fig.suptitle("Base-versus-variant MetaPathways sample summaries", fontsize=16, y=0.995)
+    fig.suptitle("Base-versus-variant MetaPathways sample summaries", fontsize=PLOT_FONT_SIZES["suptitle"], y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     save_figure(fig, output_base)
     return True
@@ -4630,7 +4639,14 @@ def plot_selection_preference_summary(overall_df, pairwise_df, output_base, cate
         fraction = pd.to_numeric(row["win_fraction_when_competing"], errors="coerce").iloc[0]
         if pd.isna(fraction):
             continue
-        axes[0].text(index, float(fraction), f"{wins}/{competing}", ha="center", va="bottom", fontsize=8)
+        axes[0].text(
+            index,
+            float(fraction),
+            f"{wins}/{competing}",
+            ha="center",
+            va="bottom",
+            fontsize=PLOT_FONT_SIZES["annotation"],
+        )
 
     heatmap_matrix = pd.DataFrame(np.nan, index=order, columns=order)
     annotation_matrix = pd.DataFrame("", index=order, columns=order)
@@ -4665,11 +4681,19 @@ def plot_selection_preference_summary(overall_df, pairwise_df, output_base, cate
             if pd.isna(value):
                 continue
             color = "white" if float(value) >= 0.55 else "black"
-            axes[1].text(col_index, row_index, text, ha="center", va="center", fontsize=8, color=color)
+            axes[1].text(
+                col_index,
+                row_index,
+                text,
+                ha="center",
+                va="center",
+                fontsize=PLOT_FONT_SIZES["annotation"],
+                color=color,
+            )
     cbar = fig.colorbar(image, ax=axes[1], fraction=0.03, pad=0.02)
     cbar.set_label("Row category win fraction")
 
-    fig.suptitle("Category selection preference across competing components", fontsize=16, y=0.98)
+    fig.suptitle("Category selection preference across competing components", fontsize=PLOT_FONT_SIZES["suptitle"], y=0.98)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     save_figure(fig, output_base)
     return True
@@ -4704,9 +4728,16 @@ def plot_selected_category_counts(summary_df, output_base, category_column="cate
         ax.set_xticks(x)
         ax.set_xticklabels(order, rotation=90)
         for index, value in enumerate(values.tolist()):
-            ax.text(index, float(value), f"{int(round(value))}", ha="center", va="bottom", fontsize=8)
+            ax.text(
+                index,
+                float(value),
+                f"{int(round(value))}",
+                ha="center",
+                va="bottom",
+                fontsize=PLOT_FONT_SIZES["annotation"],
+            )
         ax.grid(axis="y", color="#dddddd", linestyle="-", linewidth=0.6)
-    fig.suptitle("Final selected genomes by category", fontsize=16, y=0.995)
+    fig.suptitle("Final selected genomes by category", fontsize=PLOT_FONT_SIZES["suptitle"], y=0.995)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     save_figure(fig, output_base)
     return True
@@ -4803,7 +4834,7 @@ def plot_combined_category_compact_summary(
     dedup_note = "all genomes"
     fig.suptitle(
         f"MetaPathways compact summary ({dedup_note}; samples={n_samples})",
-        fontsize=16,
+        fontsize=PLOT_FONT_SIZES["suptitle"],
         y=0.99,
     )
     fig.tight_layout(rect=[0, 0, 1, 0.95])
@@ -4882,7 +4913,11 @@ def plot_combined_category_distributions(genome_df, output_base, category_column
     if not wrote_any:
         plt_local.close(fig)
         return False
-    fig.suptitle("MetaPathways category metric distributions (quality first, then function)", fontsize=16, y=0.995)
+    fig.suptitle(
+        "MetaPathways category metric distributions (quality first, then function)",
+        fontsize=PLOT_FONT_SIZES["suptitle"],
+        y=0.995,
+    )
     fig.tight_layout(rect=[0, 0, 1, 0.955])
     save_figure(fig, output_base)
     return True
@@ -4937,7 +4972,7 @@ def plot_sample_category_count_heatmap(genome_df, output_base, category_column="
                 str(value),
                 ha="center",
                 va="center",
-                fontsize=8,
+                fontsize=PLOT_FONT_SIZES["annotation"],
                 color=_heatmap_text_color(value, vmax),
             )
     cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
@@ -4994,7 +5029,7 @@ def plot_category_mode_support_heatmaps(genome_df, output_base, category_column=
         vmax = max(1.0, float(np.nanmax(matrix.values)))
         image = ax.imshow(matrix.values, cmap="Greys", vmin=0, vmax=vmax, aspect="auto")
         ax.set_xticks(np.arange(len(modes)))
-        ax.set_xticklabels(labels, rotation=90, fontsize=8)
+        ax.set_xticklabels(labels, rotation=90, fontsize=PLOT_FONT_SIZES["tick"])
         ax.set_yticks(np.arange(matrix.shape[0]))
         ax.set_yticklabels(matrix.index.astype(str).tolist())
         ax.set_title(title)
@@ -5007,12 +5042,12 @@ def plot_category_mode_support_heatmaps(genome_df, output_base, category_column=
                     f"{value:.1f}",
                     ha="center",
                     va="center",
-                    fontsize=7,
+                    fontsize=PLOT_FONT_SIZES["annotation"],
                     color=_heatmap_text_color(value, vmax),
                 )
         cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
         cbar.set_label("Mean count per genome")
-    fig.suptitle("Category-level elemental mode support comparison", fontsize=16, y=0.99)
+    fig.suptitle("Category-level elemental mode support comparison", fontsize=PLOT_FONT_SIZES["suptitle"], y=0.99)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     save_figure(fig, output_base)
     return True
@@ -5071,7 +5106,7 @@ def plot_category_pathway_presence_heatmap(pathway_df, genome_df, output_base, c
     vmax = max(1.0, float(np.nanmax(fraction_matrix.values)))
     image = ax.imshow(fraction_matrix.values, cmap="Greys", vmin=0, vmax=vmax, aspect="auto")
     ax.set_xticks(np.arange(fraction_matrix.shape[1]))
-    ax.set_xticklabels(fraction_matrix.columns.astype(str).tolist(), rotation=90, fontsize=8)
+    ax.set_xticklabels(fraction_matrix.columns.astype(str).tolist(), rotation=90, fontsize=PLOT_FONT_SIZES["tick"])
     ax.set_yticks(np.arange(fraction_matrix.shape[0]))
     ax.set_yticklabels(fraction_matrix.index.astype(str).tolist())
     ax.set_xlabel("Pathway")
@@ -5087,7 +5122,7 @@ def plot_category_pathway_presence_heatmap(pathway_df, genome_df, output_base, c
                 str(count),
                 ha="center",
                 va="center",
-                fontsize=7,
+                fontsize=PLOT_FONT_SIZES["annotation"],
                 color=_heatmap_text_color(frac, vmax),
             )
     cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
@@ -5472,10 +5507,13 @@ def plot_species_category_marker_heatmap(
     ax.set_xticklabels(
         [f"{ELEMENTAL_MODE_LABELS.get(mode_id, mode_id)}\n{category}" for mode_id, category in column_keys],
         rotation=90,
-        fontsize=8,
+        fontsize=PLOT_FONT_SIZES["tick"],
     )
     ax.set_yticks(np.arange(len(ordered_species)))
-    ax.set_yticklabels([str(row.get("species_lineage_label", "")).strip() for row in ordered_species], fontsize=7)
+    ax.set_yticklabels(
+        [str(row.get("species_lineage_label", "")).strip() for row in ordered_species],
+        fontsize=PLOT_FONT_SIZES["tick"],
+    )
     ax.set_xlabel("Mode and category")
     ax.set_ylabel("Species lineage")
     ax.set_title(plot_title)
@@ -5495,13 +5533,13 @@ def plot_species_category_marker_heatmap(
                 text,
                 ha="center",
                 va="center",
-                fontsize=7,
+                fontsize=PLOT_FONT_SIZES["annotation"],
                 color=_heatmap_text_color(value, 1.0),
             )
 
     cbar = fig.colorbar(image, ax=ax, fraction=0.025, pad=0.02)
     cbar.set_label(colorbar_label)
-    fig.text(0.5, 0.012, footer_note, ha="center", va="bottom", fontsize=9)
+    fig.text(0.5, 0.012, footer_note, ha="center", va="bottom", fontsize=PLOT_FONT_SIZES["annotation"])
     fig.tight_layout(rect=[0, 0.03, 1, 1])
     save_figure(fig, output_base)
     return True
@@ -5675,9 +5713,13 @@ def plot_taxon_mode_evidence_heatmap(summary_df, output_base, rank, evidence_lab
         image = ax.imshow(matrix.values, cmap=cmap, vmin=0.0, vmax=vmax, aspect="auto")
         ax.set_title(str(category))
         ax.set_xticks(np.arange(len(modes)))
-        ax.set_xticklabels([ELEMENTAL_MODE_LABELS.get(mode, mode) for mode in modes], rotation=90, fontsize=7)
+        ax.set_xticklabels(
+            [ELEMENTAL_MODE_LABELS.get(mode, mode) for mode in modes],
+            rotation=90,
+            fontsize=PLOT_FONT_SIZES["tick"],
+        )
         ax.set_yticks(np.arange(len(taxa)))
-        ax.set_yticklabels(taxa, fontsize=6)
+        ax.set_yticklabels(taxa, fontsize=PLOT_FONT_SIZES["tick"])
         ax.set_xlabel("Functional mode")
         ax.set_ylabel(rank)
     for index in range(len(categories), len(axes_flat)):
@@ -5685,14 +5727,14 @@ def plot_taxon_mode_evidence_heatmap(summary_df, output_base, rank, evidence_lab
     if image is not None:
         cbar = fig.colorbar(image, ax=axes_flat[: len(categories)].tolist(), fraction=0.018, pad=0.015)
         cbar.set_label("Mean count per best representative")
-    fig.suptitle(f"{rank}-level average {evidence_label} by category", fontsize=14, y=0.995)
+    fig.suptitle(f"{rank}-level average {evidence_label} by category", fontsize=PLOT_FONT_SIZES["suptitle"], y=0.995)
     fig.text(
         0.5,
         0.012,
         "Rows are taxa; cells are category-specific means across best species-category representatives.",
         ha="center",
         va="bottom",
-        fontsize=8,
+        fontsize=PLOT_FONT_SIZES["annotation"],
     )
     fig.subplots_adjust(left=0.18, right=0.94, bottom=0.20, top=0.90, wspace=0.10, hspace=0.42)
     save_figure(fig, output_base)
@@ -6032,14 +6074,18 @@ def plot_sample_representative_heatmap(representative_df, output_base, category_
                     text,
                     ha="center",
                     va="center",
-                    fontsize=8,
+                    fontsize=PLOT_FONT_SIZES["annotation"],
                     color=_heatmap_text_color(value, vmax),
                 )
         cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.02)
         cbar.set_label(title)
     for index in range(len(panel_matrices), len(axes)):
         axes[index].axis("off")
-    fig.suptitle("Sample-wise representative genomes: quality then functional evidence", fontsize=16, y=0.995)
+    fig.suptitle(
+        "Sample-wise representative genomes: quality then functional evidence",
+        fontsize=PLOT_FONT_SIZES["suptitle"],
+        y=0.995,
+    )
     fig.tight_layout(rect=[0, 0, 1, 0.955])
     save_figure(fig, output_base)
     return True
@@ -6104,7 +6150,11 @@ def plot_method_effectiveness_panel(summary_df, output_base, category_column="ca
             ax.set_ylim(0, max(1.02, float(values.max()) + 0.05))
     for index in range(len(available_metrics), len(axes)):
         axes[index].axis("off")
-    fig.suptitle("Method-level effectiveness: genome quality and functional evidence", fontsize=16, y=0.995)
+    fig.suptitle(
+        "Method-level effectiveness: genome quality and functional evidence",
+        fontsize=PLOT_FONT_SIZES["suptitle"],
+        y=0.995,
+    )
     fig.tight_layout(rect=[0, 0, 1, 0.955])
     save_figure(fig, output_base)
     return True

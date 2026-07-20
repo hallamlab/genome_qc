@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
 import math
 import re
 import sys
@@ -21,8 +22,9 @@ from kofam_nitrogen_module_ko_facets import (  # noqa: E402
     COMPARISONS,
     CYCLE_LABELS,
     MIN_PLOT_FONT_SIZE,
+    PANEL_LABEL_FONT_SIZE,
+    apply_minimum_font_size,
     ensure_plotting,
-    save_nitrogen_figure,
     short_module_title,
     wrap_label,
 )
@@ -52,6 +54,109 @@ COMPARISON_PANEL_GROUPS = [
     ("Type contrasts", ["mag_sag", "xpg_mag_xpg_sag"]),
 ]
 COMPARISON_PANEL_LABEL_FONT_SIZE = 44
+DEFAULT_KEGG_KO_HIERARCHY = (
+    Path.home() / "MPDB_260131" / "functional_categories" / "kegg_mappings" / "ko00001.keg"
+)
+KO_SHORT_LABELS = {
+    "K00368": "NirK",
+    "K00370": "NarG/NxrA",
+    "K00371": "NarH/NxrB",
+    "K00374": "NarI",
+    "K00376": "NosZ",
+    "K02305": "NorC",
+    "K02567": "NapA",
+    "K02568": "NapB",
+    "K04561": "NorB",
+    "K15864": "NirS",
+}
+
+# KOfam definitions often include an explicit gene symbol (for example NifH or
+# CysN/CysC), but also contain biochemical abbreviations such as NADH and CoA.
+# This deliberately narrow pattern accepts gene-like mixed-case symbols and
+# symbols ending in a number while leaving ambiguous abbreviations untouched.
+GENE_SYMBOL_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:[A-Z][a-z]{1,8}[A-Z][A-Za-z0-9]*|[A-Z]{3,8}\d+)(?![A-Za-z0-9])"
+)
+NON_GENE_MIXED_CASE_TOKENS = {
+    "AdoMet",
+    "CoA",
+    "CoB",
+    "CoM",
+    "FeS",
+}
+
+
+def normalize_kegg_symbol(value: str) -> str | None:
+    """Convert a KEGG gene symbol to the protein-style display convention."""
+    symbol = value.strip()
+    if not symbol or re.fullmatch(r"K\d{5}", symbol, flags=re.IGNORECASE):
+        return None
+    if re.match(r"^E\d+(?:\.|$)", symbol, flags=re.IGNORECASE) or symbol.upper().startswith("TC."):
+        return None
+    if symbol[0].islower():
+        symbol = symbol[0].upper() + symbol[1:]
+    return symbol
+
+
+@lru_cache(maxsize=4)
+def load_kegg_ko_symbols(path_text: str = str(DEFAULT_KEGG_KO_HIERARCHY)) -> dict[str, str]:
+    """Load KO-to-symbol aliases from a local KEGG ko00001 hierarchy."""
+    path = Path(path_text).expanduser()
+    if not path.is_file():
+        return {}
+    mapping: dict[str, str] = {}
+    row_pattern = re.compile(r"^D\s+(K\d{5})\s+(.+?);\s*")
+    with path.open("rt", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            match = row_pattern.match(line)
+            if not match:
+                continue
+            ko, raw_symbols = match.groups()
+            if ko in mapping:
+                continue
+            symbols = []
+            for raw_symbol in raw_symbols.split(","):
+                symbol = normalize_kegg_symbol(raw_symbol)
+                if symbol and symbol.casefold() not in {item.casefold() for item in symbols}:
+                    symbols.append(symbol)
+            if symbols:
+                mapping[ko] = "/".join(symbols)
+    return mapping
+
+
+def infer_ko_short_label(ko: object, ko_name: object = "") -> tuple[str | None, str]:
+    """Return a conservative short KO label and its provenance."""
+    ko_text = str(ko).strip()
+    curated = KO_SHORT_LABELS.get(ko_text)
+    if curated:
+        return curated, "curated"
+
+    kegg_symbol = load_kegg_ko_symbols().get(ko_text)
+    if kegg_symbol:
+        return kegg_symbol, "kegg_ko00001_symbol"
+
+    name = re.sub(r"\s+", " ", str(ko_name).strip())
+    name = re.sub(r"\s*\(K\d+\)\s*$", "", name)
+    # Bracketed carrier/cofactor names, such as [DsrC], do not identify the
+    # encoded subunit and must not be promoted to gene labels.
+    searchable = re.sub(r"\[[^]]+\]", " ", name)
+    symbols = []
+    for match in GENE_SYMBOL_PATTERN.finditer(searchable):
+        symbol = match.group(0)
+        if symbol in NON_GENE_MIXED_CASE_TOKENS:
+            continue
+        following = searchable[match.end() :]
+        if re.match(
+            r"(?:/[A-Za-z0-9]+)*\)?\s+family\b",
+            following,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        if symbol not in symbols:
+            symbols.append(symbol)
+    if symbols:
+        return "/".join(symbols), "explicit_definition_symbol"
+    return None, "description_fallback"
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +171,10 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help="Which per-module panel family to render.",
     )
+    parser.add_argument(
+        "--module-id",
+        help="Optional module ID filter for rendering a single module demo, e.g. M00529.",
+    )
     return parser.parse_args()
 
 
@@ -73,6 +182,104 @@ def safe_filename(value: object, max_length: int = 120) -> str:
     text = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value).strip())
     text = re.sub(r"_+", "_", text).strip("._")
     return (text or "module")[:max_length]
+
+
+def ko_axis_label(record: pd.Series) -> str:
+    ko = str(record.get("ko", "")).strip()
+    short_label, _source = infer_ko_short_label(ko, record.get("ko_name", ""))
+    if short_label:
+        return f"{short_label} ({ko})"
+    ko_name = str(record.get("ko_name", "")).strip()
+    if ko_name:
+        return f"{ko_name} ({ko})"
+    return str(record.get("ko_label", ko)).strip()
+
+
+def module_axis_table(module_data: pd.DataFrame) -> pd.DataFrame:
+    columns = [column for column in ["ko", "ko_order", "ko_name", "ko_label"] if column in module_data.columns]
+    axis_table = (
+        module_data.loc[:, columns]
+        .drop_duplicates("ko")
+        .sort_values(["ko_order", "ko"])
+        .reset_index(drop=True)
+    )
+    axis_table["y_position"] = np.arange(axis_table.shape[0], dtype=float)
+    axis_table["axis_label"] = axis_table.apply(ko_axis_label, axis=1)
+    return axis_table
+
+
+def symmetric_delta_limit(data: pd.DataFrame, fallback_limit: float) -> float:
+    bounds = pd.to_numeric(
+        pd.concat(
+            [
+                data.get("delta_ci95_low", pd.Series(dtype=float)),
+                data.get("delta_ci95_high", pd.Series(dtype=float)),
+                data.get("delta_prevalence_percent_points", pd.Series(dtype=float)),
+            ],
+            ignore_index=True,
+        ),
+        errors="coerce",
+    ).dropna()
+    if bounds.empty:
+        return abs(fallback_limit)
+    needed = float(np.nanmax(np.abs(bounds))) * 1.08
+    rounded_limit = math.ceil(max(25.0, needed) / 5.0) * 5.0
+    return min(rounded_limit, abs(fallback_limit))
+
+
+def delta_ticks(limit: float) -> list[float]:
+    max_tick = int(math.floor(limit / 25.0) * 25)
+    max_tick = max(25, max_tick)
+    return [float(tick) for tick in range(-max_tick, max_tick + 1, 25)]
+
+
+def category_display_label(value: object) -> str:
+    return str(value).replace("_", "-")
+
+
+def add_category_side_headers(ax, left_label: str, right_label: str) -> None:
+    ax.text(
+        0.25,
+        1.018,
+        wrap_label(left_label, width=16),
+        transform=ax.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=MIN_PLOT_FONT_SIZE + 1,
+        fontweight="bold",
+    )
+    ax.text(
+        0.75,
+        1.018,
+        wrap_label(right_label, width=16),
+        transform=ax.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=MIN_PLOT_FONT_SIZE + 1,
+        fontweight="bold",
+    )
+
+
+def save_cross_scope_figure(fig, output_base: Path | str) -> None:
+    plt = ensure_plotting()
+    mp_genomes.PLOT_FONT_SIZES["panel_label"] = max(
+        PANEL_LABEL_FONT_SIZE,
+        mp_genomes.PLOT_FONT_SIZES.get("panel_label", 0),
+    )
+    mp_genomes.apply_plot_style()
+    mp_genomes.label_multi_panel_axes(fig)
+    for ax in fig.axes:
+        label_artist = getattr(ax, "_mp_panel_label_artist", None)
+        if label_artist is None:
+            continue
+        label_artist.set_position((0.010, 1.025))
+        label_artist.set_ha("right")
+        label_artist.set_va("bottom")
+    apply_minimum_font_size(fig)
+    mp_genomes.apply_figure_typography(fig)
+    fig.savefig(str(output_base) + ".png", dpi=300, bbox_inches="tight")
+    fig.savefig(str(output_base) + ".pdf", bbox_inches="tight")
+    plt.close(fig)
 
 
 def read_cycle_tables(results_dir: Path, cycle: str) -> pd.DataFrame:
@@ -113,33 +320,28 @@ def draw_scope_module_panel(
     if not scopes_present:
         return []
 
-    max_kos = max(
-        1,
-        int(
-            comparison.groupby("taxon_filter", sort=False)
-            .size()
-            .reindex(scopes_present)
-            .fillna(0)
-            .max()
-        ),
-    )
-    fig_height = max(14.0, max_kos * 1.35 + 5.8)
-    fig_width = max(36.0, 12.5 * len(scopes_present))
+    axis_table = module_axis_table(comparison)
+    ko_to_y = axis_table.set_index("ko")["y_position"].to_dict()
+    y_ticks = axis_table["y_position"].to_numpy(dtype=float)
+    y_labels = axis_table["axis_label"].tolist()
+    max_kos = max(1, axis_table.shape[0])
+    x_limit = symmetric_delta_limit(comparison, delta_limit)
+    x_ticks = delta_ticks(x_limit)
+    figure_size = max(16.0, max_kos * 0.7 + 9.0)
     fig, axes = plt.subplots(
         1,
         len(scopes_present),
-        figsize=(fig_width, fig_height),
+        figsize=(figure_size, figure_size),
         squeeze=False,
         sharex=True,
-        sharey=False,
+        sharey=True,
     )
     axes = axes.ravel()
 
     module_id = str(comparison["module_id"].iat[0])
     module_name = str(comparison["module_name"].iat[0])
-    comparison_label = str(comparison["comparison_label"].iat[0])
-    first = str(comparison["base_category"].iat[0]).replace("_", " ")
-    second = str(comparison["xpg_category"].iat[0]).replace("_", " ")
+    first = category_display_label(comparison["base_category"].iat[0])
+    second = category_display_label(comparison["xpg_category"].iat[0])
 
     wrote_any = False
     for ax, scope in zip(axes, scopes_present):
@@ -148,14 +350,14 @@ def draw_scope_module_panel(
             ax.axis("off")
             continue
 
-        y_positions = np.arange(scope_data.shape[0], dtype=float)
+        y_positions = scope_data["ko"].map(ko_to_y).to_numpy(dtype=float)
         deltas = scope_data["delta_prevalence_percent_points"].to_numpy(dtype=float)
         ci_low = scope_data["delta_ci95_low"].to_numpy(dtype=float)
         ci_high = scope_data["delta_ci95_high"].to_numpy(dtype=float)
         significant = scope_data["significant_q_le_threshold"].fillna(False).to_numpy(dtype=bool)
         one_category_only = scope_data["present_in_one_category_only"].fillna(False).to_numpy(dtype=bool)
 
-        ax.axvline(0, color="black", linewidth=0.9, zorder=1)
+        ax.axvline(0, color="black", linewidth=1.3, linestyle="--", zorder=1)
         for y_pos, delta, low, high, is_significant, is_one_category_only in zip(
             y_positions,
             deltas,
@@ -201,19 +403,20 @@ def draw_scope_module_panel(
                 zorder=3,
             )
 
-        label_column = "ko_label" if "ko_label" in scope_data.columns else "ko"
-        ax.set_yticks(y_positions)
-        ax.set_yticklabels([wrap_label(label, width=24) for label in scope_data[label_column].tolist()])
-        ax.invert_yaxis()
-        ax.set_xlim(-abs(delta_limit), abs(delta_limit))
+        ax.set_yticks(y_ticks)
+        ax.set_yticklabels([wrap_label(label, width=18) for label in y_labels])
+        ax.set_ylim(max(y_ticks) + 0.5, -0.5)
+        ax.set_xlim(-x_limit, x_limit)
+        ax.set_xticks(x_ticks)
         ax.grid(axis="x", color="#d9d9d9", linestyle="-", linewidth=1.1)
         ax.grid(axis="y", color="#eeeeee", linestyle="-", linewidth=0.9)
         ax.set_title(
             SCOPE_LABELS.get(scope, scope),
             fontsize=MIN_PLOT_FONT_SIZE + 4,
             fontweight="bold",
-            pad=14,
+            pad=40,
         )
+        add_category_side_headers(ax, first, second)
         ax.tick_params(axis="x", labelsize=MIN_PLOT_FONT_SIZE)
         ax.tick_params(axis="y", labelsize=MIN_PLOT_FONT_SIZE)
         wrote_any = True
@@ -222,35 +425,8 @@ def draw_scope_module_panel(
         plt.close(fig)
         return []
 
-    fig.suptitle(
-        wrap_label(
-            f"{cycle_label}: {short_module_title(module_id, module_name)}\n{comparison_label}",
-            width=82,
-        ),
-        fontsize=MIN_PLOT_FONT_SIZE + 10,
-        fontweight="bold",
-        y=0.995,
-    )
-    fig.supxlabel(
-        wrap_label(f"Prevalence difference, {second} - {first} (percentage points)", width=78),
-        fontsize=MIN_PLOT_FONT_SIZE,
-        y=0.055,
-    )
-    fig.text(
-        0.5,
-        0.018,
-        wrap_label(
-            f"Black points have BH-adjusted pairwise Fisher q<={q_threshold:g}; gray points are not significant; "
-            "open black points are present in only one side of the comparison.",
-            width=118,
-        ),
-        ha="center",
-        va="bottom",
-        fontsize=MIN_PLOT_FONT_SIZE,
-        color="#4d4d4d",
-    )
-    fig.tight_layout(rect=[0.025, 0.10, 1.0, 0.90], w_pad=5.0, h_pad=3.5)
-    save_nitrogen_figure(fig, output_base)
+    fig.tight_layout(rect=[0.025, 0.045, 1.0, 0.98], w_pad=2.4, h_pad=2.4)
+    save_cross_scope_figure(fig, output_base)
     return [Path(str(output_base) + ".png"), Path(str(output_base) + ".pdf")]
 
 
@@ -272,24 +448,21 @@ def draw_comparison_facet_module_panel(
         return []
 
     plt = ensure_plotting()
-    max_kos = max(
-        1,
-        int(
-            scope_data_all.groupby("comparison_id")
-            .size()
-            .reindex(required_comparisons)
-            .fillna(0)
-            .max()
-        ),
-    )
-    fig_height = max(24.0, max_kos * 2.55 + 8.5)
+    axis_table = module_axis_table(scope_data_all)
+    ko_to_y = axis_table.set_index("ko")["y_position"].to_dict()
+    y_ticks = axis_table["y_position"].to_numpy(dtype=float)
+    y_labels = axis_table["axis_label"].tolist()
+    max_kos = max(1, axis_table.shape[0])
+    x_limit = symmetric_delta_limit(scope_data_all, delta_limit)
+    x_ticks = delta_ticks(x_limit)
+    figure_size = max(18.0, max_kos * 0.9 + 9.5)
     fig, axes = plt.subplots(
         2,
         3,
-        figsize=(48.0, fig_height),
+        figsize=(figure_size, figure_size),
         squeeze=False,
         sharex=True,
-        sharey=False,
+        sharey=True,
     )
 
     module_id = str(scope_data_all["module_id"].iat[0])
@@ -305,14 +478,14 @@ def draw_comparison_facet_module_panel(
                 ax.axis("off")
                 continue
 
-            y_positions = np.arange(comparison.shape[0], dtype=float)
+            y_positions = comparison["ko"].map(ko_to_y).to_numpy(dtype=float)
             deltas = comparison["delta_prevalence_percent_points"].to_numpy(dtype=float)
             ci_low = comparison["delta_ci95_low"].to_numpy(dtype=float)
             ci_high = comparison["delta_ci95_high"].to_numpy(dtype=float)
             significant = comparison["significant_q_le_threshold"].fillna(False).to_numpy(dtype=bool)
             one_category_only = comparison["present_in_one_category_only"].fillna(False).to_numpy(dtype=bool)
 
-            ax.axvline(0, color="black", linewidth=0.9, zorder=1)
+            ax.axvline(0, color="black", linewidth=1.3, linestyle="--", zorder=1)
             for y_pos, delta, low, high, is_significant, is_one_category_only in zip(
                 y_positions,
                 deltas,
@@ -358,20 +531,16 @@ def draw_comparison_facet_module_panel(
                     zorder=3,
                 )
 
-            label_column = "ko_label" if "ko_label" in comparison.columns else "ko"
-            ax.set_yticks(y_positions)
-            ax.set_yticklabels([wrap_label(label, width=22) for label in comparison[label_column].tolist()])
-            ax.invert_yaxis()
-            ax.set_xlim(-abs(delta_limit), abs(delta_limit))
+            ax.set_yticks(y_ticks)
+            ax.set_yticklabels([wrap_label(label, width=18) for label in y_labels])
+            ax.set_ylim(max(y_ticks) + 0.5, -0.5)
+            ax.set_xlim(-x_limit, x_limit)
+            ax.set_xticks(x_ticks)
             ax.grid(axis="x", color="#d9d9d9", linestyle="-", linewidth=1.1)
             ax.grid(axis="y", color="#eeeeee", linestyle="-", linewidth=0.9)
-            comparison_label = str(comparison["comparison_label"].iat[0])
-            ax.set_title(
-                wrap_label(comparison_label, width=28),
-                fontsize=MIN_PLOT_FONT_SIZE + 3,
-                fontweight="bold",
-                pad=14,
-            )
+            left_label = category_display_label(comparison["base_category"].iat[0])
+            right_label = category_display_label(comparison["xpg_category"].iat[0])
+            add_category_side_headers(ax, left_label, right_label)
             ax.tick_params(axis="x", labelsize=MIN_PLOT_FONT_SIZE)
             ax.tick_params(axis="y", labelsize=MIN_PLOT_FONT_SIZE)
             wrote_any = True
@@ -380,38 +549,14 @@ def draw_comparison_facet_module_panel(
         plt.close(fig)
         return []
 
-    fig.suptitle(
-        wrap_label(f"{cycle_label}: {short_module_title(module_id, module_name)}\n{scope_label}", width=86),
-        fontsize=MIN_PLOT_FONT_SIZE + 10,
-        fontweight="bold",
-        y=0.995,
-    )
-    fig.supxlabel(
-        "Prevalence difference between comparison groups (percentage points)",
-        fontsize=MIN_PLOT_FONT_SIZE,
-        y=0.050,
-    )
-    fig.text(
-        0.5,
-        0.016,
-        wrap_label(
-            f"Black points have BH-adjusted pairwise Fisher q<={q_threshold:g}; gray points are not significant; "
-            "open black points are present in only one side of the comparison.",
-            width=124,
-        ),
-        ha="center",
-        va="bottom",
-        fontsize=MIN_PLOT_FONT_SIZE,
-        color="#4d4d4d",
-    )
-    fig.tight_layout(rect=[0.025, 0.10, 1.0, 0.90], w_pad=4.8, h_pad=5.2)
+    fig.tight_layout(rect=[0.025, 0.045, 1.0, 0.98], w_pad=2.4, h_pad=3.2)
     original_panel_label_size = mp_genomes.PLOT_FONT_SIZES.get("panel_label", MIN_PLOT_FONT_SIZE)
     mp_genomes.PLOT_FONT_SIZES["panel_label"] = max(
         COMPARISON_PANEL_LABEL_FONT_SIZE,
         original_panel_label_size,
     )
     try:
-        save_nitrogen_figure(fig, output_base)
+        save_cross_scope_figure(fig, output_base)
     finally:
         mp_genomes.PLOT_FONT_SIZES["panel_label"] = original_panel_label_size
     return [Path(str(output_base) + ".png"), Path(str(output_base) + ".pdf")]
@@ -423,6 +568,7 @@ def write_cycle_panels(
     delta_limit: float,
     q_threshold: float,
     panel_family: str,
+    module_id_filter: str | None,
 ) -> list[Path]:
     table = read_cycle_tables(results_dir, cycle)
     scope_output_dir = results_dir / "elemental_cycles" / cycle / "per_module_scope_panels"
@@ -437,6 +583,11 @@ def write_cycle_panels(
         .drop_duplicates()
         .sort_values(["module_order", "module_id"])
     )
+    if module_id_filter:
+        module_ids = module_keys["module_id"].astype(str)
+        module_keys = module_keys.loc[
+            module_ids.eq(module_id_filter) | module_ids.str.startswith(f"{module_id_filter}.")
+        ].copy()
     if panel_family in {"all", "scope"}:
         for comparison_id in COMPARISONS:
             comparison_dir = scope_output_dir / comparison_id
@@ -489,6 +640,7 @@ def main() -> None:
             args.delta_limit,
             args.q_threshold,
             args.panel_family,
+            args.module_id,
         )
         written.extend(cycle_written)
         print(f"[done] {cycle}: wrote {len(cycle_written)} files")

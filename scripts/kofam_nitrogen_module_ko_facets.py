@@ -1224,41 +1224,12 @@ def draw_comparison_plot(
 
     first = comparison["base_category"].iat[0].replace("_", " ")
     second = comparison["xpg_category"].iat[0].replace("_", " ")
-    title = comparison["comparison_label"].iat[0]
-    scope = comparison["taxon_label"].iat[0] if "taxon_label" in comparison.columns else ""
-    title_prefix = f"{scope}: " if scope else ""
-    title_suffix = f" ({page_label})" if page_label else ""
-    if "unadjusted_p_value" in comparison.columns:
-        significance_note = f"Black points have BH-adjusted pairwise Fisher q<={q_threshold:g}"
-    else:
-        significance_note = f"Black points have global KOfam enrichment q<={q_threshold:g}"
-    fig.suptitle(
-        wrap_label(f"{cycle_label} module KO prevalence differences: {title_prefix}{title}{title_suffix}", width=72),
-        fontsize=MIN_PLOT_FONT_SIZE + 10,
-        fontweight="bold",
-        y=0.995,
-    )
-    fig.text(
-        0.5,
-        0.018,
-        wrap_label(
-            f"X-axis is {second} prevalence minus {first} prevalence, in percentage points. "
-            "Error bars are approximate 95% CIs for the difference between two proportions. "
-            f"{significance_note}; gray points are not significant; "
-            "open black points are present in only one side of the comparison.",
-            width=120,
-        ),
-        ha="center",
-        va="bottom",
-        fontsize=MIN_PLOT_FONT_SIZE,
-        color="#4d4d4d",
-    )
     fig.supxlabel(
         wrap_label(f"Prevalence difference, {second} - {first} (percentage points)", width=78),
         fontsize=MIN_PLOT_FONT_SIZE,
         y=0.045,
     )
-    fig.tight_layout(rect=[0.035, 0.09, 1, 0.945], w_pad=4.8, h_pad=4.4)
+    fig.tight_layout(rect=[0.035, 0.08, 1, 0.98], w_pad=4.8, h_pad=4.4)
     save_nitrogen_figure(fig, output_base)
     return [Path(str(output_base) + ".png"), Path(str(output_base) + ".pdf")]
 

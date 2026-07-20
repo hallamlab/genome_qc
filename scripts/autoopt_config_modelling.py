@@ -14,10 +14,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from summarize_metapathways_genomes import (  # noqa: E402
+from genome_quality_atlas import (  # noqa: E402
+    PLOT_FONT_SIZES,
     apply_figure_typography,
+    apply_plot_style,
+    deduplicate_metric_axis_labels,
     label_multi_panel_axes,
     plot_font_rc,
+    register_times_new_roman_font,
+    remove_titles_and_notes,
+    standardize_figure_scales,
 )
 
 
@@ -420,12 +426,17 @@ def ensure_plotting():
     import matplotlib.pyplot as plt
     import seaborn as sns
 
+    register_times_new_roman_font()
     plt.rcParams.update(plot_font_rc())
     sns.set_theme(style="whitegrid", context="notebook", rc=plot_font_rc())
     return plt, sns
 
 
 def savefig(fig, path_base):
+    apply_plot_style()
+    remove_titles_and_notes(fig)
+    deduplicate_metric_axis_labels(fig)
+    standardize_figure_scales(fig)
     label_multi_panel_axes(fig)
     apply_figure_typography(fig)
     fig.savefig(str(path_base) + ".png", dpi=300, bbox_inches="tight")
@@ -455,8 +466,15 @@ def plot_factor_summaries(factor_summary, plot_dir):
                 capsize=3,
                 linewidth=0.9,
             )
-            ax.text(index, row["mq_hq_rate"] + 0.025, f"n={int(row['n'])}", ha="center", va="bottom", fontsize=8)
-        ax.set_ylim(0, min(1.05, max(0.2, subset["mq_hq_rate_ci_high"].max() + 0.1)))
+            ax.text(
+                index,
+                row["mq_hq_rate"] + 0.025,
+                f"n={int(row['n'])}",
+                ha="center",
+                va="bottom",
+                fontsize=PLOT_FONT_SIZES["annotation"],
+            )
+        ax.set_ylim(0, 1)
         ax.set_ylabel("MQ/HQ rate")
         ax.set_xlabel(factor)
         ax.set_title(f"MQ/HQ rate by {factor}", fontweight="bold")
@@ -474,7 +492,7 @@ def plot_top_configs(config_summary, plot_dir, min_config_n):
     subset = subset.sort_values("mq_hq_rate", ascending=True)
     fig, ax = plt.subplots(figsize=(10, max(6, len(subset) * 0.35)))
     sns.barplot(data=subset, x="mq_hq_rate", y="config", color="#8c8c8c", edgecolor="black", ax=ax)
-    ax.set_xlim(0, min(1.05, max(0.2, subset["mq_hq_rate"].max() + 0.1)))
+    ax.set_xlim(0, 1)
     ax.set_xlabel("MQ/HQ rate")
     ax.set_ylabel("")
     ax.set_title(f"Top observed configurations (n >= {min_config_n})", fontweight="bold")
@@ -519,7 +537,7 @@ def plot_coefficients(coefficients, plot_dir, response):
     ax.axvline(1.0, color="#bdbdbd", linestyle="--", linewidth=1.0)
     ax.set_xscale("log")
     ax.set_yticks(y)
-    ax.set_yticklabels(subset["term"], fontsize=8)
+    ax.set_yticklabels(subset["term"], fontsize=PLOT_FONT_SIZES["tick"])
     ax.set_xlabel(f"Odds ratio for {response}")
     ax.set_title("Adjusted configuration effects", fontweight="bold")
     fig.tight_layout()
@@ -598,8 +616,8 @@ def plot_summary_evidence_panel(model_objects, plot_dir):
             markersize=4,
         )
         ax.set_yticks(y)
-        ax.set_yticklabels(predictions["config"], fontsize=8)
-        ax.set_xlim(0, min(1.0, max(0.1, float(predictions["adjusted_ci_high"].max()) + 0.08)))
+        ax.set_yticklabels(predictions["config"], fontsize=PLOT_FONT_SIZES["tick"])
+        ax.set_xlim(0, 1)
         ax.grid(axis="x", color="#d9d9d9", linewidth=0.7)
         ax.set_xlabel(f"Adjusted probability of {outcome_label(response)}")
         ax.set_title(f"Top configurations for {outcome_label(response)}", fontweight="bold")
@@ -622,7 +640,13 @@ def plot_summary_evidence_panel(model_objects, plot_dir):
                 label = "p<0.001"
             else:
                 label = f"p={pvalue:.3f}"
-            ax.text(row["delta_deviance"] + max(importance["delta_deviance"].max() * 0.015, 0.15), index, label, va="center", fontsize=8)
+            ax.text(
+                row["delta_deviance"] + max(importance["delta_deviance"].max() * 0.015, 0.15),
+                index,
+                label,
+                va="center",
+                fontsize=PLOT_FONT_SIZES["annotation"],
+            )
         ax.set_xlim(0, max(importance["delta_deviance"].max() * 1.18, 1.0))
         ax.set_xlabel("Increase in deviance when removed")
         ax.set_ylabel("")
@@ -635,7 +659,7 @@ def plot_summary_evidence_panel(model_objects, plot_dir):
                 transform=ax.transAxes,
                 ha="right",
                 va="top",
-                fontsize=8,
+                fontsize=PLOT_FONT_SIZES["annotation"],
                 color="#4d4d4d",
             )
     fig.tight_layout()
@@ -677,7 +701,7 @@ def plot_top_performer_counts(top_summary, top_performers, plot_dir):
                 f"{int(row['top_sag_n'])}\n{row['share_of_sags_with_top_level']:.1%}",
                 ha="center",
                 va="bottom",
-                fontsize=8,
+                fontsize=PLOT_FONT_SIZES["annotation"],
             )
         ax.set_xticks(x)
         ax.set_xticklabels(subset["level"], rotation=35, ha="right")
@@ -740,7 +764,7 @@ def plot_top_performer_counts(top_summary, top_performers, plot_dir):
         ax.tick_params(axis="x", rotation=35)
         ax.grid(axis="y", color="#d9d9d9", linewidth=0.7)
         ax.set_xlim(-0.5, len(levels) - 0.5)
-        ax.set_ylim(bottom=min(0, float(subset["qscore"].min()) - 3), top=max(103, float(subset["qscore"].max()) + 3))
+        ax.set_ylim(0, 100)
     legend_handles = [
         mlines.Line2D(
             [],
@@ -771,7 +795,13 @@ def plot_top_performer_counts(top_summary, top_performers, plot_dir):
             label="diamond = mean",
         ),
     ]
-    fig.legend(handles=legend_handles, frameon=False, loc="center right", bbox_to_anchor=(0.995, 0.5), fontsize=9)
+    fig.legend(
+        handles=legend_handles,
+        frameon=False,
+        loc="center right",
+        bbox_to_anchor=(0.995, 0.5),
+        fontsize=PLOT_FONT_SIZES["legend"],
+    )
     fig.tight_layout(rect=[0, 0, 0.9, 1])
     savefig(fig, plot_dir / "top_performer_parameter_counts")
 

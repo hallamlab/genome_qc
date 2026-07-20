@@ -21,15 +21,15 @@ plt = None
 
 PLOT_FONT_FAMILY = "Times New Roman"
 PLOT_FONT_SIZES = {
-    "base": 10,
-    "axis_label": 10,
-    "tick": 9,
-    "legend": 9,
-    "legend_title": 10,
-    "title": 11,
-    "suptitle": 16,
-    "annotation": 8,
-    "panel_label": 16,
+    "base": 12,
+    "axis_label": 12,
+    "tick": 11,
+    "legend": 11,
+    "legend_title": 12,
+    "title": 13,
+    "suptitle": 18,
+    "annotation": 10,
+    "panel_label": 22,
 }
 PANEL_LABELS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
@@ -1802,6 +1802,12 @@ def plot_font_rc():
         "legend.fontsize": PLOT_FONT_SIZES["legend"],
         "legend.title_fontsize": PLOT_FONT_SIZES["legend_title"],
         "figure.titlesize": PLOT_FONT_SIZES["suptitle"],
+        "axes.edgecolor": "#2f2f2f",
+        "axes.linewidth": 0.8,
+        "axes.titleweight": "bold",
+        "grid.color": "#e5e5e5",
+        "grid.linewidth": 0.7,
+        "grid.linestyle": "-",
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
     }
@@ -1820,15 +1826,31 @@ def register_times_new_roman_font():
         except ValueError:
             pass
 
+        font_paths = []
         result = subprocess.run(
-            ["fc-match", "-f", "%{file}\n", PLOT_FONT_FAMILY],
+            ["fc-list", "-f", "%{file}\t%{family}\n"],
             check=False,
             capture_output=True,
             text=True,
         )
-        font_path = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
-        if font_path and Path(font_path).is_file():
-            font_manager.fontManager.addfont(font_path)
+        for line in result.stdout.splitlines():
+            try:
+                font_path, families = line.split("\t", 1)
+            except ValueError:
+                continue
+            if PLOT_FONT_FAMILY.lower() in families.lower():
+                font_paths.append(font_path)
+        if not font_paths:
+            result = subprocess.run(
+                ["fc-match", "-f", "%{file}\n", PLOT_FONT_FAMILY],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            font_paths = result.stdout.strip().splitlines() if result.stdout.strip() else []
+        for font_path in sorted(set(font_paths)):
+            if font_path and Path(font_path).is_file():
+                font_manager.fontManager.addfont(font_path)
     except Exception:
         return
 
@@ -1892,11 +1914,11 @@ def label_multi_panel_axes(fig, axes=None):
             except ValueError:
                 pass
         ax._mp_panel_label_artist = ax.text(
-            0.015,
-            1.025,
+            -0.075,
+            1.055,
             panel_label_for_index(index),
             transform=ax.transAxes,
-            ha="left",
+            ha="right",
             va="bottom",
             fontsize=PLOT_FONT_SIZES["panel_label"],
             fontfamily=PLOT_FONT_FAMILY,
@@ -1910,6 +1932,118 @@ def label_multi_panel_axes(fig, axes=None):
 def apply_figure_typography(fig):
     for text in fig.findobj(match=lambda artist: hasattr(artist, "set_fontfamily")):
         text.set_fontfamily(PLOT_FONT_FAMILY)
+    if getattr(fig, "_suptitle", None) is not None:
+        fig._suptitle.set_fontfamily(PLOT_FONT_FAMILY)
+        fig._suptitle.set_fontsize(PLOT_FONT_SIZES["suptitle"])
+        fig._suptitle.set_fontweight("bold")
+    for legend in getattr(fig, "legends", []):
+        for text in legend.get_texts():
+            text.set_fontfamily(PLOT_FONT_FAMILY)
+            text.set_fontsize(PLOT_FONT_SIZES["legend"])
+        title = legend.get_title()
+        title.set_fontfamily(PLOT_FONT_FAMILY)
+        title.set_fontsize(PLOT_FONT_SIZES["legend_title"])
+    for ax in fig.axes:
+        if not ax.get_visible():
+            continue
+        for spine_name in ["top", "right"]:
+            if spine_name in ax.spines:
+                ax.spines[spine_name].set_visible(False)
+        for spine_name in ["left", "bottom"]:
+            if spine_name in ax.spines:
+                ax.spines[spine_name].set_color("#2f2f2f")
+                ax.spines[spine_name].set_linewidth(0.8)
+        ax.tick_params(axis="both", labelsize=PLOT_FONT_SIZES["tick"], colors="#2f2f2f")
+        ax.xaxis.label.set_fontsize(PLOT_FONT_SIZES["axis_label"])
+        ax.yaxis.label.set_fontsize(PLOT_FONT_SIZES["axis_label"])
+        ax.title.set_fontsize(PLOT_FONT_SIZES["title"])
+        ax.title.set_fontweight("bold")
+        legend = ax.get_legend()
+        if legend is not None:
+            for text in legend.get_texts():
+                text.set_fontfamily(PLOT_FONT_FAMILY)
+                text.set_fontsize(PLOT_FONT_SIZES["legend"])
+            title = legend.get_title()
+            title.set_fontfamily(PLOT_FONT_FAMILY)
+            title.set_fontsize(PLOT_FONT_SIZES["legend_title"])
+
+
+def axis_text(ax, axis):
+    pieces = []
+    if axis == "x":
+        pieces.append(ax.get_xlabel())
+        pieces.extend(str(label.get_text()) for label in ax.get_xticklabels())
+    else:
+        pieces.append(ax.get_ylabel())
+        pieces.extend(str(label.get_text()) for label in ax.get_yticklabels())
+    return " ".join(str(piece).lower() for piece in pieces if str(piece).strip())
+
+
+def axis_has_numeric_data(ax, axis):
+    try:
+        lines = ax.get_lines()
+        collections = ax.collections
+        patches = ax.patches
+    except Exception:
+        return False
+    if lines or collections:
+        return True
+    if patches and axis == "y":
+        return True
+    return False
+
+
+def set_axis_limits_and_ticks(ax, axis, limits, ticks):
+    setter = ax.set_xlim if axis == "x" else ax.set_ylim
+    getter = ax.get_xlim if axis == "x" else ax.get_ylim
+    bottom, top = getter()
+    if not (np.isfinite(bottom) and np.isfinite(top)):
+        return
+    if bottom > top:
+        limits = (limits[1], limits[0])
+    setter(*limits)
+    if axis == "x":
+        ax.set_xticks(ticks)
+    else:
+        ax.set_yticks(ticks)
+
+
+def standardize_axis_scale(ax, axis):
+    if not axis_has_numeric_data(ax, axis):
+        return
+    text = axis_text(ax, axis)
+    if not text:
+        return
+    fractional_tokens = [
+        "fraction",
+        "rate",
+        "proportion",
+        "probability",
+        "prevalence",
+        "recoverability",
+        "integrity",
+        "mimag quality index",
+        "support fraction",
+        "input fraction",
+    ]
+    percent_tokens = [
+        "qscore",
+        "completeness",
+    ]
+    current_limits = ax.get_xlim() if axis == "x" else ax.get_ylim()
+    low, high = current_limits
+    if any(token in text for token in fractional_tokens) and low >= -0.2 and high <= 1.3:
+        set_axis_limits_and_ticks(ax, axis, (0.0, 1.0), [0.0, 0.25, 0.5, 0.75, 1.0])
+    elif any(token in text for token in percent_tokens) and low >= -10 and high <= 110:
+        set_axis_limits_and_ticks(ax, axis, (0.0, 100.0), [0, 25, 50, 75, 100])
+
+
+def standardize_figure_scales(fig):
+    for ax in fig.axes:
+        if not ax.get_visible() or ax.get_label() == "<colorbar>" or not ax.axison:
+            continue
+        standardize_axis_scale(ax, "x")
+        standardize_axis_scale(ax, "y")
 
 
 def sanitize_label(value):
@@ -4867,11 +5001,58 @@ def annotate_bar_values(ax, values):
     for index, value in enumerate(values):
         if pd.isna(value):
             continue
-        ax.text(index, float(value), f"{int(round(float(value)))}", ha="center", va="bottom", fontsize=8)
+        ax.text(
+            index,
+            float(value),
+            f"{int(round(float(value)))}",
+            ha="center",
+            va="bottom",
+            fontsize=PLOT_FONT_SIZES["annotation"],
+        )
+
+
+def remove_titles_and_notes(fig):
+    for text in list(getattr(fig, "texts", [])):
+        try:
+            text.remove()
+        except Exception:
+            text.set_text("")
+    if getattr(fig, "_suptitle", None) is not None:
+        try:
+            fig._suptitle.remove()
+        except Exception:
+            fig._suptitle.set_text("")
+        fig._suptitle = None
+
+
+def concise_metric_axis_label(metric_label):
+    text = str(metric_label).strip().lower()
+    if any(token in text for token in ["fraction", "prevalence", "proportion", "probability", "rate"]):
+        return "Fraction"
+    if any(token in text for token in ["count", "genome", "orf", "pathway", "accession", "gene", "marker"]):
+        return "Count"
+    if "length" in text or "size" in text:
+        return "Length"
+    if any(token in text for token in ["score", "quality", "integrity", "recoverability", "completeness", "contamination"]):
+        return "Score"
+    return "Value"
+
+
+def deduplicate_metric_axis_labels(fig):
+    for ax in fig.axes:
+        if not ax.get_visible() or not ax.axison:
+            continue
+        title = str(ax.get_title()).strip()
+        xlabel = str(ax.get_xlabel()).strip()
+        if title and xlabel and title.casefold() == xlabel.casefold():
+            ax.set_xlabel(concise_metric_axis_label(title))
 
 
 def save_figure(fig, output_base):
     apply_plot_style()
+    remove_titles_and_notes(fig)
+    deduplicate_metric_axis_labels(fig)
+    standardize_figure_scales(fig)
     label_multi_panel_axes(fig)
     apply_figure_typography(fig)
     fig.savefig(str(output_base) + ".png", dpi=300, bbox_inches="tight")
@@ -4924,7 +5105,7 @@ def plot_compact_summary(genome_summary, output_base):
         ax.set_xticks(x_positions)
         ax.set_xticklabels(x_labels, rotation=90)
 
-    fig.suptitle("MetaPathways compact genome summary", fontsize=16, y=0.985)
+    fig.suptitle("MetaPathways compact genome summary", fontsize=PLOT_FONT_SIZES["suptitle"], y=0.985)
     fig.tight_layout(rect=[0, 0, 1, 0.93])
     save_figure(fig, output_base)
     return True
@@ -5013,7 +5194,7 @@ def plot_annotation_quality(genome_summary, output_base):
             continue
         frac = informative_fraction.loc[genome_id]
         label = f"{frac:.2f}" if pd.notna(frac) else f"{int(total)}"
-        ax.text(index, total, label, ha="center", va="bottom", fontsize=8)
+        ax.text(index, total, label, ha="center", va="bottom", fontsize=PLOT_FONT_SIZES["annotation"])
 
     ax.set_xlabel("Genome")
     ax.set_ylabel("ORF count")
@@ -5062,7 +5243,7 @@ def plot_pathway_metric_panels(genome_summary, output_base):
         ax.set_xticks(x_positions)
         ax.set_xticklabels(x_labels, rotation=90)
 
-    fig.suptitle("MetaPathways pathway and annotation metrics", fontsize=16, y=0.985)
+    fig.suptitle("MetaPathways pathway and annotation metrics", fontsize=PLOT_FONT_SIZES["suptitle"], y=0.985)
     fig.tight_layout(rect=[0, 0, 1, 0.93])
     save_figure(fig, output_base)
     return True
@@ -5117,14 +5298,14 @@ def plot_elemental_metabolism(genome_summary, output_base):
                     str(int(heat_df.iat[row_index, col_index])),
                     ha="center",
                     va="center",
-                    fontsize=7,
+                    fontsize=PLOT_FONT_SIZES["annotation"],
                     color=heatmap_text_color(heat_df.iat[row_index, col_index], vmax),
                 )
         cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.03)
         cbar.set_label("Count")
 
     axes[0].set_ylabel("Genome")
-    fig.suptitle("Elemental-cycle metabolism summary", fontsize=16, y=0.985)
+    fig.suptitle("Elemental-cycle metabolism summary", fontsize=PLOT_FONT_SIZES["suptitle"], y=0.985)
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     save_figure(fig, output_base)
     return True
@@ -5197,14 +5378,14 @@ def plot_elemental_modes(genome_summary, output_base, scope="inclusive"):
                     str(int(value)),
                     ha="center",
                     va="center",
-                    fontsize=7,
+                    fontsize=PLOT_FONT_SIZES["annotation"],
                     color=heatmap_text_color(value, vmax),
                 )
         cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.03)
         cbar.set_label("Count")
 
     axes[0].set_ylabel("Genome")
-    fig.suptitle(f"Specific metabolism-mode summary ({scope_title})", fontsize=16, y=0.985)
+    fig.suptitle(f"Specific metabolism-mode summary ({scope_title})", fontsize=PLOT_FONT_SIZES["suptitle"], y=0.985)
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     save_figure(fig, output_base)
     return True
@@ -5300,7 +5481,7 @@ def plot_marker_heatmap(genome_summary, output_base, marker_manifest=None, speci
         header_ax.axvline(end + 0.5, color="white", linewidth=1.2)
         start = end + 1
     header_ax.set_xticks(family_centers)
-    header_ax.set_xticklabels(family_labels, fontsize=9)
+    header_ax.set_xticklabels(family_labels, fontsize=PLOT_FONT_SIZES["tick"])
     header_ax.xaxis.set_ticks_position("top")
     header_ax.tick_params(axis="x", labeltop=True, labelbottom=False, length=0, pad=4)
     for spine in header_ax.spines.values():
@@ -5328,16 +5509,24 @@ def plot_marker_heatmap(genome_summary, output_base, marker_manifest=None, speci
         for col_index in range(len(mode_ids)):
             value = int(round(float(heat_df.iat[row_index, col_index])))
             color = heatmap_text_color(value, vmax)
-            ax.text(col_index, row_index, str(value), ha="center", va="center", fontsize=7, color=color)
+            ax.text(
+                col_index,
+                row_index,
+                str(value),
+                ha="center",
+                va="center",
+                fontsize=PLOT_FONT_SIZES["annotation"],
+                color=color,
+            )
 
-    fig.suptitle(figure_title, fontsize=15, y=0.992)
+    fig.suptitle(figure_title, fontsize=PLOT_FONT_SIZES["suptitle"], y=0.992)
     fig.text(
         0.5,
         0.965,
         "Axis labels show possible curated markers for the displayed marker class.",
         ha="center",
         va="center",
-        fontsize=9,
+        fontsize=PLOT_FONT_SIZES["annotation"],
     )
     fig.subplots_adjust(left=0.08, right=0.98, bottom=0.18, top=0.84, hspace=0.36)
     save_figure(fig, output_base)
@@ -5405,7 +5594,7 @@ def plot_reference_mode_heatmap(genome_summary, output_base):
         header_ax.axvline(end + 0.5, color="white", linewidth=1.2)
         start = end + 1
     header_ax.set_xticks(family_centers)
-    header_ax.set_xticklabels(family_labels, fontsize=9)
+    header_ax.set_xticklabels(family_labels, fontsize=PLOT_FONT_SIZES["tick"])
     header_ax.xaxis.set_ticks_position("top")
     header_ax.tick_params(axis="x", labeltop=True, labelbottom=False, length=0, pad=4)
     for spine in header_ax.spines.values():
@@ -5430,16 +5619,24 @@ def plot_reference_mode_heatmap(genome_summary, output_base):
         for col_index in range(len(mode_ids)):
             value = int(round(float(heat_df.iat[row_index, col_index])))
             color = heatmap_text_color(value, vmax)
-            ax.text(col_index, row_index, str(value), ha="center", va="center", fontsize=7, color=color)
+            ax.text(
+                col_index,
+                row_index,
+                str(value),
+                ha="center",
+                va="center",
+                fontsize=PLOT_FONT_SIZES["annotation"],
+                color=color,
+            )
 
-    fig.suptitle("Mode support from accession-level GO reference mappings", fontsize=15, y=0.992)
+    fig.suptitle("Mode support from accession-level GO reference mappings", fontsize=PLOT_FONT_SIZES["suptitle"], y=0.992)
     fig.text(
         0.5,
         0.965,
         "Cell text = number of matched accessions linked to that mode via GOA reference mappings",
         ha="center",
         va="center",
-        fontsize=9,
+        fontsize=PLOT_FONT_SIZES["annotation"],
     )
     fig.subplots_adjust(left=0.08, right=0.98, bottom=0.18, top=0.84, hspace=0.36)
     save_figure(fig, output_base)
@@ -5501,7 +5698,14 @@ def plot_top_pathway_heatmap(pathway_long, genome_summary, output_base, top_n_pa
     for row_index in range(len(order)):
         for col_index in range(len(top_pathways)):
             value = count_df.iat[row_index, col_index]
-            ax.text(col_index, row_index, str(int(value)), ha="center", va="center", fontsize=7)
+            ax.text(
+                col_index,
+                row_index,
+                str(int(value)),
+                ha="center",
+                va="center",
+                fontsize=PLOT_FONT_SIZES["annotation"],
+            )
     cbar = fig.colorbar(image, ax=ax, fraction=0.03, pad=0.03)
     cbar.set_label("Pathway score")
     fig.tight_layout()

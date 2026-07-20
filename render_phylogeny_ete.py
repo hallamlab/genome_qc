@@ -32,6 +32,7 @@ DEFAULT_PALETTE = [
 ]
 
 TEXT_WIDTH_FACTOR = 0.56
+DEFAULT_FONT_FAMILY = "Times New Roman"
 
 YAML_HEADER = """# ETE phylogeny render configuration
 # This file is machine-readable YAML and safe to edit by hand.
@@ -223,6 +224,8 @@ DEFAULT_CONFIG = {
     "_help_text_columns": "Remove entries to hide taxonomy/metadata text columns. Useful keys: column, label, font_size, max_length, width.",
     "numeric_bars": [],
     "_help_numeric_bars": "Optional aligned numeric bars. Empty list disables them.",
+    "numeric_dots": [],
+    "_help_numeric_dots": "Optional aligned numeric dots. Empty list disables them.",
     "legend": {"show": True, "max_items_per_strip": 20},
     "_help_legend": "Legend applies to metadata_strips. If there are no strips, set show to false.",
     "canvas": {
@@ -236,6 +239,7 @@ DEFAULT_CONFIG = {
         "margin_bottom": 30,
         "margin_left": 30,
         "show_scale": True,
+        "branch_vertical_margin": 0,
     },
 }
 
@@ -299,6 +303,20 @@ def load_ete():
         raise ImportError(
             "ETE is required for rendering. Install ete4 if possible, or ete3 as a fallback."
         ) from exc
+
+
+def set_qt_default_font():
+    try:
+        from PyQt6 import QtGui, QtWidgets
+    except ImportError:
+        try:
+            from PyQt5 import QtGui, QtWidgets
+        except ImportError:
+            return
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication([])
+    app.setFont(QtGui.QFont(DEFAULT_FONT_FAMILY))
 
 
 def deep_copy_config(config):
@@ -551,7 +569,7 @@ def add_face(ete, face, node, column, position):
 
 
 def make_text_face(ete, text, size, color="#222222"):
-    face = ete["TextFace"](str(text), fsize=int(size), fgcolor=color)
+    face = ete["TextFace"](str(text), ftype=DEFAULT_FONT_FAMILY, fsize=int(size), fgcolor=color)
     return face
 
 
@@ -640,6 +658,45 @@ def make_static_rect_face(
     return StaticItemFace(container)
 
 
+def make_static_circle_face(
+    ete,
+    diameter,
+    color,
+    border_color="#111111",
+    border_width=0,
+    fill=True,
+    canvas_size=None,
+):
+    StaticItemFace = ete.get("StaticItemFace")
+    if StaticItemFace is None:
+        return make_rect_face(ete, diameter, diameter, color)
+    try:
+        from PyQt6 import QtCore, QtGui, QtWidgets
+    except ImportError:
+        try:
+            from PyQt5 import QtCore, QtGui, QtWidgets
+        except ImportError:
+            return make_rect_face(ete, diameter, diameter, color)
+
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication([])
+    diameter = max(0.0, float(diameter))
+    canvas_size = max(diameter, float(canvas_size if canvas_size is not None else diameter))
+    container = QtWidgets.QGraphicsRectItem(0, 0, canvas_size, canvas_size)
+    container.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
+    container.setBrush(QtGui.QBrush(QtCore.Qt.GlobalColor.transparent))
+    offset = (canvas_size - diameter) / 2.0
+    item = QtWidgets.QGraphicsEllipseItem(offset, offset, diameter, diameter, container)
+    pen = QtGui.QPen(QtGui.QColor(border_color))
+    pen.setWidthF(float(border_width))
+    if border_width <= 0:
+        pen.setStyle(QtCore.Qt.PenStyle.NoPen)
+    item.setPen(pen)
+    item.setBrush(QtGui.QBrush(QtGui.QColor(color)) if fill else QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush))
+    return StaticItemFace(container)
+
+
 def make_heatmap_colorbar_face(ete, legend_config):
     StackedBarFace = ete.get("StackedBarFace")
     if StackedBarFace is None:
@@ -648,7 +705,16 @@ def make_heatmap_colorbar_face(ete, legend_config):
     height = int(legend_config.get("heatmap_colorbar_bar_height", 8))
     steps = max(8, int(legend_config.get("heatmap_colorbar_steps", 32)))
     percents = [100.0 / steps] * steps
-    colors = [grayscale_hex(index / (steps - 1), 0, 1) for index in range(steps)]
+    colors = [
+        grayscale_hex(
+            index / (steps - 1),
+            0,
+            1,
+            lightest_shade=legend_config.get("heatmap_colorbar_lightest_shade", 225),
+            darkest_shade=legend_config.get("heatmap_colorbar_darkest_shade", 20),
+        )
+        for index in range(steps)
+    ]
     return StackedBarFace(percents, width=width, height=height, colors=colors, line_color="#333333")
 
 
@@ -677,7 +743,7 @@ def make_heatmap_colorbar_scale_face(ete, legend_config, item_size):
     container = QtWidgets.QGraphicsRectItem(0, 0, width, height)
     container.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
     container.setBrush(QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush))
-    font = QtGui.QFont()
+    font = QtGui.QFont(DEFAULT_FONT_FAMILY)
     font.setPointSize(font_size)
     pen = QtGui.QPen(QtGui.QColor(label_color))
     for label, position in zip(labels, positions):
@@ -728,7 +794,7 @@ def make_vertical_heatmap_colorbar_face(ete, legend_config, item_size):
     if app is None:
         app = QtWidgets.QApplication([])
 
-    font = QtGui.QFont()
+    font = QtGui.QFont(DEFAULT_FONT_FAMILY)
     font.setPointSize(font_size)
     label_widths = []
     for label in labels:
@@ -780,6 +846,37 @@ def svg_size_mm(svg_path):
     if not match:
         raise ValueError(f"Could not read SVG millimeter dimensions from {svg_path}")
     return float(match.group(1)), float(match.group(2))
+
+
+def normalize_svg_font_family(svg_path, font_family=DEFAULT_FONT_FAMILY):
+    path = Path(svg_path)
+    text = path.read_text(errors="ignore")
+    text = re.sub(r'font-family="[^"]*"', f'font-family="{font_family}"', text)
+    text = re.sub(r"font-family='[^']*'", f"font-family='{font_family}'", text)
+    text = re.sub(r"font-family:[^;\"']+", f"font-family:{font_family}", text)
+    path.write_text(text)
+
+
+def style_svg_guiding_lines(svg_path, guiding_config):
+    if not guiding_config.get("show", False):
+        return
+    path = Path(svg_path)
+    text = path.read_text(errors="ignore")
+    color = str(guiding_config.get("color", "#000000"))
+    width = str(guiding_config.get("width", 0.35))
+    dasharray = str(guiding_config.get("dasharray", "0.8,1.1"))
+
+    def replace_guiding_group(match):
+        group = match.group(0)
+        if 'stroke-dasharray="' not in group:
+            return group
+        group = re.sub(r'stroke="#[0-9A-Fa-f]{6}"', f'stroke="{color}"', group, count=1)
+        group = re.sub(r'stroke-width="[^"]+"', f'stroke-width="{width}"', group, count=1)
+        group = re.sub(r'stroke-dasharray="[^"]+"', f'stroke-dasharray="{dasharray}"', group, count=1)
+        return group
+
+    text = re.sub(r'<g\b[^>]*stroke-dasharray="[^"]+"[^>]*>.*?</g>', replace_guiding_group, text)
+    path.write_text(text)
 
 
 def convert_svg_to_pdf(svg_path, pdf_path, dpi=300):
@@ -1125,7 +1222,7 @@ def add_svg_quality_matrix_labels(svg_path, matrix_columns):
                     "y": f"{category_y:.3f}",
                     "transform": f"rotate(-90 {center_x:.3f} {category_y:.3f})",
                     "font-size": str(category_font_size),
-                    "font-family": "Arial, Helvetica, sans-serif",
+                    "font-family": DEFAULT_FONT_FAMILY,
                     "fill": label_color,
                     "text-anchor": "start",
                     "dominant-baseline": "middle",
@@ -1154,7 +1251,7 @@ def add_svg_quality_matrix_labels(svg_path, matrix_columns):
                     "x": f"{center_x:.3f}",
                     "y": f"{tier_y:.3f}",
                     "font-size": str(tier_font_size),
-                    "font-family": "Arial, Helvetica, sans-serif",
+                    "font-family": DEFAULT_FONT_FAMILY,
                     "fill": label_color,
                     "text-anchor": "middle",
                     "dominant-baseline": "middle",
@@ -1181,7 +1278,15 @@ def estimate_text_width(text, font_size):
     return int(math.ceil(len(clean_value(text)) * float(font_size) * TEXT_WIDTH_FACTOR)) + 8
 
 
-def grayscale_hex(value, min_value, max_value, reverse=False, missing_color="#F2F2F2"):
+def grayscale_hex(
+    value,
+    min_value,
+    max_value,
+    reverse=False,
+    missing_color="#F2F2F2",
+    lightest_shade=250,
+    darkest_shade=20,
+):
     try:
         numeric = float(value)
     except (TypeError, ValueError):
@@ -1196,7 +1301,9 @@ def grayscale_hex(value, min_value, max_value, reverse=False, missing_color="#F2
         fraction = max(0.0, min((numeric - min_value) / (max_value - min_value), 1.0))
     if reverse:
         fraction = 1.0 - fraction
-    shade = int(round(250 - (fraction * 230)))
+    lightest_shade = int(lightest_shade)
+    darkest_shade = int(darkest_shade)
+    shade = int(round(lightest_shade - (fraction * (lightest_shade - darkest_shade))))
     shade = max(0, min(255, shade))
     return f"#{shade:02X}{shade:02X}{shade:02X}"
 
@@ -1222,7 +1329,40 @@ def heatmap_numeric_value(value, heatmap_config):
     return numeric
 
 
-def heatmap_start_column(strip_configs, heatmap_configs, text_configs, spacing_config, matrix_configs=None):
+def text_before_heatmap(config):
+    value = clean_value(config.get("aligned_order", "")).lower().replace("-", "_")
+    return value in {"text_before_heatmap", "taxonomy_before_heatmap", "taxa_before_heatmap"}
+
+
+def text_column_count(text_configs, spacing_config):
+    if not text_configs:
+        return 0
+    count = len(text_configs)
+    if int(spacing_config.get("between_text_columns", 0)) > 0:
+        count += max(0, len(text_configs) - 1)
+    return count
+
+
+def numeric_dot_column_count(numeric_dot_configs):
+    count = 0
+    for dot_config in numeric_dot_configs or []:
+        if not dot_config.get("show", True):
+            continue
+        count += 1
+        if int(dot_config.get("gap_after", 0)) > 0:
+            count += 1
+    return count
+
+
+def heatmap_start_column(
+    strip_configs,
+    heatmap_configs,
+    text_configs,
+    spacing_config,
+    matrix_configs=None,
+    text_first=False,
+    numeric_dot_configs=None,
+):
     column_index = 0
     if int(spacing_config.get("before_strips", 0)) > 0:
         column_index += 1
@@ -1233,11 +1373,32 @@ def heatmap_start_column(strip_configs, heatmap_configs, text_configs, spacing_c
     matrix_configs = matrix_configs or []
     if strip_configs and (text_configs or heatmap_configs or matrix_configs) and int(spacing_config.get("between_strips_and_text", 0)) > 0:
         column_index += 1
+    column_index += numeric_dot_column_count(numeric_dot_configs)
+    if text_first and text_configs:
+        column_index += text_column_count(text_configs, spacing_config)
+        if (heatmap_configs or matrix_configs) and int(spacing_config.get("between_heatmap_and_text", 0)) > 0:
+            column_index += 1
     return column_index
 
 
-def heatmap_column_indices(strip_configs, heatmap_configs, text_configs, spacing_config, matrix_configs=None):
-    column_index = heatmap_start_column(strip_configs, heatmap_configs, text_configs, spacing_config, matrix_configs=matrix_configs)
+def heatmap_column_indices(
+    strip_configs,
+    heatmap_configs,
+    text_configs,
+    spacing_config,
+    matrix_configs=None,
+    text_first=False,
+    numeric_dot_configs=None,
+):
+    column_index = heatmap_start_column(
+        strip_configs,
+        heatmap_configs,
+        text_configs,
+        spacing_config,
+        matrix_configs=matrix_configs,
+        text_first=text_first,
+        numeric_dot_configs=numeric_dot_configs,
+    )
     indices = []
     for heatmap_config in heatmap_configs:
         indices.append(column_index)
@@ -1247,8 +1408,24 @@ def heatmap_column_indices(strip_configs, heatmap_configs, text_configs, spacing
     return indices
 
 
-def quality_matrix_column_indices(strip_configs, heatmap_configs, matrix_configs, text_configs, spacing_config):
-    column_index = heatmap_start_column(strip_configs, heatmap_configs, text_configs, spacing_config, matrix_configs=matrix_configs)
+def quality_matrix_column_indices(
+    strip_configs,
+    heatmap_configs,
+    matrix_configs,
+    text_configs,
+    spacing_config,
+    text_first=False,
+    numeric_dot_configs=None,
+):
+    column_index = heatmap_start_column(
+        strip_configs,
+        heatmap_configs,
+        text_configs,
+        spacing_config,
+        matrix_configs=matrix_configs,
+        text_first=text_first,
+        numeric_dot_configs=numeric_dot_configs,
+    )
     for heatmap_config in heatmap_configs:
         column_index += 1
         if int(heatmap_config.get("gap_after", 0)) > 0:
@@ -1657,7 +1834,8 @@ def annotate_branch_colors(tree, metadata_by_id, branch_color_configs):
                 annotations.append({"column": column, "value": value})
             elif color_config.get("color_mixed", False):
                 node.add_prop(prop_name, color_config.get("mixed_color", "#808080"))
-        legends[column] = {"label": color_config.get("label", column), "colors": color_map}
+        present_colors = {value: color_map[value] for value in sorted(set(values), key=lambda item: item.lower()) if value in color_map}
+        legends[column] = {"label": color_config.get("label", column), "colors": present_colors}
     return annotations, legends
 
 
@@ -1747,6 +1925,7 @@ def render_tree(config, dry_run=False):
         return outputs, metadata_paths, "dry-run"
 
     ete = load_ete()
+    set_qt_default_font()
     try:
         tree = load_tree_with_parser(ete, tree_path, config.get("newick_format", 0))
     except Exception:
@@ -1780,7 +1959,9 @@ def render_tree(config, dry_run=False):
         )
     text_configs = resolve_text_column_widths(config.get("text_columns", []), metadata)
     heatmap_configs = resolve_heatmap_columns(config.get("heatmap_columns", []), metadata)
+    numeric_dot_configs = [dict(item) for item in config.get("numeric_dots", []) if item.get("show", True)]
     spacing_config = config.get("spacing", {})
+    text_first = text_before_heatmap(config)
 
     support_config = config.get("support", {})
     support_min = support_config.get("min_value", None)
@@ -1798,6 +1979,134 @@ def render_tree(config, dry_run=False):
         if is_leaf_node(node):
             row = metadata_by_id.get(node.name, {})
             column_index = 0
+
+            def add_heatmap_faces(start_column):
+                current_column = start_column
+                if heatmap_configs:
+                    for heatmap_config in heatmap_configs:
+                        column = heatmap_config.get("column", "")
+                        value = row.get(column, "")
+                        value = heatmap_numeric_value(value, heatmap_config)
+                        if clean_value(heatmap_config.get("style", "")).lower() in {"dot", "circle", "point"}:
+                            min_value = float(heatmap_config.get("min_value", 0))
+                            max_value = float(heatmap_config.get("max_value", 100))
+                            if math.isfinite(value) and max_value > min_value:
+                                fraction = max(0.0, min((float(value) - min_value) / (max_value - min_value), 1.0))
+                            else:
+                                fraction = math.nan
+                            canvas_size = max(float(heatmap_config.get("width", 8)), float(heatmap_config.get("height", 10)))
+                            min_diameter = float(heatmap_config.get("min_diameter", 0))
+                            max_diameter = float(heatmap_config.get("max_diameter", canvas_size))
+                            if not math.isfinite(fraction) or fraction <= 0:
+                                face = make_blank_face(ete, canvas_size, canvas_size)
+                            else:
+                                diameter = min_diameter + (fraction * (max_diameter - min_diameter))
+                                highlight_value = heatmap_config.get(
+                                    "highlight_value",
+                                    config.get("legend", {}).get("heatmap_dot_legend_highlight_value", None),
+                                )
+                                try:
+                                    highlight_value = float(highlight_value) if highlight_value is not None else math.nan
+                                except (TypeError, ValueError):
+                                    highlight_value = math.nan
+                                highlighted = math.isfinite(highlight_value) and abs(float(value) - highlight_value) < 1e-9
+                                face = make_static_circle_face(
+                                    ete,
+                                    diameter,
+                                    heatmap_config.get(
+                                        "highlight_color",
+                                        config.get("legend", {}).get("heatmap_dot_legend_highlight_color", "#BDBDBD"),
+                                    )
+                                    if highlighted
+                                    else heatmap_config.get("color", "#111111"),
+                                    border_color=heatmap_config.get("border_color", heatmap_config.get("color", "#111111")),
+                                    border_width=float(heatmap_config.get("border_width", 0)),
+                                    fill=True if highlighted else bool(heatmap_config.get("fill", True)),
+                                    canvas_size=canvas_size,
+                                )
+                            add_face(ete, face, node, current_column, "aligned")
+                        else:
+                            color = grayscale_hex(
+                                value,
+                                heatmap_config.get("min_value", 0),
+                                heatmap_config.get("max_value", 1),
+                                reverse=bool(heatmap_config.get("reverse", False)),
+                                missing_color=heatmap_config.get("missing_color", "#F2F2F2"),
+                                lightest_shade=heatmap_config.get("lightest_shade", 250),
+                                darkest_shade=heatmap_config.get("darkest_shade", 20),
+                            )
+                            add_face(
+                                ete,
+                                make_static_rect_face(
+                                    ete,
+                                    heatmap_config.get("width", 8),
+                                    heatmap_config.get("height", 10),
+                                    color,
+                                ),
+                                node,
+                                current_column,
+                                "aligned",
+                            )
+                        current_column += 1
+                        current_column = add_gap_face(ete, node, current_column, heatmap_config.get("gap_after", 1), position="aligned")
+                return current_column
+
+            def add_numeric_dot_faces(start_column):
+                current_column = start_column
+                for dot_config in numeric_dot_configs:
+                    value = row.get(dot_config.get("column", ""), "")
+                    try:
+                        numeric_value = float(value)
+                    except (TypeError, ValueError):
+                        numeric_value = math.nan
+                    min_value = float(dot_config.get("min_value", 0))
+                    max_value = float(dot_config.get("max_value", max(numeric_value if math.isfinite(numeric_value) else 1.0, 1.0)))
+                    if math.isfinite(numeric_value) and max_value > min_value:
+                        fraction = max(0.0, min((numeric_value - min_value) / (max_value - min_value), 1.0))
+                    else:
+                        fraction = 0.0
+                    canvas_size = max(float(dot_config.get("width", 12)), float(dot_config.get("height", 12)))
+                    min_diameter = float(dot_config.get("min_diameter", 3))
+                    max_diameter = float(dot_config.get("max_diameter", canvas_size))
+                    diameter = min_diameter + (fraction * (max_diameter - min_diameter))
+                    face = make_static_circle_face(
+                        ete,
+                        diameter,
+                        dot_config.get("color", "#111111"),
+                        border_color=dot_config.get("border_color", dot_config.get("color", "#111111")),
+                        border_width=float(dot_config.get("border_width", 0)),
+                        fill=bool(dot_config.get("fill", True)),
+                        canvas_size=canvas_size,
+                    )
+                    add_face(ete, face, node, current_column, "aligned")
+                    current_column += 1
+                    current_column = add_gap_face(ete, node, current_column, dot_config.get("gap_after", 1), position="aligned")
+                return current_column
+
+            def add_text_faces(start_column):
+                current_column = start_column
+                for text_index, text_config in enumerate(text_configs):
+                    value = truncate_text(row.get(text_config.get("column", ""), ""), text_config.get("max_length", 30))
+                    if text_config.get("mark_best_representative", False):
+                        best_column = clean_value(text_config.get("best_representative_column", "best_representative"))
+                        best_value = clean_value(row.get(best_column, "")).lower()
+                        if best_value in {"true", "1", "yes", "y"}:
+                            marker = clean_value(
+                                text_config.get(
+                                    "best_representative_marker",
+                                    config.get("best_representatives", {}).get("marker", "*"),
+                                )
+                            ) or "*"
+                            value = f"{value}{marker}"
+                    face = make_text_face(ete, value, text_config.get("font_size", 6), text_config.get("color", "#333333"))
+                    apply_text_alignment(face, value, text_config)
+                    apply_face_width(face, text_config.get("width"))
+                    add_face(ete, face, node, current_column, "aligned")
+                    current_column += 1
+                    if text_index + 1 < len(text_configs):
+                        current_column = add_gap_face(ete, node, current_column, spacing_config.get("between_text_columns", 8), position="aligned")
+                return current_column
+
             if config.get("show_leaf_names", True):
                 label_column = config.get("leaf_name_column", "tree_id")
                 label = row.get(label_column, node.name) if label_column != "tree_id" else node.name
@@ -1814,32 +2123,14 @@ def render_tree(config, dry_run=False):
                 column_index = add_gap_face(ete, node, column_index, spacing_config.get("between_strips", 4), position="aligned")
             if strip_configs and (text_configs or heatmap_configs or quality_matrix_columns):
                 column_index = add_gap_face(ete, node, column_index, spacing_config.get("between_strips_and_text", 12), position="aligned")
+            if numeric_dot_configs:
+                column_index = add_numeric_dot_faces(column_index)
+            if text_first and text_configs:
+                column_index = add_text_faces(column_index)
+                if heatmap_configs or quality_matrix_columns:
+                    column_index = add_gap_face(ete, node, column_index, spacing_config.get("between_heatmap_and_text", 8), position="aligned")
             if heatmap_configs:
-                for heatmap_config in heatmap_configs:
-                    column = heatmap_config.get("column", "")
-                    value = row.get(column, "")
-                    value = heatmap_numeric_value(value, heatmap_config)
-                    color = grayscale_hex(
-                        value,
-                        heatmap_config.get("min_value", 0),
-                        heatmap_config.get("max_value", 1),
-                        reverse=bool(heatmap_config.get("reverse", False)),
-                        missing_color=heatmap_config.get("missing_color", "#F2F2F2"),
-                    )
-                    add_face(
-                        ete,
-                        make_static_rect_face(
-                            ete,
-                            heatmap_config.get("width", 8),
-                            heatmap_config.get("height", 10),
-                            color,
-                        ),
-                        node,
-                        column_index,
-                        "aligned",
-                    )
-                    column_index += 1
-                    column_index = add_gap_face(ete, node, column_index, heatmap_config.get("gap_after", 1), position="aligned")
+                column_index = add_heatmap_faces(column_index)
             if quality_matrix_columns:
                 matrix_group_key = row.get(
                     quality_matrix_lookup.get("leaf_group_column", quality_matrix_lookup.get("leaf_component_column", "component_id")),
@@ -1892,7 +2183,7 @@ def render_tree(config, dry_run=False):
                         height=matrix_column.get("height", 10),
                         position="aligned",
                     )
-            if (heatmap_configs or quality_matrix_columns) and text_configs:
+            if not text_first and (heatmap_configs or quality_matrix_columns) and text_configs:
                 column_index = add_gap_face(ete, node, column_index, spacing_config.get("between_heatmap_and_text", 8), position="aligned")
             for bar in config.get("numeric_bars", []):
                 value = row.get(bar.get("column", ""), "")
@@ -1904,26 +2195,23 @@ def render_tree(config, dry_run=False):
                 width = max(1, int(float(bar.get("width", 40)) * max(0.0, min(numeric_value / max_value, 1.0))))
                 add_face(ete, make_rect_face(ete, width, bar.get("height", 8), bar.get("color", "#777777")), node, column_index, "aligned")
                 column_index += 1
-            for text_index, text_config in enumerate(text_configs):
-                value = truncate_text(row.get(text_config.get("column", ""), ""), text_config.get("max_length", 30))
-                if text_config.get("mark_best_representative", False):
-                    best_column = clean_value(text_config.get("best_representative_column", "best_representative"))
-                    best_value = clean_value(row.get(best_column, "")).lower()
-                    if best_value in {"true", "1", "yes", "y"}:
-                        marker = clean_value(
-                            text_config.get(
-                                "best_representative_marker",
-                                config.get("best_representatives", {}).get("marker", "*"),
-                            )
-                        ) or "*"
-                        value = f"{value}{marker}"
-                face = make_text_face(ete, value, text_config.get("font_size", 6), text_config.get("color", "#333333"))
-                apply_text_alignment(face, value, text_config)
-                apply_face_width(face, text_config.get("width"))
-                add_face(ete, face, node, column_index, "aligned")
-                column_index += 1
-                if text_index + 1 < len(text_configs):
-                    column_index = add_gap_face(ete, node, column_index, spacing_config.get("between_text_columns", 8), position="aligned")
+                if bar.get("show_value", False):
+                    value_format = str(bar.get("value_format", "g"))
+                    try:
+                        value_label = format(numeric_value, value_format)
+                    except (ValueError, TypeError):
+                        value_label = f"{numeric_value:g}"
+                    value_face = make_text_face(
+                        ete,
+                        value_label,
+                        bar.get("font_size", 7),
+                        bar.get("text_color", "#111111"),
+                    )
+                    value_face.margin_left = int(bar.get("value_margin_left", 3))
+                    add_face(ete, value_face, node, column_index, "aligned")
+                    column_index += 1
+            if not text_first:
+                column_index = add_text_faces(column_index)
         elif support_config.get("show", True):
             value = support_value(node)
             if value is not None and (support_min is None or value >= support_min):
@@ -1974,13 +2262,38 @@ def render_tree(config, dry_run=False):
     tree_style.margin_bottom = int(canvas_config.get("margin_bottom", 30))
     tree_style.margin_left = int(canvas_config.get("margin_left", 30))
     tree_style.show_scale = bool(canvas_config.get("show_scale", True))
+    if hasattr(tree_style, "branch_vertical_margin"):
+        tree_style.branch_vertical_margin = int(canvas_config.get("branch_vertical_margin", 0))
+    guiding_config = config.get("guiding_lines", {})
+    if hasattr(tree_style, "draw_guiding_lines"):
+        tree_style.draw_guiding_lines = bool(guiding_config.get("show", False))
+    if hasattr(tree_style, "guiding_lines_type"):
+        tree_style.guiding_lines_type = int(guiding_config.get("type", 1))
+    if hasattr(tree_style, "guiding_lines_color"):
+        tree_style.guiding_lines_color = guiding_config.get("color", "#9A9A9A")
     if tree_style.mode == "c":
         tree_style.arc_start = int(canvas_config.get("arc_start", 0))
         tree_style.arc_span = int(canvas_config.get("arc_span", 359))
         add_circular_heatmap_title_labels(ete, tree_style, heatmap_configs, config.get("legend", {}))
-    heatmap_label_columns = heatmap_column_indices(strip_configs, heatmap_configs, text_configs, spacing_config, matrix_configs=quality_matrix_columns)
+    heatmap_label_columns = heatmap_column_indices(
+        strip_configs,
+        heatmap_configs,
+        text_configs,
+        spacing_config,
+        matrix_configs=quality_matrix_columns,
+        text_first=text_first,
+        numeric_dot_configs=numeric_dot_configs,
+    )
     add_heatmap_labels(ete, tree_style, heatmap_configs, config.get("legend", {}), heatmap_label_columns)
-    matrix_label_columns = quality_matrix_column_indices(strip_configs, heatmap_configs, quality_matrix_columns, text_configs, spacing_config)
+    matrix_label_columns = quality_matrix_column_indices(
+        strip_configs,
+        heatmap_configs,
+        quality_matrix_columns,
+        text_configs,
+        spacing_config,
+        text_first=text_first,
+        numeric_dot_configs=numeric_dot_configs,
+    )
     add_quality_category_matrix_labels(ete, tree_style, quality_matrix_columns, matrix_label_columns)
     heatmap_postprocess_configs = list(heatmap_configs) + list(quality_matrix_columns)
 
@@ -1994,6 +2307,7 @@ def render_tree(config, dry_run=False):
             branch_color_legends=branch_color_legends,
             heatmap_configs=heatmap_postprocess_configs,
             heatmap_labels_in_legend=(tree_style.mode == "c"),
+            numeric_dot_configs=numeric_dot_configs,
         )
 
     pdf_outputs = [path for path in outputs if path.suffix.lower() == ".pdf"]
@@ -2010,6 +2324,8 @@ def render_tree(config, dry_run=False):
             align_svg_heatmap_labels(out_path, heatmap_postprocess_configs, config.get("legend", {}))
             add_svg_quality_matrix_labels(out_path, quality_matrix_columns)
             add_svg_heatmap_dividers(out_path, heatmap_postprocess_configs)
+            style_svg_guiding_lines(out_path, config.get("guiding_lines", {}))
+            normalize_svg_font_family(out_path)
             if rendered_svg_path is None:
                 rendered_svg_path = out_path
     temporary_svg_path = None
@@ -2027,6 +2343,8 @@ def render_tree(config, dry_run=False):
         align_svg_heatmap_labels(temporary_svg_path, heatmap_postprocess_configs, config.get("legend", {}))
         add_svg_quality_matrix_labels(temporary_svg_path, quality_matrix_columns)
         add_svg_heatmap_dividers(temporary_svg_path, heatmap_postprocess_configs)
+        style_svg_guiding_lines(temporary_svg_path, config.get("guiding_lines", {}))
+        normalize_svg_font_family(temporary_svg_path)
         rendered_svg_path = temporary_svg_path
     for out_path in pdf_outputs:
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2051,9 +2369,11 @@ def add_legend(
     branch_color_legends=None,
     heatmap_configs=None,
     heatmap_labels_in_legend=False,
+    numeric_dot_configs=None,
 ):
     branch_color_legends = branch_color_legends or {}
     heatmap_configs = heatmap_configs or []
+    numeric_dot_configs = numeric_dot_configs or []
     max_items = int(legend_config.get("max_items_per_strip", 20))
     title_size = int(legend_config.get("title_font_size", 8))
     item_size = int(legend_config.get("item_font_size", 6))
@@ -2120,6 +2440,78 @@ def add_legend(
                     make_text_face(ete, label, item_size, "#333333"),
                 )
             add_legend_row(make_blank_face(ete, 1, section_gap), make_blank_face(ete, 1, section_gap))
+        dot_heatmaps = [
+            heatmap_config
+            for heatmap_config in heatmap_configs
+            if clean_value(heatmap_config.get("style", "")).lower() in {"dot", "circle", "point"}
+        ]
+        if dot_heatmaps and legend_config.get("show_heatmap_dot_legend", False):
+            example = dot_heatmaps[0]
+            add_title_row(legend_config.get("heatmap_dot_legend_label", "KO prevalence"))
+            canvas_size = max(float(example.get("width", 8)), float(example.get("height", 10)))
+            min_diameter = float(example.get("min_diameter", 0))
+            max_diameter = float(example.get("max_diameter", canvas_size))
+            highlight_value = legend_config.get("heatmap_dot_legend_highlight_value", None)
+            try:
+                highlight_value = float(highlight_value) if highlight_value is not None else math.nan
+            except (TypeError, ValueError):
+                highlight_value = math.nan
+            for value in legend_config.get("heatmap_dot_legend_values", [25, 50, 100]):
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                min_value = float(example.get("min_value", 0))
+                max_value = float(example.get("max_value", 100))
+                fraction = 0.0 if max_value <= min_value else max(0.0, min((numeric_value - min_value) / (max_value - min_value), 1.0))
+                diameter = min_diameter + (fraction * (max_diameter - min_diameter))
+                highlighted = math.isfinite(highlight_value) and abs(numeric_value - highlight_value) < 1e-9
+                add_legend_row(
+                    make_static_circle_face(
+                        ete,
+                        diameter,
+                        legend_config.get("heatmap_dot_legend_highlight_color", "#BDBDBD") if highlighted else example.get("color", "#111111"),
+                        border_color=example.get("border_color", example.get("color", "#111111")),
+                        border_width=float(example.get("border_width", 0)),
+                        fill=True if highlighted else bool(example.get("fill", True)),
+                        canvas_size=canvas_size,
+                    ),
+                    make_text_face(ete, f"{numeric_value:g}%", item_size, "#333333"),
+                )
+            add_legend_row(make_blank_face(ete, 1, section_gap), make_blank_face(ete, 1, section_gap))
+        if numeric_dot_configs and legend_config.get("show_numeric_dot_legend", True):
+            for dot_config in numeric_dot_configs:
+                label = clean_value(dot_config.get("label", dot_config.get("column", "Dot size")))
+                add_title_row(label)
+                canvas_size = max(float(dot_config.get("width", 12)), float(dot_config.get("height", 12)))
+                min_diameter = float(dot_config.get("min_diameter", 3))
+                max_diameter = float(dot_config.get("max_diameter", canvas_size))
+                min_value = float(dot_config.get("min_value", 0))
+                max_value = float(dot_config.get("max_value", 1))
+                values = dot_config.get("legend_values") or legend_config.get("numeric_dot_legend_values")
+                if not values:
+                    mid_value = (min_value + max_value) / 2.0
+                    values = [min_value if min_value > 0 else 1, mid_value, max_value]
+                for value in values:
+                    try:
+                        numeric_value = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    fraction = 0.0 if max_value <= min_value else max(0.0, min((numeric_value - min_value) / (max_value - min_value), 1.0))
+                    diameter = min_diameter + (fraction * (max_diameter - min_diameter))
+                    add_legend_row(
+                        make_static_circle_face(
+                            ete,
+                            diameter,
+                            dot_config.get("color", "#111111"),
+                            border_color=dot_config.get("border_color", dot_config.get("color", "#111111")),
+                            border_width=float(dot_config.get("border_width", 0)),
+                            fill=bool(dot_config.get("fill", True)),
+                            canvas_size=canvas_size,
+                        ),
+                        make_text_face(ete, f"{numeric_value:g}", item_size, "#333333"),
+                    )
+                add_legend_row(make_blank_face(ete, 1, section_gap), make_blank_face(ete, 1, section_gap))
         if heatmap_configs and legend_config.get("show_heatmap_colorbar", True):
             add_title_row(legend_config.get("heatmap_colorbar_label", "Heatmap scale"))
             colorbar_orientation = clean_value(legend_config.get("heatmap_colorbar_orientation", "horizontal")).lower()

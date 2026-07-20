@@ -317,7 +317,7 @@ def build_benchmark_metric_values(
             )
 
     per_genome_metrics = [
-        ("total_orfs", "Raw ORFs per genome"),
+        ("total_orfs", "Total ORFs per genome"),
         ("unique_gene_count", "KO-annotated ORFs per genome"),
         ("informative_ko_orfs", "Informative KO ORFs per genome"),
         ("ko_annotation_fraction_percent", "KO annotation fraction (%)"),
@@ -343,7 +343,7 @@ def build_benchmark_metric_values(
 
     metric_specs = [
         ("genomes_per_sample", "Genomes per sample"),
-        ("total_orfs", "Raw ORFs per genome"),
+        ("total_orfs", "Total ORFs per genome"),
         ("unique_gene_count", "KO-annotated ORFs"),
         ("ko_annotation_fraction_percent", "KO annotation fraction (%)"),
         ("informative_ko_orfs", "Informative KO ORFs"),
@@ -528,23 +528,7 @@ def write_benchmark_metric_panel(
         plt.close(fig)
         return []
 
-    fig.suptitle(
-        f"KOfam benchmark by category ({point_label}; significant pairs)",
-        fontsize=15,
-        fontweight="bold",
-        y=0.995,
-    )
-    fig.text(
-        0.5,
-        0.014,
-        f"Points show category {point_label}s; horizontal intervals show {interval_label}. "
-        "Stars mark BH-adjusted pairwise q<0.05.",
-        ha="center",
-        va="bottom",
-        fontsize=9,
-        color="#4d4d4d",
-    )
-    fig.tight_layout(rect=[0, 0.04, 1, 0.965], w_pad=2.3, h_pad=2.0)
+    fig.tight_layout(rect=[0, 0, 1, 1], w_pad=2.3, h_pad=2.0)
     save_figure(fig, str(output_base))
     return [Path(str(output_base) + ".png"), Path(str(output_base) + ".pdf")]
 
@@ -552,7 +536,7 @@ def write_benchmark_metric_panel(
 def long_group_metrics(group_summary: pd.DataFrame) -> pd.DataFrame:
     metric_specs = [
         ("genomes", "Genomes", "count"),
-        ("total_raw_orfs", "Raw ORFs", "count"),
+        ("total_raw_orfs", "Total ORFs", "count"),
         ("total_ko_annotated_orfs", "KO-annotated ORFs", "count"),
         ("total_informative_ko_orfs", "Informative KO ORFs", "count"),
         ("enriched_kos_q_le_threshold", "Enriched KOs (q<=0.05)", "count"),
@@ -577,7 +561,7 @@ def long_group_metrics(group_summary: pd.DataFrame) -> pd.DataFrame:
 def kofam_single_metric_specs() -> list[tuple[str, str, str]]:
     return [
         ("genomes", "Number of genomes", "category"),
-        ("total_orfs", "Raw ORFs per genome", "genome"),
+        ("total_orfs", "Total ORFs per genome", "genome"),
         ("unique_gene_count", "KO-annotated ORFs per genome", "genome"),
         ("informative_ko_orfs", "Informative KO ORFs per genome", "genome"),
         ("enriched_kos_q_le_threshold", "Enriched KOs (q<=0.05)", "category"),

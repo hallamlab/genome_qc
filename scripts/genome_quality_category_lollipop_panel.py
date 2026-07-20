@@ -22,9 +22,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from summarize_metapathways_genomes import (  # noqa: E402
+    PLOT_FONT_FAMILY,
+    PLOT_FONT_SIZES,
     apply_figure_typography,
     label_multi_panel_axes,
     plot_font_rc,
+    register_times_new_roman_font,
 )
 
 
@@ -140,7 +143,14 @@ def draw_grouped_lollipops(
                 zorder=3,
             )
             if annotate_ints:
-                ax.text(x_pos, value + label_offset, f"{int(value)}", ha="center", va="bottom", fontsize=7)
+                ax.text(
+                    x_pos,
+                    value + label_offset,
+                    f"{int(value)}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=PLOT_FONT_SIZES["annotation"],
+                )
 
     handles, labels = ax.get_legend_handles_labels()
     unique = dict(zip(labels, handles))
@@ -217,6 +227,13 @@ def build_panel(counts_path: Path, summary_path: Path, output_base: Path, title:
     if hallmarks.empty:
         raise ValueError("No hallmark values were available for plotting")
 
+    register_times_new_roman_font()
+    from matplotlib import font_manager
+
+    font_manager.findfont(
+        font_manager.FontProperties(family=[PLOT_FONT_FAMILY]),
+        fallback_to_default=False,
+    )
     plt.rcParams.update(plot_font_rc())
     sns.set_theme(style="whitegrid", context="paper", rc=plot_font_rc())
     fig, axes = plt.subplots(1, 2, figsize=(10.2, 6.1), constrained_layout=False)

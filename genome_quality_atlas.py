@@ -21,15 +21,15 @@ SCORE_COLUMN = "qscore"
 SCORE_LABEL = "Qscore"
 PLOT_FONT_FAMILY = "Times New Roman"
 PLOT_FONT_SIZES = {
-    "base": 10,
-    "axis_label": 10,
-    "tick": 9,
-    "legend": 9,
-    "legend_title": 10,
-    "title": 11,
-    "suptitle": 16,
-    "annotation": 8,
-    "panel_label": 16,
+    "base": 12,
+    "axis_label": 12,
+    "tick": 11,
+    "legend": 11,
+    "legend_title": 12,
+    "title": 13,
+    "suptitle": 18,
+    "annotation": 10,
+    "panel_label": 22,
 }
 PANEL_LABELS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 TIER_PALETTE = {"low": "#d9d9d9", "medium": "#7f7f7f", "high": "#1a1a1a"}
@@ -137,6 +137,12 @@ def plot_font_rc():
         "legend.fontsize": PLOT_FONT_SIZES["legend"],
         "legend.title_fontsize": PLOT_FONT_SIZES["legend_title"],
         "figure.titlesize": PLOT_FONT_SIZES["suptitle"],
+        "axes.edgecolor": "#2f2f2f",
+        "axes.linewidth": 0.8,
+        "axes.titleweight": "bold",
+        "grid.color": "#e5e5e5",
+        "grid.linewidth": 0.7,
+        "grid.linestyle": "-",
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
     }
@@ -155,15 +161,31 @@ def register_times_new_roman_font():
         except ValueError:
             pass
 
+        font_paths = []
         result = subprocess.run(
-            ["fc-match", "-f", "%{file}\n", PLOT_FONT_FAMILY],
+            ["fc-list", "-f", "%{file}\t%{family}\n"],
             check=False,
             capture_output=True,
             text=True,
         )
-        font_path = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
-        if font_path and Path(font_path).is_file():
-            font_manager.fontManager.addfont(font_path)
+        for line in result.stdout.splitlines():
+            try:
+                font_path, families = line.split("\t", 1)
+            except ValueError:
+                continue
+            if PLOT_FONT_FAMILY.lower() in families.lower():
+                font_paths.append(font_path)
+        if not font_paths:
+            result = subprocess.run(
+                ["fc-match", "-f", "%{file}\n", PLOT_FONT_FAMILY],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            font_paths = result.stdout.strip().splitlines() if result.stdout.strip() else []
+        for font_path in sorted(set(font_paths)):
+            if font_path and Path(font_path).is_file():
+                font_manager.fontManager.addfont(font_path)
     except Exception:
         return
 
@@ -234,11 +256,11 @@ def label_multi_panel_axes(fig, axes=None):
             except ValueError:
                 pass
         ax._atlas_panel_label_artist = ax.text(
-            0.015,
+            -0.075,
             1.055,
             panel_label_for_index(index),
             transform=ax.transAxes,
-            ha="left",
+            ha="right",
             va="bottom",
             fontsize=PLOT_FONT_SIZES["panel_label"],
             fontfamily=PLOT_FONT_FAMILY,
@@ -252,6 +274,119 @@ def label_multi_panel_axes(fig, axes=None):
 def apply_figure_typography(fig):
     for text in fig.findobj(match=lambda artist: hasattr(artist, "set_fontfamily")):
         text.set_fontfamily(PLOT_FONT_FAMILY)
+    if getattr(fig, "_suptitle", None) is not None:
+        fig._suptitle.set_fontfamily(PLOT_FONT_FAMILY)
+        fig._suptitle.set_fontsize(PLOT_FONT_SIZES["suptitle"])
+        fig._suptitle.set_fontweight("bold")
+    for legend in getattr(fig, "legends", []):
+        for text in legend.get_texts():
+            text.set_fontfamily(PLOT_FONT_FAMILY)
+            text.set_fontsize(PLOT_FONT_SIZES["legend"])
+        title = legend.get_title()
+        title.set_fontfamily(PLOT_FONT_FAMILY)
+        title.set_fontsize(PLOT_FONT_SIZES["legend_title"])
+    for ax in fig.axes:
+        if not ax.get_visible():
+            continue
+        for spine_name in ["top", "right"]:
+            if spine_name in ax.spines:
+                ax.spines[spine_name].set_visible(False)
+        for spine_name in ["left", "bottom"]:
+            if spine_name in ax.spines:
+                ax.spines[spine_name].set_color("#2f2f2f")
+                ax.spines[spine_name].set_linewidth(0.8)
+        ax.tick_params(axis="both", labelsize=PLOT_FONT_SIZES["tick"], colors="#2f2f2f")
+        ax.xaxis.label.set_fontsize(PLOT_FONT_SIZES["axis_label"])
+        ax.yaxis.label.set_fontsize(PLOT_FONT_SIZES["axis_label"])
+        ax.title.set_fontsize(PLOT_FONT_SIZES["title"])
+        ax.title.set_fontweight("bold")
+        legend = ax.get_legend()
+        if legend is not None:
+            for text in legend.get_texts():
+                text.set_fontfamily(PLOT_FONT_FAMILY)
+                text.set_fontsize(PLOT_FONT_SIZES["legend"])
+            title = legend.get_title()
+            title.set_fontfamily(PLOT_FONT_FAMILY)
+            title.set_fontsize(PLOT_FONT_SIZES["legend_title"])
+
+
+def axis_text(ax, axis):
+    pieces = []
+    if axis == "x":
+        pieces.append(ax.get_xlabel())
+        pieces.extend(str(label.get_text()) for label in ax.get_xticklabels())
+    else:
+        pieces.append(ax.get_ylabel())
+        pieces.extend(str(label.get_text()) for label in ax.get_yticklabels())
+    return " ".join(str(piece).lower() for piece in pieces if str(piece).strip())
+
+
+def axis_has_numeric_data(ax, axis):
+    try:
+        lines = ax.get_lines()
+        collections = ax.collections
+        patches = ax.patches
+    except Exception:
+        return False
+    if lines or collections:
+        return True
+    if patches and axis == "y":
+        return True
+    return False
+
+
+def set_axis_limits_and_ticks(ax, axis, limits, ticks):
+    setter = ax.set_xlim if axis == "x" else ax.set_ylim
+    getter = ax.get_xlim if axis == "x" else ax.get_ylim
+    bottom, top = getter()
+    if not (math.isfinite(bottom) and math.isfinite(top)):
+        return
+    if bottom > top:
+        limits = (limits[1], limits[0])
+    setter(*limits)
+    if axis == "x":
+        ax.set_xticks(ticks)
+    else:
+        ax.set_yticks(ticks)
+
+
+def standardize_axis_scale(ax, axis):
+    if not axis_has_numeric_data(ax, axis):
+        return
+    text = axis_text(ax, axis)
+    if not text:
+        return
+    fractional_tokens = [
+        "fraction",
+        "rate",
+        "proportion",
+        "alignment fraction",
+        "recoverability",
+        "integrity",
+        "mimag quality index",
+        "probability",
+        "fraction present",
+        "selected fraction",
+        "matched fraction",
+    ]
+    percent_tokens = [
+        "qscore",
+        "completeness",
+    ]
+    current_limits = ax.get_xlim() if axis == "x" else ax.get_ylim()
+    low, high = current_limits
+    if any(token in text for token in fractional_tokens) and low >= -0.2 and high <= 1.3:
+        set_axis_limits_and_ticks(ax, axis, (0.0, 1.0), [0.0, 0.25, 0.5, 0.75, 1.0])
+    elif any(token in text for token in percent_tokens) and low >= -10 and high <= 110:
+        set_axis_limits_and_ticks(ax, axis, (0.0, 100.0), [0, 25, 50, 75, 100])
+
+
+def standardize_figure_scales(fig):
+    for ax in fig.axes:
+        if not ax.get_visible() or ax.get_label() == "<colorbar>" or not ax.axison:
+            continue
+        standardize_axis_scale(ax, "x")
+        standardize_axis_scale(ax, "y")
 
 
 def clean_group_series(series):
@@ -1032,7 +1167,9 @@ def apply_tight_layout(fig, rect=(0, 0, 1, 1)):
     fig.tight_layout(rect=rect, pad=1.2, w_pad=2.0, h_pad=2.0)
 
 
-def style_long_ticklabels(ax, axis="x", rotation=90, size=8):
+def style_long_ticklabels(ax, axis="x", rotation=90, size=None):
+    if size is None:
+        size = PLOT_FONT_SIZES["tick"]
     ax.tick_params(axis=axis, rotation=rotation, labelsize=size)
 
 
@@ -5473,6 +5610,14 @@ def save_compare_outputs(
     ) if sample_counts is not None else None
     if sample_counts is not None:
         sample_counts.to_csv(compare_base + "_sample_count_summary.tsv", sep="\t", index=False)
+        from scripts.genome_quality_category_lollipop_panel import build_panel
+
+        build_panel(
+            Path(compare_base + "_sample_count_summary.tsv"),
+            Path(compare_base + "_summary.tsv"),
+            Path(compare_base + "_count_hallmark_lollipop_panel"),
+            title="",
+        )
     if sample_count_stats is not None:
         sample_count_stats.to_csv(compare_base + "_sample_count_stats.tsv", sep="\t", index=False)
     method_significance = run_method_significance_tests(
@@ -5609,6 +5754,8 @@ def save_compare_outputs(
         compare_base + "_taxonomy_quality_summary.pdf",
         compare_base + "_sample_count_summary.png",
         compare_base + "_sample_count_summary.pdf",
+        compare_base + "_count_hallmark_lollipop_panel.png",
+        compare_base + "_count_hallmark_lollipop_panel.pdf",
         compare_base + "_sample_breakout_summary.tsv",
         compare_base + "_sample_breakout_dashboard.png",
         compare_base + "_sample_breakout_dashboard.pdf",
@@ -6944,8 +7091,48 @@ def add_qscore_colorbar(fig, mappable, axes=None, cax_rect=None):
     colorbar.set_label(SCORE_LABEL)
 
 
+def remove_titles_and_notes(fig):
+    for text in list(getattr(fig, "texts", [])):
+        try:
+            text.remove()
+        except Exception:
+            text.set_text("")
+    if getattr(fig, "_suptitle", None) is not None:
+        try:
+            fig._suptitle.remove()
+        except Exception:
+            fig._suptitle.set_text("")
+        fig._suptitle = None
+
+
+def concise_metric_axis_label(metric_label):
+    text = str(metric_label).strip().lower()
+    if any(token in text for token in ["fraction", "prevalence", "proportion", "probability", "rate"]):
+        return "Fraction"
+    if any(token in text for token in ["count", "genome", "orf", "pathway", "accession", "gene", "marker"]):
+        return "Count"
+    if "length" in text or "size" in text:
+        return "Length"
+    if any(token in text for token in ["score", "quality", "integrity", "recoverability", "completeness", "contamination"]):
+        return "Score"
+    return "Value"
+
+
+def deduplicate_metric_axis_labels(fig):
+    for ax in fig.axes:
+        if not ax.get_visible() or not ax.axison:
+            continue
+        title = str(ax.get_title()).strip()
+        xlabel = str(ax.get_xlabel()).strip()
+        if title and xlabel and title.casefold() == xlabel.casefold():
+            ax.set_xlabel(concise_metric_axis_label(title))
+
+
 def save_figure(fig, output_base):
     apply_plot_style()
+    remove_titles_and_notes(fig)
+    deduplicate_metric_axis_labels(fig)
+    standardize_figure_scales(fig)
     label_multi_panel_axes(fig)
     apply_figure_typography(fig)
     fig.savefig(output_base + ".png", dpi=300, bbox_inches="tight")

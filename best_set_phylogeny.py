@@ -229,10 +229,11 @@ def taxonomy_species_is_informative(value):
     return True
 
 
-def filter_resolved_species(selected_df):
-    if selected_df.empty or "Species" not in selected_df.columns:
+def filter_resolved_taxonomy(selected_df, taxonomy_level="species"):
+    column = {"species": "Species", "genus": "Genus"}.get(taxonomy_level)
+    if taxonomy_level == "none" or selected_df.empty or column not in selected_df.columns:
         return selected_df.copy(), 0
-    keep_mask = selected_df["Species"].map(taxonomy_species_is_informative)
+    keep_mask = selected_df[column].map(taxonomy_species_is_informative)
     removed = int((~keep_mask).sum())
     return selected_df.loc[keep_mask].copy().reset_index(drop=True), removed
 
@@ -691,16 +692,16 @@ def run_gtdb_marker_phylogeny(set_dir, fasta_dir, threads, gtdbtk_data_path=None
     return wrote
 
 
-def process_phylogeny_set(set_dir, threads, gtdbtk_data_path=None):
+def process_phylogeny_set(set_dir, threads, gtdbtk_data_path=None, taxonomy_level="species"):
     set_dir = Path(set_dir).expanduser().absolute()
     selected_table = resolve_selected_table(set_dir)
     original_selected_df = read_tsv(selected_table)
-    selected_df, unresolved_removed = filter_resolved_species(original_selected_df)
+    selected_df, unresolved_removed = filter_resolved_taxonomy(original_selected_df, taxonomy_level)
     if unresolved_removed:
-        log(f"[info] filtered unresolved Species from {set_dir}: {unresolved_removed} genome(s)")
+        log(f"[info] filtered unresolved {taxonomy_level.title()} from {set_dir}: {unresolved_removed} genome(s)")
     phylo_dir = set_dir / "phylogeny"
     ensure_dir(phylo_dir)
-    filtered_selected_path = phylo_dir / "selected_genomes_species_resolved.tsv"
+    filtered_selected_path = phylo_dir / f"selected_genomes_{taxonomy_level}_resolved.tsv"
     selected_df.to_csv(filtered_selected_path, sep="\t", index=False)
     if selected_df.empty:
         status_path = phylo_dir / "status.tsv"
@@ -728,6 +729,12 @@ def build_parser():
     parser.add_argument("root_dir", help="Wrapper output directory, denovo_phylogeny directory, or a specific selected-set directory.")
     parser.add_argument("--threads", type=int, default=1, help="Threads for MAFFT, Barrnap, and GTDB-Tk. Default: 1")
     parser.add_argument("--gtdbtk-data-path", default=None, help="Optional GTDBTK_DATA_PATH override for GTDB marker alignments.")
+    parser.add_argument(
+        "--taxonomy-level",
+        choices=["species", "genus", "none"],
+        default="species",
+        help="Minimum resolved taxonomy required before tree construction. Default: species.",
+    )
     return parser
 
 
@@ -742,7 +749,12 @@ def main():
     wrote = []
     for index, set_dir in enumerate(set_dirs, start=1):
         log(f"[start] ({index}/{len(set_dirs)}) phylogeny for {set_dir}")
-        paths = process_phylogeny_set(set_dir, threads=args.threads, gtdbtk_data_path=args.gtdbtk_data_path)
+        paths = process_phylogeny_set(
+            set_dir,
+            threads=args.threads,
+            gtdbtk_data_path=args.gtdbtk_data_path,
+            taxonomy_level=args.taxonomy_level,
+        )
         wrote.extend([str(path) for path in paths])
         log(f"[done] ({index}/{len(set_dirs)}) phylogeny outputs: {set_dir / 'phylogeny'}")
     for path in wrote:
