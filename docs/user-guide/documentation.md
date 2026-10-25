@@ -25,6 +25,22 @@ python -m sphinx -W --keep-going -b html docs/user-guide /tmp/genome-qc-guide
 Open `/tmp/genome-qc-guide/index.html`. Documentation builds do not require the
 biological tools or reference databases.
 
+## Check browser-rendered diagrams
+
+A successful Sphinx build does not establish that Mermaid diagrams render.
+The documentation CI also opens the built guide in Chromium and checks for real
+flowchart nodes and connectors, with no Mermaid error graphics or browser errors.
+To run the same check locally after building:
+
+```bash
+python -m pip install playwright==1.55.0
+python -m playwright install --with-deps chromium
+python scripts/check_docs_browser.py /tmp/genome-qc-guide
+```
+
+This requires access to the Mermaid CDN used by the guide. A network failure is
+reported as a failed check, not a successful diagram render.
+
 ## Keep the layout consistent
 
 Use short introductions, complete commands, and links from the first run to

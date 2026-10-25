@@ -78,7 +78,7 @@ flowchart TB
     class U input;
     class V,D,E,L,S,T,X process;
     class R,C output;
-    linkStyle default stroke:#111111,color:#111111;
+    linkStyle default stroke:black,color:black;
 ```
 
 Database preparation and dependency solving occur on the controller. Scientific
@@ -105,7 +105,7 @@ flowchart LR
     class F input;
     class A,Q,Y process;
     class M,S,P,E,C output;
-    linkStyle default stroke:#111111,color:#111111;
+    linkStyle default stroke:black,color:black;
 ```
 
 The full workflow does not run MetaPathways annotation or pathway inference.
