@@ -1,5 +1,10 @@
-.wy-nav-content { max-width: 1100px; }
+.wy-nav-content { max-width: 1150px; }
 img.workflow-brief { display: block; width: 82%; max-width: 620px; height: auto; margin: 1.25rem auto; }
 img.workflow-detailed { display: block; width: 92%; max-width: 980px; height: auto; margin: 1.25rem auto; }
 .mermaid { background: #fff; padding: 1rem; overflow-x: auto; }
 @media (max-width: 600px) { img.workflow-brief, img.workflow-detailed { width: 96%; } }
+
+.wy-table-responsive table td, .wy-table-responsive table th { white-space: normal; }
+.rst-content table.docutils td { vertical-align: top; }
+.rst-content img { height: auto; }
+.mermaid svg { max-width: 100%; height: auto; }

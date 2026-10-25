@@ -39,11 +39,21 @@ before your first full run: even a small genome set needs substantial reference
 storage and memory. Open `http://127.0.0.1:8765` to inspect the results, filter
 linked tables and export a documented genome selection.
 
-For a first test, follow the [small-set walkthrough](docs/user-guide/test.md).
-Use `--manifest` for explicit genome IDs, `--executor slurm` for a cluster,
-`--resume` after interruption, and `--compact_results` for smaller completed
-outputs. See [commands](docs/user-guide/commands.md),
-[inputs](docs/user-guide/inputs.md) and [compact mode](docs/user-guide/recovery.md).
+## Test the installation
+
+Start with a few bacterial or archaeal genome FASTAs in `~/genome-qc-test-inputs`:
+
+```bash
+genome_qc run -i ~/genome-qc-test-inputs \
+  -o ~/genome-qc-test-output -d ~/genome-qc-databases \
+  --threads 8 --max_cpus 32
+genome_qc report -o ~/genome-qc-test-output --serve --port 8765
+```
+
+The [test guide](docs/user-guide/test.md) explains what to check in the results.
+A public genome test bundle is not yet included; a small input set still requires
+the full reference databases. For input manifests, Slurm, resuming and compact
+outputs, continue with the **[full user guide](docs/user-guide/index.md)**.
 
 ## Workflow
 
@@ -53,9 +63,9 @@ outputs. See [commands](docs/user-guide/commands.md),
 [PDF](docs/user-guide/assets/workflow-brief.pdf) ·
 [Detailed workflow](docs/user-guide/workflow.md)
 
-The full guide is ready for Read the Docs. Until the project URL is configured,
-the links above point to the guide in this repository. The Conda package is the primary installation route; Quay publication is a
-separate release step, described in the [distribution plan](docs/user-guide/development.md#distribution-plan).
+## Support and citation
 
+[Report issues or request features](https://github.com/hallamlab/genome_qc/issues).
 Please cite the [tools and references used](docs/user-guide/citations.md) and
 retain the run's input, database and software provenance with your results.
+Documentation source is maintained in `docs/user-guide/`.
