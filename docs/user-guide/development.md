@@ -114,3 +114,37 @@ clean environment and runs synthetic Nextflow integration tests against its
 installed workflow assets. Public upload is not triggered by a normal build.
 The ongoing real-genome assessment remains a separate biological interoperability
 test; mocked tool responses do not replace it.
+
+## Publishing to Anaconda
+
+The package name is `genome-qc`; the default owner/channel is `hallamlab`.
+The current candidate version is `0.1.0`. Confirm the intended release version
+before publishing. Quay and Zenodo are separate from this workflow.
+
+One-time GitHub setup:
+
+1. Add **`ANACONDA_API_TOKEN`** under **Settings → Secrets and variables → Actions**,
+   or in the **release** environment. The token must permit uploads to the
+   HallamLab Anaconda organization. Never put the token in a command committed
+   to the repository or paste it into an issue.
+2. Optionally set the Actions variable **`ANACONDA_OWNER`** if publishing to a
+   different organization; otherwise it defaults to `hallamlab`.
+3. Configure the **release** environment's approval rules if wanted.
+
+After the full real-genome test passes and the refactor is merged to `main`, open
+**Actions → Build, validate and publish Conda package → Run workflow**. Select
+`main`, enable **publish_anaconda**, and confirm **real_genome_test_passed**.
+Leaving publication unchecked builds and tests without uploading anything.
+Publication from other branches is rejected.
+
+The job builds the package, installs it in a clean environment, runs the packaged
+workflow integration checks, and saves the artifact with SHA-256 checksums. The
+publication job verifies and uploads that same artifact, then installs the exact
+version from the public channel and checks the CLI. It does not force replacement
+of an existing package. Functional failures block upload; an upload followed by a
+failed public-install check remains published and needs investigation before
+announcing the release.
+
+Keep the workflow run URL and its `genome-qc-conda` artifact with the release
+record. The full real-genome test is a separately confirmed release prerequisite;
+the synthetic integration checks cannot establish biological accuracy.
