@@ -12,6 +12,23 @@ def check(path):
     root = ET.parse(path).getroot()
     source = path.read_text()
     errors = []
+    if root.get('data-workflow-style') == 'genome-qc-connected-nodal':
+        if 'Trebuchet MS' not in source or list(root.iter(NS+'foreignObject')):
+            errors.append('retain approved sans-serif labels as native SVG text')
+        groups = {n.get('id') for n in root.iter(NS+'g')}
+        for name in ('genomes','references','prepare','quality','taxonomy','rrna',
+                     'representative','trna','gunc','merge','master','atlas',
+                     'selection','selected','explorer','outputs'):
+            if 'node-'+name not in groups:
+                errors.append('missing connected workflow node: '+name)
+        for color in ('#DAE8FC', '#D5E8D4'):
+            if sum(n.get('fill') == color for n in root.iter(NS+'circle')) < 2:
+                errors.append('retain blue inputs and green outputs')
+        if any(re.fullmatch(r'\d+', (n.text or '').strip()) for n in root.iter(NS+'text')):
+            errors.append('omit the superseded numbered module spine')
+        if not list(root.iter(NS+'marker')) or not any(n.get('data-junction') == 'true' for n in root.iter(NS+'circle')):
+            errors.append('retain directional connectors and junction dots')
+        return errors
     if root.get('data-workflow-style') == 'aspire-v1-nodal':
         if 'Trebuchet MS' not in source or list(root.iter(NS+'foreignObject')):
             errors.append('use approved typography and native SVG text')

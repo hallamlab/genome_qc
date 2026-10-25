@@ -1,164 +1,132 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1515" viewBox="0 0 1240 1515" data-workflow-style="mp-nodal-v1" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1515" viewBox="0 0 960 1515" data-workflow-style="genome-qc-connected-nodal" role="img" aria-labelledby="title desc">
 <title id="title">Genome QC detailed workflow</title>
-<desc id="desc">Genome FASTAs to quality, taxonomy, RNA and GUNC measurements, final selection, genome atlas and explorer. All assessed genomes remain in the master table.</desc>
-<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#111111"/></marker></defs>
+<desc id="desc">Continuous node flow from genome FASTAs and references to assessments, parallel tRNA and GUNC checks, a complete master table, optional selection, atlas and explorer.</desc>
 <rect width="100%" height="100%" fill="#FFFFFF"/>
-<g font-family="Times New Roman, Times, serif" fill="#111111">
-<rect x="25" y="20" width="1190" height="50" fill="#CCCCCC" stroke="#666666" stroke-width="1.5"/>
-<text x="620.0" y="54" font-size="28" text-anchor="middle">Genome QC · assessment to exploration</text>
-<text x="50" y="110" font-size="22" text-anchor="start">Inputs: genome FASTAs + reference databases</text>
-<circle cx="620" cy="104" r="11" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="3"/>
-<text x="642" y="111" font-size="20" text-anchor="start">Input</text>
-<path d="M 780 92 L 792 104 L 780 116 L 768 104 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="802" y="111" font-size="20" text-anchor="start">Compute</text>
-<circle cx="945" cy="104" r="11" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="967" y="111" font-size="20" text-anchor="start">Data</text>
-<circle cx="1080" cy="104" r="11" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
-<text x="1102" y="111" font-size="20" text-anchor="start">Output</text>
-<polyline points="240,229 240,355" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<polyline points="240,394 240,520" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<polyline points="240,559 240,685" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<polyline points="240,724 240,850" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<polyline points="240,889 240,1065" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<polyline points="240,1104 240,1230" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<polyline points="240,1269 240,1395" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<rect x="222" y="192" width="36" height="36" fill="#F5F5F5" stroke="#111111" stroke-width="3"/>
-<text x="240" y="218" font-size="24" text-anchor="middle">1</text>
-<text x="203" y="217.0" font-size="26" text-anchor="end">Preprocessing</text>
-<circle cx="370" cy="210" r="18" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="3"/>
-<text x="370" y="176" font-size="21" text-anchor="middle">Genome FASTAs</text>
-<polyline points="389,210 570,210" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 592 190 L 612 210 L 592 230 L 572 210 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="592" y="175" font-size="21" text-anchor="middle">Stage / contig variants</text>
-<text x="592" y="261" font-size="19" text-anchor="middle">Genome QC, SeqKit</text>
-<polyline points="614,210 805,210" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 827 190 L 847 210 L 827 230 L 807 210 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="827" y="175" font-size="21" text-anchor="middle">Assembly statistics</text>
-<text x="827" y="261" font-size="19" text-anchor="middle">SeqKit</text>
-<polyline points="849,210 1090,210" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<circle cx="1110" cy="210" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
-<text x="1110" y="176" font-size="21" text-anchor="middle">Nonempty variants</text>
-<rect x="222" y="357" width="36" height="36" fill="#F5F5F5" stroke="#111111" stroke-width="3"/>
-<text x="240" y="383" font-size="24" text-anchor="middle">2</text>
-<text x="203" y="368.0" font-size="26" text-anchor="end">Quality</text>
-<text x="203" y="396.0" font-size="26" text-anchor="end">assessment</text>
-<circle cx="370" cy="375" r="18" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="370" y="341" font-size="21" text-anchor="middle">Nonempty variants</text>
-<polyline points="389,375 570,375" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 592 355 L 612 375 L 592 395 L 572 375 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="592" y="340" font-size="21" text-anchor="middle">Marker assessment</text>
-<text x="592" y="426" font-size="19" text-anchor="middle">CheckM lineage_wf</text>
-<polyline points="614,375 805,375" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 827 355 L 847 375 L 827 395 L 807 375 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="827" y="340" font-size="21" text-anchor="middle">Calculate Qscore</text>
-<text x="827" y="426" font-size="19" text-anchor="middle">Genome QC</text>
-<polyline points="849,375 1090,375" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<circle cx="1110" cy="375" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
-<text x="1110" y="341" font-size="21" text-anchor="middle">Quality metrics</text>
-<rect x="222" y="522" width="36" height="36" fill="#F5F5F5" stroke="#111111" stroke-width="3"/>
-<text x="240" y="548" font-size="24" text-anchor="middle">3</text>
-<text x="203" y="533.0" font-size="26" text-anchor="end">Taxonomic</text>
-<text x="203" y="561.0" font-size="26" text-anchor="end">context</text>
-<circle cx="370" cy="540" r="18" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="370" y="506" font-size="21" text-anchor="middle">Assessed variants</text>
-<polyline points="389,540 570,540" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 592 520 L 612 540 L 592 560 L 572 540 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="592" y="505" font-size="21" text-anchor="middle">Classify genomes</text>
-<text x="592" y="591" font-size="19" text-anchor="middle">GTDB-Tk, R226</text>
-<polyline points="614,540 805,540" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 827 520 L 847 540 L 827 560 L 807 540 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="827" y="505" font-size="21" text-anchor="middle">Extract lineage / domain</text>
-<text x="827" y="591" font-size="19" text-anchor="middle">Genome QC</text>
-<polyline points="849,540 1090,540" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<circle cx="1110" cy="540" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
-<text x="1110" y="506" font-size="21" text-anchor="middle">Taxonomy table</text>
-<rect x="222" y="687" width="36" height="36" fill="#F5F5F5" stroke="#111111" stroke-width="3"/>
-<text x="240" y="713" font-size="24" text-anchor="middle">4</text>
-<text x="203" y="712.0" font-size="26" text-anchor="end">rRNA evidence</text>
-<circle cx="370" cy="705" r="18" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="370" y="671" font-size="21" text-anchor="middle">Variants + domain</text>
-<polyline points="389,705 570,705" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 592 685 L 612 705 L 592 725 L 572 705 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="592" y="670" font-size="21" text-anchor="middle">Predict rRNA genes</text>
-<text x="592" y="756" font-size="19" text-anchor="middle">barrnap</text>
-<polyline points="614,705 805,705" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 827 685 L 847 705 L 827 725 L 807 705 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="827" y="670" font-size="21" text-anchor="middle">Self-BLAST / consistency</text>
-<text x="827" y="756" font-size="19" text-anchor="middle">BLAST+, Genome QC</text>
-<polyline points="849,705 1090,705" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<circle cx="1110" cy="705" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
-<text x="1110" y="671" font-size="21" text-anchor="middle">RNA consistency</text>
-<rect x="222" y="852" width="36" height="36" fill="#F5F5F5" stroke="#111111" stroke-width="3"/>
-<text x="240" y="878" font-size="24" text-anchor="middle">5</text>
-<text x="203" y="877.0" font-size="26" text-anchor="end">Representative</text>
-<circle cx="370" cy="870" r="18" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="370" y="836" font-size="21" text-anchor="middle">Variant evidence</text>
-<polyline points="389,870 570,870" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 592 850 L 612 870 L 592 890 L 572 870 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="592" y="835" font-size="21" text-anchor="middle">Choose variant</text>
-<text x="592" y="921" font-size="19" text-anchor="middle">Qscore, N50, length</text>
-<polyline points="614,870 700,870 700,827 805,827" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<polyline points="700,870 700,940 805,940" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 827 807 L 847 827 L 827 847 L 807 827 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="827" y="795" font-size="21" text-anchor="middle">Predict tRNAs</text>
-<text x="827" y="872" font-size="19" text-anchor="middle">tRNAscan-SE</text>
-<polyline points="849,827 970,827 970,870" fill="none" stroke="#111111" stroke-width="1.5"/>
-<path d="M 827 920 L 847 940 L 827 960 L 807 940 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="827" y="908" font-size="21" text-anchor="middle">Assess chimerism</text>
-<text x="827" y="985" font-size="19" text-anchor="middle">GUNC</text>
-<polyline points="849,940 970,940 970,870" fill="none" stroke="#111111" stroke-width="1.5"/>
-<circle cx="700" cy="870" r="3" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<circle cx="970" cy="870" r="3" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<polyline points="974,870 1090,870" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<circle cx="1110" cy="870" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
-<text x="1110" y="836" font-size="21" text-anchor="middle">tRNA + GUNC</text>
-<rect x="222" y="1067" width="36" height="36" fill="#F5F5F5" stroke="#111111" stroke-width="3"/>
-<text x="240" y="1093" font-size="24" text-anchor="middle">6</text>
-<text x="203" y="1078.0" font-size="26" text-anchor="end">Final</text>
-<text x="203" y="1106.0" font-size="26" text-anchor="end">selection</text>
-<circle cx="370" cy="1085" r="18" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="370" y="1051" font-size="21" text-anchor="middle">All representatives</text>
-<polyline points="389,1085 570,1085" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 592 1065 L 612 1085 L 592 1105 L 572 1085 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="592" y="1050" font-size="21" text-anchor="middle">Join metrics + status</text>
-<text x="592" y="1136" font-size="19" text-anchor="middle">Genome QC</text>
-<polyline points="614,1085 805,1085" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 827 1065 L 847 1085 L 827 1105 L 807 1085 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="827" y="1050" font-size="21" text-anchor="middle">Apply requested bounds</text>
-<text x="827" y="1136" font-size="19" text-anchor="middle">Default: unrestricted</text>
-<polyline points="849,1085 1090,1085" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<circle cx="1110" cy="1085" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
-<text x="1110" y="1051" font-size="21" text-anchor="middle">Master + selected</text>
-<rect x="222" y="1232" width="36" height="36" fill="#F5F5F5" stroke="#111111" stroke-width="3"/>
-<text x="240" y="1258" font-size="24" text-anchor="middle">7</text>
-<text x="203" y="1257.0" font-size="26" text-anchor="end">Genome atlas</text>
-<circle cx="370" cy="1250" r="18" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="370" y="1216" font-size="21" text-anchor="middle">Complete master</text>
-<polyline points="389,1250 570,1250" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 592 1230 L 612 1250 L 592 1270 L 572 1250 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="592" y="1215" font-size="21" text-anchor="middle">Annotate quality metrics</text>
-<text x="592" y="1301" font-size="19" text-anchor="middle">pandas, NumPy</text>
-<polyline points="614,1250 805,1250" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 827 1230 L 847 1250 L 827 1270 L 807 1250 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="827" y="1215" font-size="21" text-anchor="middle">Summarize / plot</text>
-<text x="827" y="1301" font-size="19" text-anchor="middle">Matplotlib, seaborn</text>
-<polyline points="849,1250 1090,1250" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<circle cx="1110" cy="1250" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
-<text x="1110" y="1216" font-size="21" text-anchor="middle">Atlas tables + plots</text>
-<rect x="222" y="1397" width="36" height="36" fill="#F5F5F5" stroke="#111111" stroke-width="3"/>
-<text x="240" y="1423" font-size="24" text-anchor="middle">8</text>
-<text x="203" y="1422.0" font-size="26" text-anchor="end">Explorer</text>
-<circle cx="370" cy="1415" r="18" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="370" y="1381" font-size="21" text-anchor="middle">Tables + atlas</text>
-<polyline points="389,1415 570,1415" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 592 1395 L 612 1415 L 592 1435 L 572 1415 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="592" y="1380" font-size="21" text-anchor="middle">Index linked results</text>
-<text x="592" y="1466" font-size="19" text-anchor="middle">Genome QC</text>
-<polyline points="614,1415 805,1415" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<path d="M 827 1395 L 847 1415 L 827 1435 L 807 1415 Z" fill="#F5F5F5" stroke="#666666" stroke-width="3"/>
-<text x="827" y="1380" font-size="21" text-anchor="middle">Filter / document subsets</text>
-<text x="827" y="1466" font-size="19" text-anchor="middle">Genome QC Explorer</text>
-<polyline points="849,1415 1090,1415" fill="none" stroke="#111111" stroke-width="1.5" marker-end="url(#arrow)"/>
-<circle cx="1110" cy="1415" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
-<text x="1110" y="1381" font-size="21" text-anchor="middle">CSV + JSON record</text>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#111111"/></marker></defs>
+<g font-family="Trebuchet MS, sans-serif" fill="#111111">
+<polyline points="250,65 250,105 440,105" fill="none" stroke="#111111" stroke-width="1.6"/>
+<polyline points="635,65 635,105 440,105" fill="none" stroke="#111111" stroke-width="1.6"/>
+<polyline points="440,109 440,141" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,186 440,236" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,281 440,331" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,376 440,426" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,471 440,521" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,566 440,616" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,661 440,711" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,756 440,806" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,853 440,895" fill="none" stroke="#111111" stroke-width="1.6"/>
+<polyline points="440,895 285,895 285,936" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="285,983 285,1030 440,1030" fill="none" stroke="#111111" stroke-width="1.6"/>
+<polyline points="440,895 640,895 640,936" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="640,983 640,1030 440,1030" fill="none" stroke="#111111" stroke-width="1.6"/>
+<polyline points="440,1034 440,1066" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,1113 440,1154" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,1196 440,1246" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,1291 440,1341" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,1388 440,1429" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="461,1175 715,1175 715,1246" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="715,1293 715,1344" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="694,1365 464,1365" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<circle cx="440" cy="105" r="3.5" fill="#111111" data-junction="true"/>
+<circle cx="440" cy="895" r="3.5" fill="#111111" data-junction="true"/>
+<circle cx="440" cy="1030" r="3.5" fill="#111111" data-junction="true"/>
+<g id="node-genomes" data-node-kind="input">
+<circle cx="250" cy="45" r="18" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="3"/>
+<text x="214" y="52.0" font-size="20" text-anchor="end">Genome FASTAs</text>
+</g>
+<g id="node-references" data-node-kind="input">
+<circle cx="635" cy="45" r="18" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="3"/>
+<text x="671" y="39.5" font-size="20" text-anchor="start">Reference databases</text>
+<text x="671" y="64.5" font-size="17" text-anchor="start">(CheckM, GTDB R226, GUNC)</text>
+</g>
+<g id="node-prepare" data-node-kind="process">
+<path d="M440 144 L461 165 L440 186 L419 165 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="159.5" font-size="20" text-anchor="end">Stage inputs / contig variants</text>
+<text x="404" y="184.5" font-size="17" text-anchor="end">(Genome QC, SeqKit)</text>
+</g>
+<g id="node-statistics" data-node-kind="process">
+<path d="M440 239 L461 260 L440 281 L419 260 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="254.5" font-size="20" text-anchor="end">Assembly statistics</text>
+<text x="404" y="279.5" font-size="17" text-anchor="end">(SeqKit)</text>
+</g>
+<g id="node-quality" data-node-kind="process">
+<path d="M440 334 L461 355 L440 376 L419 355 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="349.5" font-size="20" text-anchor="end">Completeness / contamination</text>
+<text x="404" y="374.5" font-size="17" text-anchor="end">(CheckM lineage_wf)</text>
+</g>
+<g id="node-qscore" data-node-kind="process">
+<path d="M440 429 L461 450 L440 471 L419 450 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="444.5" font-size="20" text-anchor="end">Composite quality score</text>
+<text x="404" y="469.5" font-size="17" text-anchor="end">(Genome QC)</text>
+</g>
+<g id="node-taxonomy" data-node-kind="process">
+<path d="M440 524 L461 545 L440 566 L419 545 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="539.5" font-size="20" text-anchor="end">Taxonomic classification</text>
+<text x="404" y="564.5" font-size="17" text-anchor="end">(GTDB-Tk, R226)</text>
+</g>
+<g id="node-rrna" data-node-kind="process">
+<path d="M440 619 L461 640 L440 661 L419 640 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="634.5" font-size="20" text-anchor="end">Predict rRNA genes</text>
+<text x="404" y="659.5" font-size="17" text-anchor="end">(barrnap)</text>
+</g>
+<g id="node-consistency" data-node-kind="process">
+<path d="M440 714 L461 735 L440 756 L419 735 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="729.5" font-size="20" text-anchor="end">Within-genome rRNA consistency</text>
+<text x="404" y="754.5" font-size="17" text-anchor="end">(BLAST+, Genome QC)</text>
+</g>
+<g id="node-representative" data-node-kind="process">
+<path d="M440 809 L461 830 L440 851 L419 830 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="824.5" font-size="20" text-anchor="end">Choose one contig-length variant</text>
+<text x="404" y="849.5" font-size="17" text-anchor="end">(Qscore, N50, length)</text>
+</g>
+<g id="node-trna" data-node-kind="process">
+<path d="M285 939 L306 960 L285 981 L264 960 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="249" y="954.5" font-size="20" text-anchor="end">tRNA prediction</text>
+<text x="249" y="979.5" font-size="17" text-anchor="end">(tRNAscan-SE)</text>
+</g>
+<g id="node-gunc" data-node-kind="process">
+<path d="M640 939 L661 960 L640 981 L619 960 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="676" y="954.5" font-size="20" text-anchor="start">Chimerism assessment</text>
+<text x="676" y="979.5" font-size="17" text-anchor="start">(GUNC)</text>
+</g>
+<g id="node-merge" data-node-kind="process">
+<path d="M440 1069 L461 1090 L440 1111 L419 1090 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="1084.5" font-size="20" text-anchor="end">Integrate measurements / status</text>
+<text x="404" y="1109.5" font-size="17" text-anchor="end">(Genome QC)</text>
+</g>
+<g id="node-master" data-node-kind="output">
+<circle cx="440" cy="1175" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
+<text x="404" y="1169.5" font-size="20" text-anchor="end">All assessed genomes</text>
+<text x="404" y="1194.5" font-size="20" text-anchor="end">Master QC table</text>
+</g>
+<g id="node-atlas" data-node-kind="process">
+<path d="M440 1249 L461 1270 L440 1291 L419 1270 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="1264.5" font-size="20" text-anchor="end">Genome atlas</text>
+<text x="404" y="1289.5" font-size="17" text-anchor="end">(pandas, Matplotlib, seaborn)</text>
+</g>
+<g id="node-explorer" data-node-kind="process">
+<path d="M440 1344 L461 1365 L440 1386 L419 1365 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="1359.5" font-size="20" text-anchor="end">Explore / select / export</text>
+<text x="404" y="1384.5" font-size="20" text-anchor="end">Genome QC Explorer</text>
+</g>
+<g id="node-outputs" data-node-kind="output">
+<circle cx="440" cy="1450" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
+<text x="476" y="1444.5" font-size="20" text-anchor="start">Atlas + linked tables</text>
+<text x="476" y="1469.5" font-size="20" text-anchor="start">CSV / selection records</text>
+</g>
+<g id="node-selection" data-node-kind="process">
+<path d="M715 1249 L736 1270 L715 1291 L694 1270 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="751" y="1264.5" font-size="20" text-anchor="start">Final selection</text>
+<text x="751" y="1289.5" font-size="17" text-anchor="start">[optional criteria]</text>
+</g>
+<g id="node-selected" data-node-kind="output">
+<circle cx="715" cy="1365" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
+<text x="751" y="1372.0" font-size="20" text-anchor="start">Selected subset</text>
+</g>
+<circle cx="820" cy="150" r="15" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="3"/>
+<text x="784" y="157.0" font-size="20" text-anchor="end">Input</text>
+<path d="M820 184 L841 205 L820 226 L799 205 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="784" y="212.0" font-size="20" text-anchor="end">Process</text>
+<circle cx="820" cy="260" r="15" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
+<text x="784" y="267.0" font-size="20" text-anchor="end">Output</text>
 </g></svg>

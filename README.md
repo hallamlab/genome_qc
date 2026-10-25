@@ -47,7 +47,7 @@ outputs. See [commands](docs/user-guide/commands.md),
 
 ## Workflow
 
-<p align="center"><a href="docs/user-guide/workflow.md"><img src="docs/user-guide/assets/workflow-brief.svg" width="620" alt="Genome QC nodal workflow"></a></p>
+<p align="center"><a href="docs/user-guide/workflow.md"><img src="docs/user-guide/assets/workflow-brief.svg?v=connected-nodal-20261025" width="620" alt="Genome QC nodal workflow"></a></p>
 
 [SVG](docs/user-guide/assets/workflow-brief.svg) ·
 [PDF](docs/user-guide/assets/workflow-brief.pdf) ·

@@ -14,14 +14,17 @@ measurement that fails a user-defined threshold.
 [Full-size SVG](assets/workflow-detailed.svg) · [PDF](assets/workflow-detailed.pdf) ·
 [Brief overview](index.md)
 
-Numbered squares group operations, diamonds denote computation, and circles denote
-data. Blue indicates original input and green indicates products of a module.
-The numbered spine gives the reading order, not a claim that independent jobs run
-serially. Modules exchange the genome sequences and associated measurements;
-outputs are retained even when the next module uses only part of the evidence.
-In particular, tRNA prediction and GUNC independently assess the same representative.
-Reference preparation and scheduling are shown below rather than repeated across
-every biological step.
+The figures use the current MP/ASPIRE nodal style: blue circles are inputs,
+white diamonds are processes, and green circles are outputs. Labels sit beside
+nodes; smaller parenthesized text names software or ranking criteria. Black dots
+mark joins and splits. There is no separate numbered module spine.
+
+The connected flow follows genome assessment through the final products. tRNA
+prediction and GUNC independently assess the same representative and join at
+integration. Final selection branches from the complete master table; it does
+not gate the atlas. With no acceptance criteria, selection is unrestricted.
+The explorer indexes the complete results and the selected subset. Reference
+inputs are grouped at the start; the database guide details which tool uses each.
 
 ## What happens to each genome
 
