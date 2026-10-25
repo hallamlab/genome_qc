@@ -28,7 +28,10 @@ class WorkflowIntegration(unittest.TestCase):
     def test_assessment_failures_continue_and_resume(self):
         self.exercise(False, failures=('checkm', 'gtdbtk', 'barrnap', 'tRNAscan-SE'))
 
-    def exercise(self, compact_mode, failures=()):
+    def test_phylogeny_without_ani(self):
+        self.exercise(True, skip_ani=True)
+
+    def exercise(self, compact_mode, failures=(), skip_ani=False):
         root = Path(__file__).resolve().parents[1]
         runtime = Path(os.environ.get('GQC_TEST_RUNTIME', root))
         with tempfile.TemporaryDirectory(prefix='gqc-integration-') as tmp:
@@ -64,6 +67,7 @@ class WorkflowIntegration(unittest.TestCase):
                           gunc_db=str(work / 'db/gunc.dmnd'), checkm_cpus=1, gtdbtk_cpus=32 if compact_mode else 1,
                           gunc_cpus=1, atlas_cpus=1, atlas_ani_threads=1, atlas_top_n_groups=12,
                           checkm_batch_size=3, gtdbtk_batch_size=3, gunc_batch_size=3, checkm_parallel_batches=2, gtdbtk_parallel_batches=2, gunc_parallel_batches=2, completeness=50, min_genome_size=100000, contamination=10)
+            params['cohort_ani_enabled'] = not skip_ani
             (work / 'params.json').write_text(json.dumps(params))
             from genome_qc.cli import parser
             from genome_qc.execution import configuration
@@ -104,6 +108,13 @@ class WorkflowIntegration(unittest.TestCase):
                 self.assertTrue(all(r['checkm_status'] == 'completed' for r in rows), recovered.stdout + recovered.stderr + str(prior_receipts) + str({str(p):json.loads(p.read_text()) for p in output.glob('checkm/individual/*.assessment.json')}))
                 self.assertTrue(all(r['trna_status'] == 'completed' for r in rows), rows)
                 return
+            self.assertEqual((output / 'genome_quality_atlas/ani/ani_clusters.tsv').is_file(), not skip_ani)
+            tree = output / 'genome_quality_atlas/phylogeny/bac120.nwk'
+            self.assertTrue(tree.is_file())
+            self.assertTrue((tree.parent / 'bac120_annotated_tree.pdf').is_file())
+            with (tree.parent / 'phylogeny_status.tsv').open() as handle:
+                placed = list(csv.DictReader(handle, delimiter='\t'))
+            self.assertEqual({r['Genome_Id'] for r in placed if r['status']=='inferred'}, {f'g{i}' for i in range(10)})
             self.assertTrue(all(float(r['16S_rRNA']) == 0 for r in rows))
             self.assertTrue(all('gunc_clade_separation_score' in r for r in rows))
             self.assertTrue(all(r['gunc_clade_separation_score'] for r in rows))

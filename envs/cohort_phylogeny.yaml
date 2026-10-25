@@ -1,0 +1,10 @@
+name: genome_qc_cohort_phylogeny
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - biopython
+  - matplotlib
+  - numpy
+  - fasttree=2.1.11

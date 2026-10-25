@@ -48,6 +48,20 @@ def finite(value):
     return value
 
 
+def percentage(value):
+    value = finite(value)
+    if not 0 <= value <= 100:
+        raise argparse.ArgumentTypeError('must be between 0 and 100')
+    return value
+
+
+def fraction(value):
+    value = finite(value)
+    if not 0 <= value <= 1:
+        raise argparse.ArgumentTypeError('must be between 0 and 1')
+    return value
+
+
 def parser():
     p = argparse.ArgumentParser(prog='genome_qc', description='Genome quality assessment and genome atlas')
     p.add_argument('--version', action='version', version=__version__)
@@ -82,7 +96,11 @@ def parser():
             g.add_argument('--require_rrna_consistency', action='store_true', default=None,
                            help='Require the rRNA consistency check to pass; default: disabled')
             g = s.add_argument_group('Atlas')
-            g.add_argument('--ani_threshold', type=float, help='ANI threshold (%%); default: 99')
+            g.add_argument('--ani_threshold', type=percentage, help='ANI grouping threshold (%%); default: 98')
+            g.add_argument('--ani_af_threshold', type=fraction, help='ANI alignment fraction (0–1); default: 0.51')
+            g.add_argument('--no_ani_containment', action='store_true', help='Disable containment rescue (default: smaller AF >=0.90 and larger AF >=0.10)')
+            g.add_argument('--skip_ani', action='store_true', help='Skip cohort ANI grouping')
+            g.add_argument('--skip_phylogeny', action='store_true', help='Skip GTDB-marker phylogeny and annotated trees')
         if name in ('rrna', 'trna'):
             s.add_argument('--kingdom', choices=['Bacteria', 'Archaea', 'Eukaryota'], default='Bacteria')
     for name in SCRIPTS:
@@ -127,10 +145,14 @@ def _run(args, root, output, control):
     if not isinstance(params, dict):
         raise ValueError('--params must contain a JSON object')
     for key in ('filter_size', 'min_genome_size', 'max_genome_size', 'completeness',
-                'contamination', 'qscore_min', 'ani_threshold', 'require_rrna_consistency'):
+                'contamination', 'qscore_min', 'ani_threshold', 'ani_af_threshold', 'require_rrna_consistency'):
         value = getattr(args, key, None)
         if value is not None:
-            params['atlas_ani_threshold' if key == 'ani_threshold' else key] = value
+            params['atlas_' + key if key in ('ani_threshold', 'ani_af_threshold') else key] = value
+    if args.command == 'run':
+        if args.no_ani_containment: params['cohort_ani_containment'] = False
+        if args.skip_ani: params['cohort_ani_enabled'] = False
+        if args.skip_phylogeny: params['cohort_phylogeny_enabled'] = False
     cache = Path(args.conda_cache).expanduser().resolve() if args.conda_cache else control / 'conda'
     work = (Path(args.work_dir).expanduser().resolve() / ('genome-qc-' + hashlib.sha256(str(output).encode()).hexdigest()[:16])) if args.work_dir else control / 'work'
     locations = {'work': str(work), 'cache': str(cache)}

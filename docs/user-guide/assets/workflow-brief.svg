@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1230" viewBox="0 0 960 1230" data-workflow-style="genome-qc-connected-nodal" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1325" viewBox="0 0 960 1325" data-workflow-style="genome-qc-connected-nodal" role="img" aria-labelledby="title desc">
 <title id="title">Genome QC brief workflow</title>
 <desc id="desc">Continuous node flow from genome FASTAs and references to assessments, parallel tRNA and GUNC checks, a complete master table, optional selection, atlas and explorer.</desc>
 <rect width="100%" height="100%" fill="#FFFFFF"/>
@@ -20,10 +20,11 @@
 <polyline points="440,828 440,869" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
 <polyline points="440,911 440,961" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
 <polyline points="440,1006 440,1056" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
-<polyline points="440,1103 440,1144" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
-<polyline points="461,890 715,890 715,961" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
-<polyline points="715,1008 715,1059" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
-<polyline points="694,1080 464,1080" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,1101 440,1151" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="440,1198 440,1239" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="461,890 715,890 715,1056" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="715,1103 715,1154" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
+<polyline points="694,1175 464,1175" fill="none" stroke="#111111" stroke-width="1.6" marker-end="url(#arrow)"/>
 <circle cx="440" cy="105" r="3.5" fill="#111111" data-junction="true"/>
 <circle cx="440" cy="610" r="3.5" fill="#111111" data-junction="true"/>
 <circle cx="440" cy="745" r="3.5" fill="#111111" data-junction="true"/>
@@ -81,29 +82,34 @@
 <text x="404" y="884.5" font-size="20" text-anchor="end">All assessed genomes</text>
 <text x="404" y="909.5" font-size="20" text-anchor="end">Master QC table</text>
 </g>
-<g id="node-atlas" data-node-kind="process">
+<g id="node-ani" data-node-kind="process">
 <path d="M440 964 L461 985 L440 1006 L419 985 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
-<text x="404" y="979.5" font-size="20" text-anchor="end">Genome atlas</text>
-<text x="404" y="1004.5" font-size="17" text-anchor="end">(pandas, Matplotlib, seaborn)</text>
+<text x="404" y="979.5" font-size="20" text-anchor="end">ANI groups / marker phylogeny</text>
+<text x="404" y="1004.5" font-size="17" text-anchor="end">(FastANI, GTDB markers, FastTree)</text>
+</g>
+<g id="node-atlas" data-node-kind="process">
+<path d="M440 1059 L461 1080 L440 1101 L419 1080 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="1074.5" font-size="20" text-anchor="end">Genome atlas</text>
+<text x="404" y="1099.5" font-size="17" text-anchor="end">(pandas, Matplotlib, seaborn)</text>
 </g>
 <g id="node-explorer" data-node-kind="process">
-<path d="M440 1059 L461 1080 L440 1101 L419 1080 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
-<text x="404" y="1074.5" font-size="20" text-anchor="end">Explore / select / export</text>
-<text x="404" y="1099.5" font-size="20" text-anchor="end">Genome QC Explorer</text>
+<path d="M440 1154 L461 1175 L440 1196 L419 1175 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="404" y="1169.5" font-size="20" text-anchor="end">Explore / select / export</text>
+<text x="404" y="1194.5" font-size="20" text-anchor="end">Genome QC Explorer</text>
 </g>
 <g id="node-outputs" data-node-kind="output">
-<circle cx="440" cy="1165" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
-<text x="476" y="1159.5" font-size="20" text-anchor="start">Atlas + linked tables</text>
-<text x="476" y="1184.5" font-size="20" text-anchor="start">CSV / selection records</text>
+<circle cx="440" cy="1260" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
+<text x="476" y="1254.5" font-size="20" text-anchor="start">Atlas + linked tables</text>
+<text x="476" y="1279.5" font-size="20" text-anchor="start">CSV / selection records</text>
 </g>
 <g id="node-selection" data-node-kind="process">
-<path d="M715 964 L736 985 L715 1006 L694 985 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
-<text x="751" y="979.5" font-size="20" text-anchor="start">Final selection</text>
-<text x="751" y="1004.5" font-size="17" text-anchor="start">[optional criteria]</text>
+<path d="M715 1059 L736 1080 L715 1101 L694 1080 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>
+<text x="751" y="1074.5" font-size="20" text-anchor="start">Final selection</text>
+<text x="751" y="1099.5" font-size="17" text-anchor="start">[optional criteria]</text>
 </g>
 <g id="node-selected" data-node-kind="output">
-<circle cx="715" cy="1080" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
-<text x="751" y="1087.0" font-size="20" text-anchor="start">Selected subset</text>
+<circle cx="715" cy="1175" r="18" fill="#D5E8D4" stroke="#82B366" stroke-width="3"/>
+<text x="751" y="1182.0" font-size="20" text-anchor="start">Selected subset</text>
 </g>
 <circle cx="820" cy="150" r="15" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="3"/>
 <text x="784" y="157.0" font-size="20" text-anchor="end">Input</text>

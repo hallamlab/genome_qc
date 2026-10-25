@@ -18,7 +18,9 @@ genome_qc run \
 ```
 
 The command prepares missing databases and tool environments, assesses genomes,
-and builds the final tables, atlas and explorer. Existing complete databases are
+and builds the final tables, ANI groups, marker phylogenies, atlas and explorer.
+[ANI and phylogeny](phylogeny.md) run by default at 98% ANI and 51% AF, with
+labelled containment rescue for incomplete assemblies. Existing complete databases are
 reused. It retains all contigs and applies no quality acceptance thresholds by
 default. A low-quality genome still receives every applicable assessment.
 

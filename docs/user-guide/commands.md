@@ -2,6 +2,10 @@
 
 See the generated [CLI reference](cli-reference.md) for every controller flag.
 
+The complete `run` also builds [cohort ANI groups and annotated marker trees](phylogeny.md)
+by default. These use the shared resource controls and need no study labels.
+The standalone `phylogeny` command below serves the separate selected-set comparison workflow.
+
 ## Nextflow-backed stages
 
 These commands accept the shared [execution options](resources.md). Use a separate

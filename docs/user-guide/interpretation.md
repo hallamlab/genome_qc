@@ -39,7 +39,9 @@ Metrics requiring failed measurements remain unavailable. The atlas is based on
 all assessed representatives, including those outside the selected subset.
 Optional labelled-set comparisons and ANI-based selections have their own outputs;
 these are distinct from choosing one contig-length variant per input genome.
-FastANI comparison work depends on the supplied comparison configuration; an
+Cohort ANI groups and domain-specific marker trees run by default; see
+[ANI and phylogeny](phylogeny.md) for thresholds and containment semantics.
+Labelled FastANI comparison work depends on the supplied comparison configuration; an
 unlabelled input directory is not automatically a replicated method comparison.
 
 ## Comparisons between labelled sets

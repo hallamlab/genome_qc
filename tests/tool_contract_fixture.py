@@ -21,6 +21,12 @@ elif name=='gtdbtk':
  (scratch/'placement.cache').write_text('temporary placement data')
  rows=[[p.stem, 'Unclassified Bacteria' if p.stem.startswith('g0.') else 'd__Bacteria;p__P;c__C;o__O;f__F;g__G;s__S'] for p in sorted(Path(opt('--genome_dir')).glob('*.fasta'))]
  table(Path(opt('--out_dir'))/'classify/gtdbtk.bac120.summary.tsv',['user_genome','classification'],rows)
+ import gzip, random
+ align=Path(opt('--out_dir'))/'align/gtdbtk.bac120.user_msa.fasta.gz';align.parent.mkdir(exist_ok=True)
+ with gzip.open(align,'wt') as f:
+  for name,_ in rows:
+   rng=random.Random(name)
+   f.write('>'+name+'\n'+''.join(rng.choice('ACDEFGHIKLMNPQRSTVWY') for _ in range(240))+'\n')
 elif name=='barrnap':
  Path(opt('--outseq')).write_text('')
  print('##gff-version 3')

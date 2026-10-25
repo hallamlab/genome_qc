@@ -9,7 +9,7 @@ root_doc = 'index'
 include_patterns = ['index.md', 'installation.md', 'quickstart.md', 'test.md',
                     'inputs.md', 'workflow.md', 'commands.md', 'databases.md',
                     'resources.md', 'outputs.md', 'selection.md', 'recovery.md',
-                    'interpretation.md', 'cli-reference.md', 'citations.md', 'development.md', 'documentation.md']
+                    'interpretation.md', 'cli-reference.md', 'citations.md', 'development.md', 'documentation.md', 'phylogeny.md']
 myst_heading_anchors = 4
 myst_fence_as_directive = ['mermaid']
 html_theme = 'sphinx_rtd_theme'

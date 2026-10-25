@@ -50,6 +50,8 @@ usage: genome_qc run [-h] (-i INPUT | --manifest MANIFEST) -o OUTPUT
                      [--contamination CONTAMINATION] [--qscore_min QSCORE_MIN]
                      [--require_rrna_consistency]
                      [--ani_threshold ANI_THRESHOLD]
+                     [--ani_af_threshold ANI_AF_THRESHOLD]
+                     [--no_ani_containment] [--skip_ani] [--skip_phylogeny]
 
 options:
   -h, --help            show this help message and exit
@@ -131,7 +133,13 @@ Final selection (default: retain every assessed genome):
 
 Atlas:
   --ani_threshold ANI_THRESHOLD
-                        ANI threshold (%); default: 99
+                        ANI grouping threshold (%); default: 98
+  --ani_af_threshold ANI_AF_THRESHOLD
+                        ANI alignment fraction (0–1); default: 0.51
+  --no_ani_containment  Disable containment rescue (default: smaller AF >=0.90
+                        and larger AF >=0.10)
+  --skip_ani            Skip cohort ANI grouping
+  --skip_phylogeny      Skip GTDB-marker phylogeny and annotated trees
 ```
 
 ## build_db

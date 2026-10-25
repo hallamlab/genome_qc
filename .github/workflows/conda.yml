@@ -63,7 +63,7 @@ jobs:
         run: |
           conda index dist/channel
           micromamba create -y -p "$RUNNER_TEMP/genome-qc-test" --override-channels --strict-channel-priority \
-            -c "file://$PWD/dist/channel" -c conda-forge -c bioconda genome-qc seqkit blast
+            -c "file://$PWD/dist/channel" -c conda-forge -c bioconda genome-qc seqkit blast fastani fasttree=2.1.11 biopython
       - name: Validate packaged workflow orchestration
         env:
           GQC_NF_INTEGRATION: '1'

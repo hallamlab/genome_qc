@@ -9,6 +9,8 @@
 | `Selected_genome_QC.tsv` | Subset passing the configured final selection |
 | `Assessment_status.tsv` | Tool outcomes, reasons, exit codes and diagnostic log references |
 | `genome_quality_atlas/` | Annotated genome table, atlas figures and supported comparison outputs |
+| `genome_quality_atlas/ani/` | Pairwise ANI/AF, labelled matches, connected groups and summary figure |
+| `genome_quality_atlas/phylogeny/` | Domain marker alignments, Newick trees, annotated figures, tip metadata and placement status |
 | `reports/EDA_portal.html` | Interactive entry point to the result tables and figure gallery |
 | `inputs.resolved.json` | Original input paths, IDs and SHA-256 checksums |
 | `logs/` | Commands, resource requests, package versions and Nextflow execution reports |

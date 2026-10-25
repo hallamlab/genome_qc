@@ -29,8 +29,8 @@ params.atlas_ani_results = params.atlas_ani_results ?: ""
 params.atlas_ani_genome_dir = params.atlas_ani_genome_dir ?: ""
 params.atlas_ani_fasta_column = params.atlas_ani_fasta_column ?: ""
 params.atlas_ani_fasta_exts = params.atlas_ani_fasta_exts ?: ".fasta,.fa,.fna,.fasta.gz,.fa.gz,.fna.gz"
-params.atlas_ani_threshold = params.atlas_ani_threshold ?: 95.0
-params.atlas_ani_af_threshold = (params.atlas_ani_af_threshold == null) ? 0.5 : params.atlas_ani_af_threshold
+params.atlas_ani_threshold = params.atlas_ani_threshold ?: 98.0
+params.atlas_ani_af_threshold = (params.atlas_ani_af_threshold == null) ? 0.51 : params.atlas_ani_af_threshold
 params.atlas_ani_threads = params.atlas_ani_threads ?: 1
 params.atlas_ani_top_overlaps = params.atlas_ani_top_overlaps ?: 15
 params.atlas_cpus       = params.atlas_cpus       ?: params.atlas_ani_threads
@@ -167,6 +167,8 @@ params.helper_merge_master = helperDigest(['merge_master.py', 'assessment_summar
 params.helper_genome_quality_atlas = helperDigest(['genome_quality_atlas.py', 'genome_set_stats.py', 'gunc_method_stats.py', 'scripts/genome_quality_category_lollipop_panel.py'])
 params.helper_compact = params.compact_results ? helperDigest(['compact_task.py']) : 'unused'
 
+params.helper_cohort = helperDigest(['cohort_phylogeny.py', 'preserve_marker_alignments.py'])
+params.helper_marker_alignments = helperDigest(['preserve_marker_alignments.py'])
 params.helper_assessment = helperDigest(['assessment_task.py'])
 params.helper_merge_gunc = helperDigest(['merge_gunc_batches.py'])
 // Reuse successful tool tasks; retry only recorded failed assessments on resume.
@@ -418,6 +420,7 @@ process GTDBTK {
 
     output:
     path("gtdbtk_${batch_id}"), emit: outdir
+    path("marker_alignments_${batch_id}"), emit: alignments
 
     path("gtdbtk_${batch_id}.assessment.json"), emit: assessment
     path("gtdbtk_${batch_id}.assessment.log"), emit: assessment_log
@@ -445,6 +448,8 @@ process GTDBTK {
     gtdbtk classify_wf ${placementArgs} --skip_ani_screen --genome_dir genomes --out_dir gtdbtk_${batch_id} --cpus ${task.cpus} -x fasta
 ASSESSMENT_SCRIPT
     python ${projectDir}/assessment_task.py gtdbtk gtdbtk_${batch_id} gtdbtk_${batch_id}.assessment.json assessment.sh --token ${retryToken} --inputs ${batch_fastas}
+    # Preserve user alignments before cleanup: ${params.helper_marker_alignments}
+    python ${projectDir}/preserve_marker_alignments.py gtdbtk_${batch_id} marker_alignments_${batch_id}
     ${params.compact_results ? "python " + projectDir + "/compact_task.py gtdbtk_" + batch_id : "true"}
     """
 }
@@ -951,6 +956,8 @@ process GENOME_QUALITY_ATLAS {
     path(master_tsv)
     path(gunc_dir)
     path(atlas_fastas)
+    path(ani_results)
+    path(tree_results)
 
     output:
     path("genome_quality_atlas"), emit: outdir
@@ -1009,6 +1016,44 @@ ${aniCompareArgLines}
     printf ' %q' "\${cmd[@]}"
     printf '\\n'
     "\${cmd[@]}"
+    ${params.cohort_ani_enabled ? "cp -RL " + ani_results + " genome_quality_atlas/ani" : "true"}
+    ${params.cohort_phylogeny_enabled ? "cp -RL " + tree_results + " genome_quality_atlas/phylogeny" : "true"}
+    """
+}
+
+process COHORT_ANI {
+    cpus params.atlas_cpus
+    conda "${projectDir}/envs/genome_quality_atlas.yaml"
+    input:
+    path(master)
+    path(fastas)
+    output:
+    path("ani"), emit: results
+    script:
+    """
+    # Implementation: ${params.helper_cohort}
+    mkdir genomes
+    for f in ${fastas}; do cp "\$f" genomes/; done
+    python ${projectDir}/cohort_phylogeny.py ani --master ${master} --genomes genomes \
+      --output ani --threads ${task.cpus} --ani ${params.atlas_ani_threshold} --af ${params.atlas_ani_af_threshold} ${params.cohort_ani_containment ? "" : "--no-containment"}
+    """
+}
+
+process COHORT_PHYLOGENY {
+    cpus params.atlas_cpus
+    conda "${projectDir}/envs/cohort_phylogeny.yaml"
+    input:
+    path(master)
+    path(alignments)
+    path(ani)
+    output:
+    path("phylogeny"), emit: results
+    script:
+    def clusterArg = params.cohort_ani_enabled ? "--clusters ${ani}/ani_clusters.tsv" : ''
+    """
+    # Implementation: ${params.helper_cohort}
+    python ${projectDir}/cohort_phylogeny.py phylogeny --master ${master} \
+      --alignments ${alignments} ${clusterArg} --output phylogeny --threads ${task.cpus}
     """
 }
 
@@ -1236,8 +1281,11 @@ workflow COMPLETE {
 
         receipts = CHECKM_SINGLE.out.assessment.mix(GTDBTK.out.assessment, BARRNAP.out.assessment, BLAST_RRNA.out.assessment, TRNASCAN.out.assessment, GUNC.out.assessment).toSortedList()
         master = MERGE_MASTER(dedupe_for_merge, barblast.subunits, trna_counts.counts, gunc, receipts)
+        ani = params.cohort_ani_enabled ? COHORT_ANI(master.master, dedupe_fasta.toSortedList()).results : Channel.value([])
+        phylogeny = params.cohort_phylogeny_enabled ?
+            COHORT_PHYLOGENY(master.master, GTDBTK.out.alignments.toSortedList(), ani).results : Channel.value([])
         atlas = params.atlas_enabled ?
-            GENOME_QUALITY_ATLAS(master.master, master.gunc_data, dedupe_fasta.toSortedList()).outdir :
+            GENOME_QUALITY_ATLAS(master.master, master.gunc_data, dedupe_fasta.toSortedList(), ani, phylogeny).outdir :
             Channel.empty()
 
     emit:

@@ -2,7 +2,8 @@
 
 Genome QC assesses bacterial and archaeal genomes, SAGs and MAGs from FASTA files
 and brings their assembly quality, completeness, contamination, taxonomy and RNA
-gene measurements into a genome atlas and interactive explorer. Every usable
+gene measurements into a genome atlas and interactive explorer. Full runs also
+include ANI groups and annotated GTDB-marker trees. Every usable
 genome receives the applicable assessments before final selection; missing or
 failed measurements remain explicit.
 

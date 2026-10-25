@@ -47,9 +47,8 @@ inputs are grouped at the start; the database guide details which tool uses each
    master table. Apply any explicitly requested final acceptance bounds and write
    the selected subset separately. Defaults are unrestricted.
 7. **Build the atlas.** Annotate quality metrics and generate summary figures from
-   all assessed representatives. Labelled-set comparisons and FastANI work are
-   enabled by their comparison settings; they are not inferred from an unlabelled
-   genome directory.
+   all assessed representatives. Labelled-set statistical comparisons require comparison settings. Cohort ANI
+   grouping and marker trees run by default even for an unlabelled genome directory.
 8. **Explore.** Index tables and atlas figures into the explorer. Search, filter,
    follow genome subsets across linked tables, and export CSVs and documented
    selection records. Table filters do not recompute the atlas.
@@ -93,7 +92,8 @@ flowchart LR
     F["Genome FASTAs"] --> A["Per-genome and per-variant measurements"]
     A --> M["All assessed representatives: Master_genome_QC.tsv"]
     M --> S["Selected_genome_QC.tsv"]
-    M --> P["Genome atlas"]
+    M --> N["FastANI groups and GTDB-marker trees"]
+    N --> P["Genome atlas"]
     M --> E["Explorer"]
     P --> E
     E --> C["Filtered CSV, IDs and selection JSON"]
@@ -109,5 +109,6 @@ flowchart LR
 ```
 
 The full workflow does not run MetaPathways annotation or pathway inference.
-Comparison and phylogeny are separate commands for users with the necessary
-study labels and tools. They do not gate the ordinary genome atlas.
+Labelled comparisons and selected-set phylogenies remain available as separate
+commands. The complete run includes cohort ANI and domain-specific marker
+trees without requiring study labels. See [ANI and phylogeny](phylogeny.md).

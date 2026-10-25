@@ -47,12 +47,19 @@ def figure(detailed=False):
         node(key,x,branch,'process',[label,software],side)
         edge([(x,branch+23),(x,join),(cx,join)],False)
     dots.append((cx,join))
-    merge=join+60; master=merge+85; atlas=master+95; explorer=atlas+95; end=explorer+85
+    merge=join+60; master=merge+85; atlas=master+(285 if detailed else 190); explorer=atlas+95; end=explorer+85
     edge([(cx,join+4),(cx,merge-24)])
     node('merge',cx,merge,'process',['Integrate measurements / status','(Genome QC)'])
     edge([(cx,merge+23),(cx,master-21)])
     node('master',cx,master,'output',['All assessed genomes','Master QC table'])
-    edge([(cx,master+21),(cx,atlas-24)])
+    related=master+95
+    edge([(cx,master+21),(cx,related-24)])
+    node('ani',cx,related,'process',['ANI groups' if detailed else 'ANI groups / marker phylogeny', '(FastANI)' if detailed else '(FastANI, GTDB markers, FastTree)'])
+    if detailed:
+        node('phylogeny',cx,related+95,'process',['Marker phylogeny','(GTDB alignments, FastTree)'])
+        down(related,related+95)
+        related+=95
+    down(related,atlas)
     node('atlas',cx,atlas,'process',['Genome atlas','(pandas, Matplotlib, seaborn)'])
     down(atlas,explorer)
     node('explorer',cx,explorer,'process',['Explore / select / export','Genome QC Explorer'])

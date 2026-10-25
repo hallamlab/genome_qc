@@ -11,6 +11,8 @@ class PackageSourceTests(unittest.TestCase):
     def test_source_allowlist_excludes_study_material(self):
         files = {str(p.relative_to(ROOT)) for p in recipe.source_files(ROOT)}
         self.assertIn('main.nf',files)
+        self.assertIn('cohort_phylogeny.py',files)
+        self.assertIn('envs/cohort_phylogeny.yaml',files)
         self.assertIn('genome_qc/explorer.py',files)
         self.assertIn('assessment_summary.py',files)
         self.assertIn('envs/gtdbtk.yaml',files)

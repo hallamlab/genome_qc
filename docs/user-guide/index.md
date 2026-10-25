@@ -56,6 +56,7 @@ recovery
 
 outputs
 selection
+phylogeny
 interpretation
 workflow
 cli-reference

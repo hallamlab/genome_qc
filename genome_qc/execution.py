@@ -125,7 +125,7 @@ def configuration(args, cache):
              "process.errorStrategy = 'finish'", 'process.maxRetries = 0',
              f'process.time = {literal(args.time_limit)}', f'process.memory = {literal(request("4 GB"))}']
     for name, tool in [('CHECKM_SINGLE', 'checkm'), ('GTDBTK', 'gtdb'), ('GUNC', 'gunc'),
-                       ('TRNASCAN', 'trnascan'), ('GENOME_QUALITY_ATLAS', 'atlas')]:
+                       ('TRNASCAN', 'trnascan'), ('GENOME_QUALITY_ATLAS', 'atlas'), ('COHORT_ANI', 'atlas'), ('COHORT_PHYLOGENY', 'atlas')]:
         lines.append(f"process {{ withName: '{name}' {{ memory = '{task_memory[tool]}' }} }}")
     lines.append(f"process {{ withName: 'MERGE_MASTER|DEDUPE|QSCORE' {{ memory = '{request('8 GB')}' }} }}")
     if args.executor == 'local':

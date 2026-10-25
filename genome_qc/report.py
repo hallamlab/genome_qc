@@ -61,7 +61,7 @@ def build(output):
                 db.execute(f'CREATE TABLE {table} (' + ','.join(f'c{i} TEXT' for i in range(len(columns))) + ')')
                 count = 0
                 id_columns = [i for i, name in enumerate(columns)
-                              if name.lower().replace(' ', '_') in ('genome_id', 'genome', 'bin_id', 'user_genome', 'file')]
+                              if name.lower().replace(' ', '_') in ('genome_id', 'genome', 'genome_a', 'genome_b', 'bin_id', 'user_genome', 'file')]
                 for row in reader:
                     if not row:
                         continue
