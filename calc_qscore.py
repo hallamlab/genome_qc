@@ -23,11 +23,8 @@ def calc_qscore(compl, contam, strhet, n50, size):
 
 
 working_dir = sys.argv[1]
-comp = int(sys.argv[2])
-cont = int(sys.argv[3])
-qscr = int(sys.argv[4])
 
-checkm_file = os.path.join(working_dir, "checkm/checkm_output_HPMQ.tsv")  # checkm output tsv
+checkm_file = os.path.join(working_dir, "checkm/checkm_output.tsv")  # checkm output tsv
 seqkit_file = os.path.join(working_dir, "seqkit/seqkit_stats.tsv")  # seqkit output tsv
 checkm_df = pd.read_csv(checkm_file, header=0, sep='\t')
 seqkit_df = pd.read_csv(seqkit_file, header=0, sep='\t')
@@ -39,8 +36,11 @@ def safe_bin_id(val):
 	return base.rsplit('.', 1)[0] if '.' in base else base
 
 seqkit_df['Bin Id'] = [safe_bin_id(x) for x in seqkit_df['file']]
+if len(sys.argv) > 2:
+	expected = pd.DataFrame({'Bin Id': [safe_bin_id(f) for f in sys.argv[2:]]})
+	seqkit_df = expected.merge(seqkit_df, on='Bin Id', how='left')
 merge_list = ['Bin Id']
-qscore_df = checkm_df.merge(seqkit_df, on=merge_list, how="left")
+qscore_df = seqkit_df.merge(checkm_df, on=merge_list, how="left")
 print(qscore_df.head())
 qscore_df['qscore'] = qscore_df.apply(lambda row: calc_qscore(row['Completeness'],
 								row['Contamination'],
@@ -50,15 +50,5 @@ qscore_df['qscore'] = qscore_df.apply(lambda row: calc_qscore(row['Completeness'
 								), axis=1
 						)
 
-qscore_df.to_csv(os.path.join(working_dir, "qscore/qscore_all.tsv"), index=False, sep='\t')
-
-sorted_df = qscore_df.sort_values(by=['qscore', 'N50', 'sum_len'],
-				ascending=[False, False, False]
-				)
-keep_cols = ['Genome_Id', 'Bin Id', 'Completeness', 'Contamination', 'Strain heterogeneity',
-		'num_seqs', 'sum_len', 'min_len', 'avg_len', 'max_len', 'N50', 'qscore']
-#print(set(sorted_df['pass_GUNC']))
-sorted_df['Genome_Id'] = [x.rsplit('.', 1)[0] for x in sorted_df['Bin Id']]
-#sorted_df['Genome_Id'] = [x.split('.', 1)[0] + '.' + x.split('.')[4] for x in sorted_df['Bin Id']]
-mq_df = sorted_df[keep_cols].query("Completeness >= @comp & Contamination <= @cont & qscore >= @qscr").drop_duplicates('Genome_Id')
-mq_df.to_csv(os.path.join(working_dir, 'qscore/qscore_mqhp.tsv'), index=False, sep='\t')
+qscore_df['Genome_Id'] = qscore_df['Bin Id'].str.rsplit('.', n=1).str[0]
+qscore_df.to_csv(os.path.join(working_dir, 'qscore/qscore_all.tsv'), index=False, sep='\t')

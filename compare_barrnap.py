@@ -22,6 +22,8 @@ for bar_id in bar_check:
 		bar_file = blast_dict[bar_id]
 		with open(bar_file, 'r') as bar_in:
 			data = bar_in.readlines()
+			if not any(line.strip() for line in data):
+				empty_list.append(bar_id)
 			if len(data) != 0:
 				for line in data:
 					if line != '':
@@ -63,6 +65,8 @@ empty_df['bitscore'] = -1
 empty_df['pass_BARRNAP'] = True	  
 
 cat_df = pd.concat([min_id_df, empty_df])
+# Concatenating an empty hit table can coerce booleans to 1.0/0.0.
+cat_df['pass_BARRNAP'] = cat_df['pass_BARRNAP'].astype(bool)
 print(cat_df.head())
 
 cat_df.to_csv(os.path.join(barnap_dir, 'barrnap_blast_pass.tsv'), sep='\t', index=False)
@@ -83,9 +87,9 @@ for gff in bar_gffs:
 							  if ';note' in x else 1.0 for x in gff_df['attributes']
 							  ]
 		gff_list.append(gff_df)
-	except:
+	except pd.errors.EmptyDataError:
 		print(gff, 'is likely empty...')
-gff_cat_df = pd.concat(gff_list)
+gff_cat_df = pd.concat(gff_list) if gff_list else pd.DataFrame(columns=['seqid','source','type','start','end','score','strand','phase','attributes','genome_id','name','product','prod_mod'])
 gff_cat_df.to_csv(os.path.join(barnap_dir, 'barrnap_gff_table.tsv'), sep='\t', index=False)
 
 gff_grp_df = gff_cat_df.groupby(['genome_id', 'name'])['prod_mod'].sum().reset_index()

@@ -1,0 +1,5 @@
+.wy-nav-content { max-width: 1100px; }
+img.workflow-brief { display: block; width: 82%; max-width: 620px; height: auto; margin: 1.25rem auto; }
+img.workflow-detailed { display: block; width: 92%; max-width: 980px; height: auto; margin: 1.25rem auto; }
+.mermaid { background: #fff; padding: 1rem; overflow-x: auto; }
+@media (max-width: 600px) { img.workflow-brief, img.workflow-detailed { width: 96%; } }

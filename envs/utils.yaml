@@ -2,7 +2,6 @@ name: genome_qc_utils
 channels:
   - conda-forge
   - bioconda
-  - defaults
 dependencies:
   - coreutils
   - gawk

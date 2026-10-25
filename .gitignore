@@ -51,3 +51,9 @@ trash/
 
 # generated reference payloads built on demand
 reference_mappings/
+
+# Public docs allow-list; local manuscript/results files stay private.
+/docs/*
+!/docs/user-guide/
+!/docs/WORKFLOW_STYLE.md
+/docs/user-guide/_build/

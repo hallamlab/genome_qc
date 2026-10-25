@@ -14,6 +14,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from genome_set_stats import method_mean_tests, adjust_method_tests, export_method_audit
+
 plt = None
 sns = None
 
@@ -341,6 +343,9 @@ def set_axis_limits_and_ticks(ax, axis, limits, ticks):
     bottom, top = getter()
     if not (math.isfinite(bottom) and math.isfinite(top)):
         return
+    # Keep the plotting function's padding and data extent. Tick normalization
+    # must never crop observations or the labels above bars.
+    limits = (min(bottom, top, limits[0]), max(bottom, top, limits[1]))
     if bottom > top:
         limits = (limits[1], limits[0])
     setter(*limits)
@@ -370,7 +375,6 @@ def standardize_axis_scale(ax, axis):
         "matched fraction",
     ]
     percent_tokens = [
-        "qscore",
         "completeness",
     ]
     current_limits = ax.get_xlim() if axis == "x" else ax.get_ylim()
@@ -383,7 +387,7 @@ def standardize_axis_scale(ax, axis):
 
 def standardize_figure_scales(fig):
     for ax in fig.axes:
-        if not ax.get_visible() or ax.get_label() == "<colorbar>" or not ax.axison:
+        if not ax.get_visible() or hasattr(ax, "_colorbar") or ax.get_label() == "<colorbar>" or not ax.axison:
             continue
         standardize_axis_scale(ax, "x")
         standardize_axis_scale(ax, "y")
@@ -1164,6 +1168,7 @@ def grayscale_palette(n_values, start=0.2, stop=0.85):
 
 
 def apply_tight_layout(fig, rect=(0, 0, 1, 1)):
+    fig._atlas_layout_rect = rect
     fig.tight_layout(rect=rect, pad=1.2, w_pad=2.0, h_pad=2.0)
 
 
@@ -2195,6 +2200,17 @@ def compute_quality_index(frame):
             labels.append("tRNA>=18")
         pattern_names.append("+".join(labels) if labels else "none")
     annotated["recovery_pattern_label"] = pattern_names
+    # Failed assessment is unknown, never biological absence. Keep descriptive
+    # results from independent tools while withholding scores needing missing inputs.
+    rrna_missing = annotated[[c for c in ('16S_rRNA', '23S_rRNA', '5S_rRNA') if c in annotated]].isna().any(axis=1)
+    trna_missing = annotated['trna_unique'].isna()
+    quality_missing = annotated[['Completeness', 'Contamination']].isna().any(axis=1)
+    annotated.loc[rrna_missing, ['rrna_16S_score','rrna_23S_score','rrna_5S_score','has_16S','has_23S','has_5S']] = np.nan
+    annotated.loc[trna_missing, 'trna_ge_18'] = np.nan
+    unavailable = rrna_missing | trna_missing
+    annotated.loc[unavailable, ['recoverability_score','recovered_feature_count','mimag_quality_index']] = np.nan
+    annotated.loc[unavailable, ['recovery_pattern','recovery_pattern_label']] = 'unavailable'
+    annotated.loc[unavailable | quality_missing, 'mimag_tier'] = np.nan
     annotated = derive_gunc_columns(annotated)
     return annotated
 
@@ -2285,65 +2301,14 @@ def summarize(frame, group_column=None):
     return overall, feature_rates, group_summary
 
 
-def run_nonparametric_test(frame, group_column):
+def run_nonparametric_test(frame, group_column, sample_column=None):
     if not group_column or group_column not in frame.columns:
         return None
-
-    grouped = frame.copy()
-    grouped["__group_label"] = resolve_grouping_series(grouped, group_column)
-    grouped = grouped.dropna(subset=["__group_label"])
-    if grouped.empty:
-        return None
-
-    value_counts = grouped["__group_label"].value_counts()
-    valid_groups = value_counts[value_counts > 0].index.tolist()
-    if len(valid_groups) < 2:
-        return None
-
-    group_values = [
-        grouped.loc[grouped["__group_label"] == group, SCORE_COLUMN].values
-        for group in valid_groups
-    ]
-
-    try:
-        from scipy import stats
-    except ImportError:
-        warnings.warn(
-            "scipy is not installed; skipping nonparametric group statistics.",
-            RuntimeWarning,
-        )
-        return None
-
-    if len(valid_groups) == 2:
-        stat, pvalue = stats.mannwhitneyu(
-            group_values[0], group_values[1], alternative="two-sided"
-        )
-        return pd.DataFrame(
-            [
-                {
-                    "test": "Mann-Whitney U",
-                    "group_column": group_column,
-                    "group_a": valid_groups[0],
-                    "group_b": valid_groups[1],
-                    "statistic": stat,
-                    "pvalue": pvalue,
-                }
-            ]
-        )
-
-    stat, pvalue = stats.kruskal(*group_values)
-    return pd.DataFrame(
-        [
-            {
-                "test": "Kruskal-Wallis",
-                "group_column": group_column,
-                "n_groups": len(valid_groups),
-                "groups": ";".join(map(str, valid_groups)),
-                "statistic": stat,
-                "pvalue": pvalue,
-            }
-        ]
-    )
+    selected_sample = choose_sample_column(frame, sample_column)
+    categories = sorted(frame[group_column].dropna().astype(str).unique())
+    rows = method_mean_tests(frame, group_column, selected_sample, SCORE_COLUMN,
+                            categories, SCORE_COLUMN, SCORE_LABEL, "genome_qscore")
+    return adjust_method_tests(rows)
 
 
 def add_quality_thresholds(ax):
@@ -2351,8 +2316,8 @@ def add_quality_thresholds(ax):
     ax.axhline(10, color="#6b7280", linestyle="--", linewidth=1)
     ax.axvline(90, color="#111827", linestyle="--", linewidth=1)
     ax.axhline(5, color="#111827", linestyle="--", linewidth=1)
-    ax.set_xlim(-1, 101)
-    ymax = max(12.0, min(20.0, float(ax.get_ylim()[1])))
+    ax.set_xlim(-2, 102)
+    ymax = max(12.0, float(ax.get_ylim()[1]))
     ax.set_ylim(-0.25, ymax)
 
 
@@ -2368,6 +2333,8 @@ def plot_completeness_contamination(ax, frame):
             subset["Contamination"],
             c=subset[SCORE_COLUMN],
             cmap="Greys",
+            vmin=frame[SCORE_COLUMN].min(),
+            vmax=frame[SCORE_COLUMN].max(),
             s=35,
             marker=marker,
             alpha=0.85,
@@ -2382,18 +2349,41 @@ def plot_completeness_contamination(ax, frame):
 
 
 def plot_component_scatter(ax, frame):
+    # Exact coordinates only: nearby genomes are not rounded into a shared bin.
+    positions = frame.groupby(
+        ["integrity_score", "recoverability_score"], as_index=False
+    ).agg(genome_count=(SCORE_COLUMN, "size"), mean_qscore=(SCORE_COLUMN, "mean"))
+    def area(count):
+        return 30 + 40 * np.log2(count)
     scatter = ax.scatter(
-        frame["integrity_score"],
-        frame["recoverability_score"],
-        c=frame[SCORE_COLUMN],
+        positions["integrity_score"],
+        positions["recoverability_score"],
+        c=positions["mean_qscore"],
         cmap="Greys",
-        s=35,
+        vmin=frame[SCORE_COLUMN].min(),
+        vmax=frame[SCORE_COLUMN].max(),
+        s=area(positions["genome_count"]),
         alpha=0.85,
         edgecolors="black",
         linewidths=0.25,
     )
-    ax.set_xlim(-0.02, 1.02)
-    ax.set_ylim(-0.02, 1.02)
+    # Reference ticks describe the size scale, not dataset-specific counts.
+    maximum = int(positions["genome_count"].max()) if len(positions) else 1
+    if maximum < 10:
+        counts = [n for n in (1, 2, 5) if n <= maximum]
+    else:
+        powers = np.arange(int(np.floor(np.log10(maximum))) + 1)
+        if len(powers) > 4:
+            powers = powers[np.linspace(0, len(powers) - 1, 4).round().astype(int)]
+        counts = 10 ** powers
+    handles = [plt.Line2D([], [], linestyle="", marker="o",
+               markersize=np.sqrt(area(n)), markerfacecolor="0.7",
+               markeredgecolor="black", markeredgewidth=0.5,
+               label=f"{n:,}") for n in counts]
+    ax.legend(handles=handles, title="Genomes at position\n(log-scaled area)\nShade: mean Qscore",
+              loc="lower left", frameon=False, labelspacing=1.2, borderpad=0.8)
+    ax.set_xlim(-0.06, 1.06)
+    ax.set_ylim(-0.06, 1.06)
     ax.set_xlabel("Integrity (I)")
     ax.set_ylabel("Recoverability (R)")
     ax.set_title("Integrity vs recoverability")
@@ -2401,6 +2391,11 @@ def plot_component_scatter(ax, frame):
 
 
 def plot_quality_distribution(ax, frame):
+    available = frame[SCORE_COLUMN].notna() & frame['mimag_tier'].isin(['low', 'medium', 'high'])
+    if not available.any():
+        ax.text(0.5, 0.5, 'Quality tiers unavailable', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('qscore distribution')
+        return
     sns.histplot(
         data=frame,
         x=SCORE_COLUMN,
@@ -2449,15 +2444,18 @@ def plot_feature_recovery(ax, frame):
         legend=False,
         ax=ax,
     )
-    ax.set_ylim(0, 1)
+    ax.set_ylim(0, 1.12)
     ax.set_xlabel("")
     ax.set_ylabel("Mean recoverability contribution")
     ax.set_title("Hallmark feature contributions")
     for index, value in enumerate(feature_df["value"]):
+        if not math.isfinite(value):
+            continue
         ax.text(index, value + 0.02, f"{value:.2f}", ha="center", va="bottom", fontsize=9)
 
 
 def plot_recovery_patterns(ax, frame):
+    frame = frame.loc[frame[["has_16S", "has_23S", "has_5S", "trna_ge_18"]].notna().all(axis=1)]
     features = frame[["has_16S", "has_23S", "has_5S", "trna_ge_18"]].copy()
     patterns = (
         frame["recovery_pattern_label"]
@@ -2511,6 +2509,7 @@ def plot_recovery_patterns(ax, frame):
     ax.set_xlabel("")
     ax.set_ylabel("")
     ax.set_title("Top recovery patterns (genome counts)")
+    ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
 
 
 def choose_group_column(frame, requested_group):
@@ -2530,7 +2529,7 @@ def plot_group_panel(ax, frame, group_column, top_n):
 
     subset = frame.copy()
     subset["__group_label"] = resolve_grouping_series(subset, group_column)
-    subset = subset.dropna(subset=["__group_label"])
+    subset = subset.dropna(subset=["__group_label", SCORE_COLUMN])
     if subset.empty:
         ax.axis("off")
         ax.text(0.5, 0.5, "No grouping data available", ha="center", va="center")
@@ -3025,6 +3024,8 @@ def draw_compare_compact_metric_axis(ax, grouped_values, order, metric, title, s
     ax.set_xticklabels(order, rotation=90)
     ax.grid(axis="y", color="#d9d9d9", linestyle="-", linewidth=0.6)
     add_compare_significance_brackets(ax, metric, grouped_values, order, stats_df)
+    if stats_df is not None and "covariance" in stats_df:
+        ax.set_title(title + "\nStars: sample-adjusted, anchor-robust BH q<0.05", fontsize=10)
     return True
 
 
@@ -3302,7 +3303,7 @@ def export_compare_benchmark_metric_panel(compare_df, compare_column, compare_ba
             0.5,
             0.018,
             f"Points show category {point_label}s; horizontal intervals show {interval_label}."
-            + (" Stars mark BH-adjusted pairwise q<0.05." if show_significance else ""),
+            + (" Stars: sample-adjusted, anchor-robust BH q<0.05 (mean contrasts)." if show_significance else ""),
             ha="center",
             va="bottom",
             fontsize=9,
@@ -3379,7 +3380,7 @@ def export_compare_hallmark_bar_plot(compare_df, compare_column, compare_base, s
         0.5,
         0.014,
         "Points show category means; horizontal intervals show approximate 95% confidence intervals. "
-        "Stars mark BH-adjusted pairwise q<0.05.",
+        "Stars: sample-adjusted, anchor-robust BH q<0.05 (mean contrasts).",
         ha="center",
         va="bottom",
         fontsize=9,
@@ -3531,6 +3532,9 @@ def summarize_compare_gunc(compare_df, compare_column):
         for column in count_columns:
             if column in grouped.columns:
                 grouped[column] = grouped[column].fillna(0).astype(int)
+            else:
+                # A selected set may exclude an entire quality tier.
+                grouped[column] = 0
         for assessment in GUNC_ASSESSMENT_ORDER:
             count_column = f"n_gunc_{assessment}"
             fraction_column = f"fraction_gunc_{assessment}"
@@ -4419,86 +4423,8 @@ def run_sample_count_tests(sample_counts, compare_column, sample_column):
     if sample_counts is None or sample_counts.empty:
         return None
 
-    try:
-        from scipy import stats
-    except ImportError:
-        warnings.warn(
-            "scipy is not installed; skipping sample-aware category count tests.",
-            RuntimeWarning,
-        )
-        return None
-
-    categories = ordered_unique_categories(sample_counts[compare_column].astype(str).drop_duplicates().tolist())
-    metrics = ["total_bins", "hq_bins", "mq_bins", "lq_bins", "hqmq_bins"]
-    results = []
-
-    for metric in metrics:
-        full_pivot = (
-            sample_counts.pivot_table(
-                index=sample_column,
-                columns=compare_column,
-                values=metric,
-                aggfunc="first",
-            )
-        )
-        full_pivot.columns = full_pivot.columns.astype(str)
-        available_categories = [category for category in categories if category in full_pivot.columns]
-        if len(available_categories) < 2:
-            continue
-
-        for left, right in itertools.combinations(available_categories, 2):
-            pair_pivot = full_pivot[[left, right]].dropna()
-            if pair_pivot.empty:
-                continue
-            try:
-                stat, pvalue = stats.wilcoxon(
-                    pair_pivot[left],
-                    pair_pivot[right],
-                    alternative="two-sided",
-                )
-            except ValueError:
-                stat, pvalue = np.nan, np.nan
-            results.append(
-                {
-                    "test": "Wilcoxon signed-rank",
-                    "metric": metric,
-                    "sample_column": sample_column,
-                    "group_column": compare_column,
-                    "group_a": left,
-                    "group_b": right,
-                    "n_samples": int(len(pair_pivot)),
-                    "group_a_median": float(pair_pivot[left].median()),
-                    "group_b_median": float(pair_pivot[right].median()),
-                    "group_a_mean": float(pair_pivot[left].mean()),
-                    "group_b_mean": float(pair_pivot[right].mean()),
-                    "median_difference_a_minus_b": float((pair_pivot[left] - pair_pivot[right]).median()),
-                    "mean_difference_a_minus_b": float((pair_pivot[left] - pair_pivot[right]).mean()),
-                    "statistic": stat,
-                    "pvalue": pvalue,
-                }
-            )
-
-        global_pivot = full_pivot[available_categories].dropna()
-        if global_pivot.empty or global_pivot.shape[1] < 2:
-            continue
-        try:
-            stat, pvalue = stats.friedmanchisquare(*[global_pivot[column] for column in global_pivot.columns])
-        except ValueError:
-            stat, pvalue = np.nan, np.nan
-        results.append(
-            {
-                "test": "Friedman",
-                "metric": metric,
-                "sample_column": sample_column,
-                "group_column": compare_column,
-                "n_samples": int(len(global_pivot)),
-                "n_groups": int(global_pivot.shape[1]),
-                "groups": ";".join(map(str, global_pivot.columns.tolist())),
-                "statistic": stat,
-                "pvalue": pvalue,
-            }
-        )
-    return annotate_pairwise_comparisons(pd.DataFrame(results)) if results else None
+    # One total per sample/category is descriptive, not genome replication.
+    return None
 
 
 def build_phylum_representation_tables(
@@ -4595,117 +4521,20 @@ def build_phylum_representation_tables(
         .reset_index(drop=True)
     )
 
-    try:
-        from scipy import stats
-    except ImportError:
-        warnings.warn(
-            "scipy is not installed; skipping sample-blocked phylum representation tests.",
-            RuntimeWarning,
-        )
-        return fraction_df, summary_df, pd.DataFrame(), pd.DataFrame(), selected_sample
-
-    friedman_rows = []
-    pairwise_rows = []
+    rows = []
     for phylum in eligible_phyla:
-        phylum_df = fraction_df.loc[fraction_df["phylum"].eq(phylum)].copy()
-        pivot = phylum_df.pivot_table(
-            index=selected_sample,
-            columns=compare_column,
-            values="phylum_fraction",
-            aggfunc="first",
-        )
-        pivot.columns = pivot.columns.astype(str)
-        available_categories = [category for category in categories if category in pivot.columns]
-        if len(available_categories) < 2:
-            continue
-        full_pivot = pivot[available_categories].dropna()
-        if full_pivot.shape[0] >= 2 and full_pivot.shape[1] >= 2:
-            try:
-                statistic, pvalue = stats.friedmanchisquare(
-                    *[full_pivot[column] for column in full_pivot.columns]
-                )
-            except ValueError:
-                statistic, pvalue = np.nan, np.nan
-            max_category = full_pivot.median(axis=0).idxmax()
-            min_category = full_pivot.median(axis=0).idxmin()
-            friedman_rows.append(
-                {
-                    "analysis_scope": "sample_blocked_phylum_fraction_global",
-                    "test": "Friedman",
-                    "rank": "Phylum",
-                    "phylum": phylum,
-                    "metric": "phylum_fraction",
-                    "sample_column": selected_sample,
-                    "group_column": compare_column,
-                    "n_samples": int(full_pivot.shape[0]),
-                    "n_groups": int(full_pivot.shape[1]),
-                    "groups": ";".join(map(str, full_pivot.columns.tolist())),
-                    "max_median_category": max_category,
-                    "min_median_category": min_category,
-                    "max_minus_min_median_fraction": float(full_pivot[max_category].median() - full_pivot[min_category].median()),
-                    "statistic": statistic,
-                    "pvalue": pvalue,
-                    "phylum_total_genomes": int(phylum_totals.get(phylum, 0)),
-                    "min_total_count": int(min_total_count),
-                }
-            )
-        for group_a, group_b in itertools.combinations(available_categories, 2):
-            pair_pivot = pivot[[group_a, group_b]].dropna()
-            if pair_pivot.shape[0] < 2:
-                continue
-            differences = pair_pivot[group_a] - pair_pivot[group_b]
-            if np.allclose(differences.fillna(0).to_numpy(dtype=float), 0.0):
-                statistic, pvalue = 0.0, 1.0
-            else:
-                try:
-                    statistic, pvalue = stats.wilcoxon(
-                        pair_pivot[group_a],
-                        pair_pivot[group_b],
-                        alternative="two-sided",
-                    )
-                except ValueError:
-                    statistic, pvalue = np.nan, np.nan
-            median_a = float(pair_pivot[group_a].median())
-            median_b = float(pair_pivot[group_b].median())
-            mean_a = float(pair_pivot[group_a].mean())
-            mean_b = float(pair_pivot[group_b].mean())
-            pairwise_rows.append(
-                {
-                    "analysis_scope": "sample_blocked_phylum_fraction_pairwise",
-                    "test": "Wilcoxon signed-rank",
-                    "rank": "Phylum",
-                    "phylum": phylum,
-                    "metric": "phylum_fraction",
-                    "sample_column": selected_sample,
-                    "group_column": compare_column,
-                    "group_a": group_a,
-                    "group_b": group_b,
-                    "n_samples": int(pair_pivot.shape[0]),
-                    "group_a_median": median_a,
-                    "group_b_median": median_b,
-                    "group_a_mean": mean_a,
-                    "group_b_mean": mean_b,
-                    "median_difference_a_minus_b": float(differences.median()),
-                    "mean_difference_a_minus_b": float(differences.mean()),
-                    "winner_by_median": group_a if median_a > median_b else group_b if median_b > median_a else "tie",
-                    "statistic": statistic,
-                    "pvalue": pvalue,
-                    "phylum_total_genomes": int(phylum_totals.get(phylum, 0)),
-                    "min_total_count": int(min_total_count),
-                }
-            )
-
-    friedman_df = pd.DataFrame(friedman_rows)
-    if not friedman_df.empty:
-        friedman_df["qvalue_bh"] = benjamini_hochberg_adjust(friedman_df["pvalue"])
-        friedman_df["significant_p05"] = pd.to_numeric(friedman_df["pvalue"], errors="coerce").lt(0.05)
-        friedman_df["significant_q05"] = pd.to_numeric(friedman_df["qvalue_bh"], errors="coerce").lt(0.05)
-    pairwise_df = annotate_pairwise_comparisons(pd.DataFrame(pairwise_rows)) if pairwise_rows else pd.DataFrame()
-    if not pairwise_df.empty:
-        pairwise_df["qvalue_bh"] = benjamini_hochberg_adjust(pairwise_df["pvalue"])
-        pairwise_df["significant_p05"] = pd.to_numeric(pairwise_df["pvalue"], errors="coerce").lt(0.05)
-        pairwise_df["significant_q05"] = pd.to_numeric(pairwise_df["qvalue_bh"], errors="coerce").lt(0.05)
-    return fraction_df, summary_df, friedman_df, pairwise_df, selected_sample
+        data = working.copy()
+        data["__phylum_present"] = data["phylum"].eq(phylum).astype(float)
+        results = method_mean_tests(data, compare_column, selected_sample, "__phylum_present",
+                                    categories, "phylum_fraction", phylum, "phylum_fraction")
+        for row in results:
+            row.update(phylum=phylum, rank="Phylum", min_total_count=min_total_count,
+                       phylum_total_genomes=int(phylum_totals[phylum]))
+        rows.extend(results)
+    tests = adjust_method_tests(rows)
+    global_df = tests.loc[tests.analysis_scope.str.endswith("_global")].copy()
+    pairwise_df = tests.loc[tests.analysis_scope.str.endswith("_pairwise")].copy()
+    return fraction_df, summary_df, global_df, pairwise_df, selected_sample
 
 
 def benjamini_hochberg_adjust(series):
@@ -4760,125 +4589,11 @@ def run_method_significance_tests(compare_df, compare_column, sample_counts=None
     for metric, metric_label in per_genome_metrics:
         if metric not in compare_df.columns:
             continue
-        metric_df = compare_df[[compare_column, metric]].copy()
-        metric_df[metric] = pd.to_numeric(metric_df[metric], errors="coerce")
-        metric_df = metric_df.dropna(subset=[metric])
-        if metric_df.empty:
-            continue
+        rows.extend(method_mean_tests(
+            compare_df, compare_column, choose_sample_column(compare_df, sample_column),
+            metric, categories, metric, metric_label, "per_genome_metric"))
 
-        present_categories = [
-            category for category in categories
-            if metric_df.loc[metric_df[compare_column].astype(str).eq(category)].shape[0] > 0
-        ]
-        if len(present_categories) < 2:
-            continue
-
-        for group_a, group_b in itertools.combinations(present_categories, 2):
-            values_a = metric_df.loc[metric_df[compare_column].astype(str).eq(group_a), metric].astype(float)
-            values_b = metric_df.loc[metric_df[compare_column].astype(str).eq(group_b), metric].astype(float)
-            if values_a.empty or values_b.empty:
-                continue
-            try:
-                statistic, pvalue = stats.mannwhitneyu(values_a, values_b, alternative="two-sided")
-            except ValueError:
-                statistic, pvalue = np.nan, np.nan
-            median_a = float(values_a.median())
-            median_b = float(values_b.median())
-            mean_a = float(values_a.mean())
-            mean_b = float(values_b.mean())
-            median_delta = median_a - median_b
-            mean_delta = mean_a - mean_b
-            winner = group_a if median_delta > 0 else group_b if median_delta < 0 else "tie"
-            rows.append(
-                {
-                    "analysis_scope": "per_genome_metric_pairwise",
-                    "test": "Mann-Whitney U",
-                    "metric": metric,
-                    "metric_label": metric_label,
-                    "group_column": compare_column,
-                    "group_a": group_a,
-                    "group_b": group_b,
-                    "n_a": int(values_a.size),
-                    "n_b": int(values_b.size),
-                    "group_a_median": median_a,
-                    "group_b_median": median_b,
-                    "group_a_mean": mean_a,
-                    "group_b_mean": mean_b,
-                    "median_difference_a_minus_b": median_delta,
-                    "mean_difference_a_minus_b": mean_delta,
-                    "winner_by_median": winner,
-                    "statistic": statistic,
-                    "pvalue": pvalue,
-                }
-            )
-
-        grouped_values = [
-            metric_df.loc[metric_df[compare_column].astype(str).eq(category), metric].astype(float).values
-            for category in present_categories
-        ]
-        if len(grouped_values) >= 2:
-            try:
-                statistic, pvalue = stats.kruskal(*grouped_values)
-            except ValueError:
-                statistic, pvalue = np.nan, np.nan
-            rows.append(
-                {
-                    "analysis_scope": "per_genome_metric_global",
-                    "test": "Kruskal-Wallis",
-                    "metric": metric,
-                    "metric_label": metric_label,
-                    "group_column": compare_column,
-                    "n_groups": int(len(present_categories)),
-                    "groups": ";".join(map(str, present_categories)),
-                    "statistic": statistic,
-                    "pvalue": pvalue,
-                }
-            )
-
-    if sample_count_stats is None and sample_counts is not None and sample_column:
-        sample_count_stats = run_sample_count_tests(sample_counts, compare_column, sample_column)
-    if sample_count_stats is not None and not sample_count_stats.empty:
-        count_stats = sample_count_stats.copy()
-        count_stats["analysis_scope"] = np.where(
-            count_stats["test"].astype(str).str.contains("Friedman", case=False, na=False),
-            "sample_count_global",
-            "sample_count_pairwise",
-        )
-        count_stats["metric_label"] = count_stats["metric"].astype(str)
-        if "group_a_median" in count_stats.columns and "group_b_median" in count_stats.columns:
-            group_a_series = (
-                count_stats["group_a"].astype(str)
-                if "group_a" in count_stats.columns
-                else pd.Series([""] * len(count_stats), index=count_stats.index, dtype=str)
-            )
-            group_b_series = (
-                count_stats["group_b"].astype(str)
-                if "group_b" in count_stats.columns
-                else pd.Series([""] * len(count_stats), index=count_stats.index, dtype=str)
-            )
-            count_stats["winner_by_median"] = np.where(
-                pd.to_numeric(count_stats["group_a_median"], errors="coerce")
-                > pd.to_numeric(count_stats["group_b_median"], errors="coerce"),
-                group_a_series,
-                np.where(
-                    pd.to_numeric(count_stats["group_a_median"], errors="coerce")
-                    < pd.to_numeric(count_stats["group_b_median"], errors="coerce"),
-                    group_b_series,
-                    "tie",
-                ),
-            )
-        rows.extend(count_stats.to_dict("records"))
-
-    if not rows:
-        return None
-
-    results = pd.DataFrame(rows)
-    results = annotate_pairwise_comparisons(results)
-    if "pvalue" in results.columns:
-        results["qvalue_bh"] = benjamini_hochberg_adjust(results["pvalue"])
-        results["significant_p05"] = pd.to_numeric(results["pvalue"], errors="coerce").lt(0.05)
-        results["significant_q05"] = pd.to_numeric(results["qvalue_bh"], errors="coerce").lt(0.05)
-    return results
+    return annotate_pairwise_comparisons(adjust_method_tests(rows))
 
 
 def plot_sample_method_counts(sample_counts, compare_column, sample_column, output_base):
@@ -5552,6 +5267,11 @@ def save_compare_outputs(
     gunc_summary = summarize_compare_gunc(compare_df, compare_column)
     if gunc_summary is not None and not gunc_summary.empty:
         gunc_summary.to_csv(compare_base + "_gunc_chimerism_summary.tsv", sep="\t", index=False)
+        from gunc_method_stats import save_gunc_tests
+        gunc_sample_column = choose_sample_column(compare_df, sample_column)
+        if gunc_sample_column and "gunc_strict_assessment" in compare_df:
+            save_gunc_tests(compare_df, compare_base + "_gunc_strict", compare_column,
+                            gunc_sample_column)
     if variant_filter_audit_df is not None and not variant_filter_audit_df.empty:
         variant_filter_audit_df.to_csv(compare_base + "_variant_filter_audit.tsv", sep="\t", index=False)
     taxonomy_quality_summary, _ = summarize_taxonomy_quality(compare_df, compare_column, group_column)
@@ -5585,7 +5305,7 @@ def save_compare_outputs(
         )
     if phylum_friedman_df is not None and not phylum_friedman_df.empty:
         phylum_friedman_df.to_csv(
-            compare_base + "_phylum_representation_friedman_significance.tsv",
+            compare_base + "_phylum_representation_global_significance.tsv",
             sep="\t",
             index=False,
         )
@@ -5595,7 +5315,7 @@ def save_compare_outputs(
             sep="\t",
             index=False,
         )
-    stats_df = run_nonparametric_test(compare_df, compare_column)
+    stats_df = run_nonparametric_test(compare_df, compare_column, sample_column)
     if stats_df is not None:
         stats_df.to_csv(compare_base + "_stats.tsv", sep="\t", index=False)
     sample_counts, selected_sample = summarize_sample_method_counts(
@@ -5629,6 +5349,8 @@ def save_compare_outputs(
     )
     if method_significance is not None:
         method_significance.to_csv(compare_base + "_method_significance.tsv", sep="\t", index=False)
+        export_method_audit(compare_df, method_significance, compare_column, selected_sample,
+                            compare_base + "_method_effects")
     single_metric_plot_paths = export_compare_single_metric_plots(
         compare_df,
         compare_column,
@@ -5664,6 +5386,8 @@ def save_compare_outputs(
             sample_column=best_set_sample_column,
         )
         if best_set_significance is not None:
+            export_method_audit(best_set_df, best_set_significance, compare_column,
+                                best_set_sample_column, compare_base + "_best_sample_method_effects")
             best_set_significance.to_csv(
                 compare_base + "_method_significance_best_sample_method.tsv",
                 sep="\t",
@@ -5778,7 +5502,7 @@ def save_compare_outputs(
     if phylum_summary_df is not None and not phylum_summary_df.empty:
         wrote_files.append(compare_base + "_phylum_representation_summary.tsv")
     if phylum_friedman_df is not None and not phylum_friedman_df.empty:
-        wrote_files.append(compare_base + "_phylum_representation_friedman_significance.tsv")
+        wrote_files.append(compare_base + "_phylum_representation_global_significance.tsv")
     if phylum_pairwise_df is not None and not phylum_pairwise_df.empty:
         wrote_files.append(compare_base + "_phylum_representation_pairwise_significance.tsv")
     if stats_df is not None:
@@ -5940,6 +5664,8 @@ def save_paired_only_outputs(paired_source_df, compare_column, compare_base, gro
         sample_column=sample_column,
     )
     if paired_method_significance is not None:
+        export_method_audit(paired_compare_df, paired_method_significance, compare_column,
+                            choose_sample_column(paired_compare_df, sample_column), paired_base + "_method_effects")
         paired_method_significance.to_csv(paired_base + "_method_significance.tsv", sep="	", index=False)
 
     fig, ax = plt.subplots(figsize=(max(7, len(category_order(paired_compare_df, compare_column)) * 0.8), 6.5))
@@ -6268,79 +5994,13 @@ def run_shared_best_quality_tests(shared_best_df, compare_column):
     if len(categories) < 2:
         return None
 
-    try:
-        from scipy import stats
-    except ImportError:
-        warnings.warn(
-            "scipy is not installed; skipping shared-genome quality statistics.",
-            RuntimeWarning,
-        )
-        return None
-
     rows = []
-    for metric, metric_label in SHARED_QUALITY_METRICS:
-        if metric not in shared_best_df.columns:
-            continue
-
-        metric_df = shared_best_df[["component_id", compare_column, metric]].dropna()
-        if metric_df.empty:
-            continue
-
-        if len(categories) > 2:
-            complete_pivot = (
-                metric_df.pivot_table(index="component_id", columns=compare_column, values=metric, aggfunc="first")
-                .reindex(columns=categories)
-                .dropna()
-            )
-            if len(complete_pivot) >= 2:
-                statistic, pvalue = stats.friedmanchisquare(
-                    *(complete_pivot[category].values for category in categories)
-                )
-                rows.append(
-                    {
-                        "metric": metric,
-                        "metric_label": metric_label,
-                        "test": "Friedman",
-                        "comparison_scope": "all_categories_complete",
-                        "group_a": "",
-                        "group_b": "",
-                        "n_components": len(complete_pivot),
-                        "statistic": statistic,
-                        "pvalue": pvalue,
-                    }
-                )
-
-        for category_a, category_b in itertools.combinations(categories, 2):
-            pair_pivot = (
-                metric_df.loc[metric_df[compare_column].isin([category_a, category_b])]
-                .pivot_table(index="component_id", columns=compare_column, values=metric, aggfunc="first")
-                .reindex(columns=[category_a, category_b])
-                .dropna()
-            )
-            if len(pair_pivot) < 2:
-                continue
-            statistic, pvalue = stats.wilcoxon(
-                pair_pivot[category_a].values,
-                pair_pivot[category_b].values,
-                zero_method="zsplit",
-            )
-            rows.append(
-                {
-                    "metric": metric,
-                    "metric_label": metric_label,
-                    "test": "Wilcoxon signed-rank",
-                    "comparison_scope": "pairwise_shared_components",
-                    "group_a": category_a,
-                    "group_b": category_b,
-                    "n_components": len(pair_pivot),
-                    "statistic": statistic,
-                    "pvalue": pvalue,
-                }
-            )
-
-    if not rows:
-        return None
-    return annotate_pairwise_comparisons(pd.DataFrame(rows))
+    for metric, label in SHARED_QUALITY_METRICS:
+        if metric in shared_best_df:
+            rows.extend(method_mean_tests(shared_best_df, compare_column,
+                choose_sample_column(shared_best_df, None), metric, categories,
+                metric, label, "shared_genome_metric"))
+    return annotate_pairwise_comparisons(adjust_method_tests(rows))
 
 
 def build_shared_best_difference_table(shared_best_df, compare_column):
@@ -6894,6 +6554,8 @@ def save_fastani_outputs(
     shared_best_diff_df.to_csv(compare_base + "_shared_best_differences.tsv", sep="\t", index=False)
     shared_best_summary_df.to_csv(compare_base + "_shared_best_summary.tsv", sep="\t", index=False)
     if shared_best_stats_df is not None:
+        export_method_audit(shared_best_df, shared_best_stats_df, compare_column,
+                            choose_sample_column(shared_best_df, None), compare_base + "_shared_best_method_effects")
         shared_best_stats_df.to_csv(compare_base + "_shared_best_stats.tsv", sep="\t", index=False)
     compact_unique_taxa_genomes_df.to_csv(
         compare_base + "_compact_unique_taxa_genomes.tsv",
@@ -7135,6 +6797,9 @@ def save_figure(fig, output_base):
     standardize_figure_scales(fig)
     label_multi_panel_axes(fig)
     apply_figure_typography(fig)
+    if hasattr(fig, "_atlas_layout_rect"):
+        # Recompute spacing with the final fonts and panel labels in place.
+        apply_tight_layout(fig, rect=fig._atlas_layout_rect)
     fig.savefig(output_base + ".png", dpi=300, bbox_inches="tight")
     fig.savefig(output_base + ".pdf", bbox_inches="tight")
     plt.close(fig)
@@ -7200,12 +6865,12 @@ def save_atlas(frame, output_base, group_column=None, top_n_groups=12):
     plot_recovery_patterns(axes[1, 1], frame)
     selected_group = choose_group_column(frame, group_column)
     plot_group_panel(axes[1, 2], frame, selected_group, top_n_groups)
-    add_shared_tier_legend(fig, anchor_x=0.81, anchor_y=0.78)
+    add_shared_tier_legend(fig, anchor_x=0.88, anchor_y=0.78)
 
-    add_qscore_colorbar(fig, component_scatter, cax_rect=[0.85, 0.22, 0.018, 0.34])
+    add_qscore_colorbar(fig, component_scatter, cax_rect=[0.91, 0.22, 0.018, 0.34])
 
     fig.suptitle("Genome Quality Atlas", fontsize=18, y=0.99)
-    apply_tight_layout(fig, rect=[0, 0, 0.68, 0.97])
+    apply_tight_layout(fig, rect=[0, 0, 0.87, 0.97])
     save_figure(fig, output_base + "_atlas")
 
 
@@ -7234,7 +6899,7 @@ def main():
     overall_summary.to_csv(output_base + "_summary.tsv", sep="\t", index=False)
     feature_rates.to_csv(output_base + "_feature_recovery.tsv", sep="\t", index=False)
 
-    stats_df = run_nonparametric_test(annotated, args.group_column)
+    stats_df = run_nonparametric_test(annotated, args.group_column, args.sample_column)
     if group_summary is not None:
         group_summary.to_csv(output_base + "_group_summary.tsv", sep="\t", index=False)
     if stats_df is not None:

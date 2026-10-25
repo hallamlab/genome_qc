@@ -1,0 +1,66 @@
+name: Build and validate Conda package
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'genome_qc/**'
+      - '*.py'
+      - '*.nf'
+      - 'nextflow.config'
+      - 'pyproject.toml'
+      - 'envs/**'
+      - 'conda_recipe/**'
+      - 'tests/test_workflow_integration.py'
+      - 'tests/tool_contract_fixture.py'
+      - 'scripts/prepare_conda_recipe.py'
+      - '.github/workflows/conda.yml'
+permissions:
+  contents: read
+jobs:
+  conda:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: build-tools
+          create-args: >-
+            python=3.11 conda-build conda-index pyyaml
+            -c conda-forge
+      - name: Prepare allow-listed source and recipe
+        run: python scripts/prepare_conda_recipe.py --output dist/conda-source
+      - name: Build package and test installed CLI
+        run: conda build dist/conda-source/recipe --override-channels -c conda-forge -c bioconda --no-anaconda-upload --output-folder dist/channel
+      - name: Install artifact into a clean environment
+        run: |
+          conda index dist/channel
+          micromamba create -y -p "$RUNNER_TEMP/genome-qc-test" --override-channels --strict-channel-priority \
+            -c "file://$PWD/dist/channel" -c conda-forge -c bioconda genome-qc seqkit blast
+      - name: Validate packaged workflow orchestration
+        env:
+          GQC_NF_INTEGRATION: '1'
+          OPENBLAS_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        run: |
+          export GQC_TEST_RUNTIME="$RUNNER_TEMP/genome-qc-test/share/genome_qc"
+          cd "$RUNNER_TEMP"
+          micromamba run -p "$RUNNER_TEMP/genome-qc-test" python -m unittest discover \
+            -s "$GITHUB_WORKSPACE/tests" -p test_workflow_integration.py -v
+      - name: Record artifact checksums
+        run: |
+          cd dist/channel/linux-64
+          sha256sum genome-qc-*.conda > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: genome-qc-conda
+          path: |
+            dist/channel/linux-64/genome-qc-*.conda
+            dist/channel/linux-64/SHA256SUMS
+            dist/conda-source/source-provenance.json
+          if-no-files-found: error

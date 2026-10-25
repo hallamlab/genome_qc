@@ -2,7 +2,6 @@ name: genome_qc_genome_quality_atlas
 channels:
   - conda-forge
   - bioconda
-  - defaults
 dependencies:
   - python=3.10
   - pandas
@@ -10,3 +9,5 @@ dependencies:
   - matplotlib
   - seaborn
   - scipy
+  - fastani
+  - statsmodels

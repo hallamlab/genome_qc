@@ -1,13 +1,11 @@
 nextflow.enable.dsl=2
+params.reference_cpus = params.reference_cpus ?: 1
+params.compact_results = params.compact_results ?: false
 
 params.fasta_dir        = params.fasta_dir        ?: "${projectDir}/test/fasta"
 params.working_dir      = params.working_dir      ?: "${projectDir}/results_nextflow"
 params.filter_size      = params.filter_size      ?: ""
-params.min_genome_size  = params.min_genome_size  ?: 0
-params.max_genome_size  = params.max_genome_size  ?: 999999999
-params.completeness     = params.completeness     ?: 50
-params.contamination    = params.contamination    ?: 5
-params.qscore_min       = params.qscore_min       ?: 50
+// Final acceptance criteria are opt-in (null defaults in nextflow.config).
 params.checkm_cpus      = params.checkm_cpus      ?: 1
 params.checkm_batch_size = params.checkm_batch_size ?: 1
 params.checkm_max_forks = params.checkm_max_forks ?: 1
@@ -32,7 +30,7 @@ params.atlas_ani_genome_dir = params.atlas_ani_genome_dir ?: ""
 params.atlas_ani_fasta_column = params.atlas_ani_fasta_column ?: ""
 params.atlas_ani_fasta_exts = params.atlas_ani_fasta_exts ?: ".fasta,.fa,.fna,.fasta.gz,.fa.gz,.fna.gz"
 params.atlas_ani_threshold = params.atlas_ani_threshold ?: 95.0
-params.atlas_ani_af_threshold = params.atlas_ani_af_threshold ?: 0.5
+params.atlas_ani_af_threshold = (params.atlas_ani_af_threshold == null) ? 0.5 : params.atlas_ani_af_threshold
 params.atlas_ani_threads = params.atlas_ani_threads ?: 1
 params.atlas_ani_top_overlaps = params.atlas_ani_top_overlaps ?: 15
 params.atlas_cpus       = params.atlas_cpus       ?: params.atlas_ani_threads
@@ -43,9 +41,22 @@ params.ref_dir          = params.ref_dir          ?: ""
 params.checkm_data_path = params.checkm_data_path ?: ""
 params.gtdbtk_data_path = params.gtdbtk_data_path ?: ""
 params.gunc_db          = params.gunc_db          ?: ""
-params.gtdbtk_package_url = params.gtdbtk_package_url ?: "https://data.gtdb.ecogenomic.org/releases/release220/220.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r220_data.tar.gz"
+params.gtdbtk_package_url = params.gtdbtk_package_url ?: "https://data.gtdb.ecogenomic.org/releases/release226/226.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r226_data.tar.gz"
 params.debug            = params.debug            ?: false
 
+
+// Nextflow hashes task scripts, inputs and environments. Also hash external
+// Python helpers used by a task, including their local imports. Controller-only
+// changes must not invalidate unrelated biological tasks.
+def helperDigest(names) {
+    def digest = java.security.MessageDigest.getInstance('SHA-256')
+    names.toSorted().each { name ->
+        digest.update(name.getBytes('UTF-8'))
+        def helper = new File(projectDir.toString(), name)
+        digest.update(helper.exists() ? helper.bytes : 'absent'.getBytes('UTF-8'))
+    }
+    return digest.digest().encodeHex().toString()
+}
 
 def resolveAbsolutePath(pathString) {
     if (pathString == null) {
@@ -72,7 +83,6 @@ def gtdbtkDbLooksValid(dbPath) {
     }
     return new File(root, "VERSION_CONFIG").exists() ||
            new File(root, "metadata/metadata.txt").exists() ||
-           new File(root, "mrca_red/gtdbtk_r220_bac120.tsv").exists() ||
            new File(root, "mrca_red/gtdbtk_r226_bac120.tsv").exists()
 }
 
@@ -146,12 +156,58 @@ def filterSizes() {
     return fs.tokenize(' ')
 }
 
+params.helper_qscore = helperDigest(['calc_qscore.py'])
+params.helper_compare_barrnap = helperDigest(['compare_barrnap.py'])
+params.helper_dedupe = helperDigest(['dedupe_genomes.py'])
+params.helper_trnascan_parse = helperDigest(['trnascan_parse.py'])
+params.helper_setup_gtdbtk_db = helperDigest(['database_install.py'])
+params.helper_setup_gunc_db = helperDigest(['database_install.py'])
+params.helper_setup_checkm_db = helperDigest(['database_install.py'])
+params.helper_merge_master = helperDigest(['merge_master.py', 'assessment_summary.py', 'merge_gunc_batches.py', 'genome_quality_atlas.py', 'genome_set_stats.py', 'gunc_method_stats.py'])
+params.helper_genome_quality_atlas = helperDigest(['genome_quality_atlas.py', 'genome_set_stats.py', 'gunc_method_stats.py', 'scripts/genome_quality_category_lollipop_panel.py'])
+params.helper_compact = params.compact_results ? helperDigest(['compact_task.py']) : 'unused'
+
+params.helper_assessment = helperDigest(['assessment_task.py'])
+params.helper_merge_gunc = helperDigest(['merge_gunc_batches.py'])
+// Reuse successful tool tasks; retry only recorded failed assessments on resume.
+def assessmentToken(folder, name) {
+    def receipt = new File("${params.working_dir}/${folder}/${name}.assessment.json")
+    if (!receipt.exists()) return '0'
+    def prior = new groovy.json.JsonSlurper().parse(receipt)
+    def token = prior.retry_token ?: '0'
+    return prior.status == 'completed' ? token : (token.toInteger() + 1).toString()
+}
+
+// Longest-input-first scheduling balances estimated sequence work, not just counts.
+// Every group is capped; stable ordering makes membership reproducible on resume.
+def balancedBatches(inputs, maximum, parallel) {
+    def files = normalizeToList(inputs)
+    def weights = [:]
+    files.each { weights[it] = it.size() }
+    files = files.toSorted { a, b -> (weights[b] <=> weights[a]) ?: (a.name <=> b.name) }
+    if (!files) return []
+    def cap = Math.max(1, Math.min(1000, maximum as Integer))
+    def count = Math.min(files.size(), Math.max((Math.ceil(files.size() / (cap as Double)) as Integer), parallel as Integer))
+    def bins = (0..<count).collect { [index: it, bytes: 0L, files: []] }
+    files.each { f ->
+        def bin = bins.findAll { it.files.size() < cap }.min { a, b -> (a.bytes <=> b.bytes) ?: (a.files.size() <=> b.files.size()) ?: (a.index <=> b.index) }
+        bin.files.add(f)
+        bin.bytes += weights[f]
+    }
+    return bins.findAll { it.files }.collect { it.files.toSorted { a, b -> a.name <=> b.name } }
+}
+def batchId(files) {
+    return java.security.MessageDigest.getInstance('MD5').digest(files.collect { it.name }.join('|').getBytes('UTF-8')).encodeHex().toString().substring(0, 12)
+}
+
 process FILTER_FASTA {
     tag "${id}.${size}"
     cpus 1
     maxForks params.max_forks
     conda "${projectDir}/envs/seqkit.yaml"
     publishDir "${params.working_dir}/genomes_filtered", mode: 'copy', overwrite: true
+
+    errorStrategy 'ignore'
 
     input:
     tuple val(id), val(size), path(fasta)
@@ -162,7 +218,7 @@ process FILTER_FASTA {
     script:
     def min_len = (size == 'full') ? 0 : size
     """
-    seqkit seq -g -m ${min_len} -o ${id}.${size}.fasta ${fasta}
+    seqkit seq -j ${task.cpus} -g -m ${min_len} -o ${id}.${size}.fasta ${fasta}
     """
 }
 
@@ -173,6 +229,8 @@ process SEQKIT_STAT {
     conda "${projectDir}/envs/seqkit.yaml"
     publishDir "${params.working_dir}/seqkit/individual", mode: 'copy', overwrite: true
 
+    errorStrategy 'ignore'
+
     input:
     tuple val(id), val(size), path(fasta)
 
@@ -181,7 +239,7 @@ process SEQKIT_STAT {
 
     script:
     """
-    seqkit stat -a -T -o ${id}.${size}.seqkit.tsv ${fasta}
+    seqkit stat -j ${task.cpus} -a -T -o ${id}.${size}.seqkit.tsv ${fasta}
     """
 }
 
@@ -193,20 +251,15 @@ process PRUNE_FASTA {
     publishDir "${params.working_dir}/genomes_pruned", mode: 'copy', overwrite: true
 
     input:
-    tuple val(id), val(size), path(fasta), path(stat)
+    tuple val(id), val(size), path(fasta, stageAs: "input.fasta")
 
     output:
     tuple val(id), val(size), path("${id}.${size}.fasta"), optional: true, emit: pruned
 
     script:
     """
-    sum_col=\$(head -n1 ${stat} | tr '\t' '\n' | nl -ba | awk '\$2=="sum_len"{print \$1}')
-    if [ -z "\$sum_col" ]; then
-      echo "sum_len column not found in ${stat}" >&2
-      exit 1
-    fi
-    sum_len=\$(awk -v c=\$sum_col 'NR==2{print \$c}' ${stat})
-    if [ -n "\$sum_len" ] && [ "\$sum_len" -ge ${params.min_genome_size} ] && [ "\$sum_len" -le ${params.max_genome_size} ]; then
+    sum_len=\$(awk '!/^>/ {gsub(/[[:space:]]/, ""); n+=length(\$0)} END {print n+0}' ${fasta})
+    if [ "\$sum_len" -gt 0 ]; then
       if [ "\$(readlink -f ${fasta})" != "\$(readlink -f ${id}.${size}.fasta)" ]; then
         cp -f ${fasta} ${id}.${size}.fasta
       fi
@@ -227,7 +280,11 @@ process COMBINE_SEQKIT_STATS {
 
     script:
     """
-    head -n1 ${stats[0]} > seqkit_stats.tsv
+    if [ -z "${stats}" ]; then
+      printf 'file\tnum_seqs\tsum_len\tmin_len\tavg_len\tmax_len\tN50\n' > seqkit_stats.tsv
+      exit 0
+    fi
+    head -n1 ${stats ? stats[0] : '/dev/null'} > seqkit_stats.tsv
     for f in ${stats}; do
       tail -n +2 \$f >> seqkit_stats.tsv
     done
@@ -241,14 +298,23 @@ process CHECKM_SINGLE {
     conda "${projectDir}/envs/checkm.yaml"
     publishDir "${params.working_dir}/checkm/individual", mode: 'copy', overwrite: true
 
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    maxRetries 1
+
     input:
-    tuple val(size), val(batch_id), path(fastas), val(checkm_data_path)
+    tuple val(size), val(batch_id), path(fastas), val(checkm_data_path), val(retryToken)
 
     output:
     path("${size}.batch${batch_id}.checkm.tsv"), emit: tsv
 
+    path("${size}.batch${batch_id}.assessment.json"), emit: assessment
+    path("${size}.batch${batch_id}.assessment.log"), emit: assessment_log
+
     script:
     """
+    # Assessment runner: ${params.helper_assessment}; retry token: ${retryToken}
+    cat > assessment.sh <<'ASSESSMENT_SCRIPT'
+
     mkdir -p bins out
     for f in ${fastas}; do
       cp "\$f" bins/
@@ -259,6 +325,9 @@ process CHECKM_SINGLE {
       export CHECKM_DATA_PATH="${checkm_data_path}"
     fi
     checkm lineage_wf bins out -f ${size}.batch${batch_id}.checkm.tsv --tab_table -x fasta -t ${task.cpus} --pplacer_threads ${task.cpus}
+ASSESSMENT_SCRIPT
+    python ${projectDir}/assessment_task.py checkm ${size}.batch${batch_id}.checkm.tsv ${size}.batch${batch_id}.assessment.json assessment.sh --token ${retryToken} --inputs ${fastas}
+
     """
 }
 
@@ -272,15 +341,22 @@ process COMBINE_CHECKM {
 
     output:
     path("checkm_output.tsv"), emit: full
-    path("checkm_output_HPMQ.tsv"), emit: hpmq
 
     script:
     """
-    head -n1 ${tsvs[0]} > checkm_output.tsv
-    for f in ${tsvs}; do
-      tail -n +2 \$f >> checkm_output.tsv
-    done
-    awk -F '\t' 'NR==1 || (\$12 >= ${params.completeness} && \$13 <= ${params.contamination})' checkm_output.tsv > checkm_output_HPMQ.tsv
+    python - ${tsvs} <<'PYTHON'
+import csv, sys
+columns = ['Bin Id', 'Completeness', 'Contamination', 'Strain heterogeneity']
+rows = []
+for name in sys.argv[1:]:
+    with open(name) as handle:
+        reader = csv.DictReader(handle, delimiter='\t')
+        columns.extend(c for c in (reader.fieldnames or []) if c not in columns)
+        rows.extend(reader)
+with open('checkm_output.tsv', 'w') as out:
+    writer = csv.DictWriter(out, fieldnames=columns, delimiter='\t')
+    writer.writeheader(); writer.writerows(rows)
+PYTHON
     """
 }
 
@@ -290,43 +366,21 @@ process QSCORE {
     publishDir "${params.working_dir}/qscore", mode: 'copy', overwrite: true
 
     input:
-    path(checkm_hpmq)
+    path(checkm_full)
     path(seqkit_stats)
+    path(expected_fastas)
 
     output:
-    path("qscore_mqhp.tsv"), emit: mqhp
     path("qscore_all.tsv"), emit: all
 
     script:
     """
+    # Helper implementation: ${params.helper_qscore}
     mkdir -p workdir/checkm workdir/seqkit workdir/qscore
-    cp ${checkm_hpmq} workdir/checkm/checkm_output_HPMQ.tsv
+    cp ${checkm_full} workdir/checkm/checkm_output.tsv
     cp ${seqkit_stats} workdir/seqkit/seqkit_stats.tsv
-    python ${projectDir}/calc_qscore.py workdir ${params.completeness} ${params.contamination} ${params.qscore_min}
-    cp workdir/qscore/qscore_mqhp.tsv .
+    python ${projectDir}/calc_qscore.py workdir ${expected_fastas}
     cp workdir/qscore/qscore_all.tsv .
-    """
-}
-
-process SUBSET_GENOMES {
-    tag "${id}.${size}"
-    cpus 1
-    maxForks params.max_forks
-    conda "${projectDir}/envs/utils.yaml"
-    publishDir "${params.working_dir}/genomes_subset", mode: 'copy', overwrite: true
-
-    input:
-    tuple val(id), val(size), path(fasta, stageAs: 'input.fasta'), path(qscore_mqhp)
-
-    output:
-    path("${id}.${size}.fasta"), optional: true, emit: subset
-
-    script:
-    """
-    target="${id}.${size}"
-    if awk -F '\t' -v target="\$target" 'NR > 1 && \$2 == target { found=1; exit } END { exit(found ? 0 : 1) }' ${qscore_mqhp}; then
-      cp ${fasta} ${id}.${size}.fasta
-    fi
     """
 }
 
@@ -336,28 +390,16 @@ process PREP_GTDBTK_BATCHES {
     publishDir "${params.working_dir}/manifests", mode: 'copy', overwrite: true
 
     input:
-    tuple val(subset_dir), val(batch_size)
+    tuple path(subset_fastas), val(batch_size)
 
     output:
     path("gtdbtk_batch_*.list"), emit: manifests
 
     script:
+    def groups = balancedBatches(subset_fastas, batch_size, params.gtdbtk_parallel_batches)
+    def commands = groups.collect { fs -> "printf '%s\\n' " + fs.collect { shellQuote(it.name) }.join(' ') + " > gtdbtk_batch_${batchId(fs)}.list" }.join('\n')
     """
-    mapfile -t files < <(find "${subset_dir}" -maxdepth 1 -type f -name '*.fasta' | sort)
-    if [ "\${#files[@]}" -eq 0 ]; then
-      echo "No subset FASTA files found in ${subset_dir}" >&2
-      exit 1
-    fi
-
-    idx=0
-    while [ "\$idx" -lt "\${#files[@]}" ]; do
-      batch=( "\${files[@]:idx:${batch_size}}" )
-      seed=\$(for f in "\${batch[@]}"; do basename "\$f" .fasta; done | paste -sd'|' -)
-      batch_id=\$(printf "%s" "\$seed" | md5sum | awk '{print substr(\$1,1,12)}')
-      manifest="gtdbtk_batch_\${batch_id}.list"
-      printf "%s\n" "\${batch[@]}" > "\$manifest"
-      idx=\$((idx + ${batch_size}))
-    done
+    ${commands}
     """
 }
 
@@ -368,14 +410,27 @@ process GTDBTK {
     conda "${projectDir}/envs/gtdbtk.yaml"
     publishDir "${params.working_dir}/gtdbtk/individual", mode: 'copy', overwrite: true
 
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    maxRetries 1
+
     input:
-    tuple val(batch_id), path(fasta_manifest), val(gtdbtk_data_path)
+    tuple val(batch_id), path(fasta_manifest), path(batch_fastas), val(gtdbtk_data_path), val(retryToken)
 
     output:
     path("gtdbtk_${batch_id}"), emit: outdir
 
+    path("gtdbtk_${batch_id}.assessment.json"), emit: assessment
+    path("gtdbtk_${batch_id}.assessment.log"), emit: assessment_log
+
     script:
+    def diskBacked = task.memory && task.memory.toMega() < 131072
+    def placementCpus = Math.min(8, task.cpus as Integer)
+    def placementArgs = diskBacked ? "--scratch_dir .gtdb-pplacer --pplacer_cpus ${placementCpus}" : ''
     """
+    # Assessment runner: ${params.helper_assessment}; retry token: ${retryToken}
+    cat > assessment.sh <<'ASSESSMENT_SCRIPT'
+
+    # Compact helper: ${params.helper_compact}
     mkdir -p genomes
     while IFS= read -r f; do
       [ -n "\$f" ] || continue
@@ -384,7 +439,13 @@ process GTDBTK {
     if [ -n "${gtdbtk_data_path}" ]; then
       export GTDBTK_DATA_PATH="${gtdbtk_data_path}"
     fi
-    gtdbtk classify_wf --skip_ani_screen --genome_dir genomes --out_dir gtdbtk_${batch_id} --cpus ${task.cpus} -x fasta
+    echo "GTDB placement: ${diskBacked ? 'disk-backed, pplacer CPUs=' + placementCpus : 'in-memory'}; memory=${task.memory}"
+    mkdir -p .gtdb-pplacer
+    trap 'rm -rf -- .gtdb-pplacer' EXIT
+    gtdbtk classify_wf ${placementArgs} --skip_ani_screen --genome_dir genomes --out_dir gtdbtk_${batch_id} --cpus ${task.cpus} -x fasta
+ASSESSMENT_SCRIPT
+    python ${projectDir}/assessment_task.py gtdbtk gtdbtk_${batch_id} gtdbtk_${batch_id}.assessment.json assessment.sh --token ${retryToken} --inputs ${batch_fastas}
+    ${params.compact_results ? "python " + projectDir + "/compact_task.py gtdbtk_" + batch_id : "true"}
     """
 }
 
@@ -471,20 +532,32 @@ process BARRNAP {
     conda "${projectDir}/envs/barrnap.yaml"
     publishDir "${params.working_dir}/barrnap", mode: 'copy', overwrite: true
 
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    maxRetries 1
+
     input:
-    tuple val(id), path(fasta), path(kingdom_map)
+    tuple val(id), path(fasta), path(kingdom_map), val(retryToken)
 
     output:
-    tuple val(id), path("${id}.rRNA.fasta"), path("${id}.rRNA.gff"), emit: rrna
+    tuple val(id), path("${id}.rRNA.fasta"), path("${id}.rRNA.gff"), path("${id}.rrna.assessment.json"), emit: rrna
+
+    path("${id}.rrna.assessment.json"), emit: assessment
+    path("${id}.rrna.assessment.log"), emit: assessment_log
 
     script:
     """
+    # Assessment runner: ${params.helper_assessment}; retry token: ${retryToken}
+    cat > assessment.sh <<'ASSESSMENT_SCRIPT'
+
     kingdom=\$(awk -v id="${id}" '(\$1==id){print \$2; exit}' ${kingdom_map})
     if [ -z "\$kingdom" ]; then
       kingdom="Bacteria"
     fi
     k=\$([ "\$kingdom" = "Archaea" ] && echo "arc" || echo "bac")
     barrnap --kingdom \${k} --threads ${task.cpus} --outseq ${id}.rRNA.fasta ${fasta} > ${id}.rRNA.gff
+ASSESSMENT_SCRIPT
+    python ${projectDir}/assessment_task.py rrna ${id}.rRNA.gff ${id}.rrna.assessment.json assessment.sh --token ${retryToken} --inputs ${fasta}
+
     """
 }
 
@@ -495,20 +568,32 @@ process BLAST_RRNA {
     conda "${projectDir}/envs/blast.yaml"
     publishDir "${params.working_dir}/barrnap", mode: 'copy', overwrite: true
 
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    maxRetries 1
+
     input:
-    tuple val(id), path(rrna_fasta), path(rrna_gff)
+    tuple val(id), path(rrna_fasta), path(rrna_gff), path(rrna_status), val(retryToken)
 
     output:
     path("${id}.blastout"), emit: blast
 
+    path("${id}.rrna_check.assessment.json"), emit: assessment
+    path("${id}.rrna_check.assessment.log"), emit: assessment_log
+
     script:
     """
+    # Assessment runner: ${params.helper_assessment}; retry token: ${retryToken}
+    cat > assessment.sh <<'ASSESSMENT_SCRIPT'
+
     if [ -s ${rrna_fasta} ]; then
       makeblastdb -in ${rrna_fasta} -dbtype nucl -out ${id}
       blastn -query ${rrna_fasta} -db ${id} -outfmt 6 -out ${id}.blastout -max_target_seqs 10
     else
       : > ${id}.blastout
     fi
+ASSESSMENT_SCRIPT
+    python ${projectDir}/assessment_task.py rrna_check ${id}.blastout ${id}.rrna_check.assessment.json assessment.sh --token ${retryToken} --inputs ${id}.fasta --upstream ${rrna_status}
+
     """
 }
 
@@ -530,6 +615,7 @@ process COMPARE_BARRNAP {
 
     script:
     """
+    # Helper implementation: ${params.helper_compare_barrnap}
     files=( ${blastouts} )
     if [ "\${#files[@]}" -eq 0 ]; then
       echo -e "Bin Id\tpident\tbitscore\tpass_BARRNAP" > barrnap_blast_pass.tsv
@@ -548,35 +634,24 @@ process DEDUPE {
     publishDir "${params.working_dir}/dedupe", mode: 'copy', overwrite: true
 
     input:
-    path(qscore_mqhp)
+    path(qscore_all)
     path(barrnap_pass)
     path(gtdbtk_dir)
 
     output:
-    path("dedupe_mqhp.tsv"), emit: mqhp
+    path("dedupe_assessed.tsv"), emit: assessed
     path("dedupe_all.tsv"), emit: all
-    path("total_mqhp.tsv"), emit: total
 
     script:
     """
-    if [ \$(tail -n +2 ${qscore_mqhp} | wc -l) -eq 0 ]; then
-      echo -e "Genome_Id\tBin Id\tclassification\tCompleteness\tContamination\tStrain heterogeneity\tnum_seqs\tsum_len\tmin_len\tavg_len\tmax_len\tN50\tqscore\tpass_BARRNAP" > dedupe_mqhp.tsv
-      echo -e "Genome_Id\tBin Id\tclassification\tCompleteness\tContamination\tStrain heterogeneity\tnum_seqs\tsum_len\tmin_len\tavg_len\tmax_len\tN50\tqscore\tpass_BARRNAP" > dedupe_all.tsv
-      echo -e "Genome_Id\tBin Id\tclassification\tCompleteness\tContamination\tStrain heterogeneity\tnum_seqs\tsum_len\tmin_len\tavg_len\tmax_len\tN50\tqscore\tpass_BARRNAP" > total_mqhp.tsv
-      exit 0
-    fi
-    if ! ls ${gtdbtk_dir}/classify/*.summary.tsv >/dev/null 2>&1; then
-      echo "No GTDB-Tk summary files found in ${gtdbtk_dir}/classify" >&2
-      exit 1
-    fi
+    # Helper implementation: ${params.helper_dedupe}
     mkdir -p workdir/qscore workdir/barrnap workdir/gtdbtk/classify workdir/dedupe
-    cp ${qscore_mqhp} workdir/qscore/qscore_mqhp.tsv
+    cp ${qscore_all} workdir/qscore/qscore_all.tsv
     cp ${barrnap_pass} workdir/barrnap/barrnap_blast_pass.tsv
     cp -r ${gtdbtk_dir}/classify/*.summary.tsv workdir/gtdbtk/classify/ 2>/dev/null || true
-    python ${projectDir}/dedupe_genomes.py workdir ${params.completeness} ${params.contamination} ${params.qscore_min}
-    cp workdir/dedupe/dedupe_mqhp.tsv .
+    python ${projectDir}/dedupe_genomes.py workdir
+    cp workdir/dedupe/dedupe_assessed.tsv .
     cp workdir/dedupe/dedupe_all.tsv .
-    cp workdir/dedupe/total_mqhp.tsv .
     """
 }
 
@@ -586,8 +661,8 @@ process CP_DEDUPE {
     publishDir "${params.working_dir}/dedupe/fasta", mode: 'copy', overwrite: true
 
     input:
-    path(dedupe_mqhp)
-    val(subset_dir)
+    path(dedupe_assessed)
+    path(subset_fastas, stageAs: "subset/*")
 
     output:
     path("*.fasta"), optional: true, emit: fasta
@@ -603,11 +678,11 @@ process CP_DEDUPE {
       [ -n "\$f" ] || continue
       base=\$(basename "\$f" .fasta)
       subset_map["\$base"]="\$f"
-    done < <(find "${subset_dir}" -maxdepth 1 -type f -name '*.fasta' | sort)
+    done < <(printf "%s\\n" ${subset_fastas})
     while read -r g; do
       [ -z "\$g" ] && continue
       requested=\$((requested + 1))
-      found="\${subset_map[\$g]}"
+      found="\${subset_map[\$g]:-}"
       dest="\${g}.fasta"
       if [ -n "\$found" ]; then
         cp "\$found" "\$dest"
@@ -616,9 +691,9 @@ process CP_DEDUPE {
       else
         printf "%s\\t\\tmissing\\n" "\$g" >> cp_dedupe_audit.tsv
       fi
-    done < <(tail -n +2 ${dedupe_mqhp} | cut -f2)
-    if [ "\$requested" -gt 0 ] && [ "\$copied" -eq 0 ]; then
-      echo "CP_DEDUPE found zero matching FASTA files under ${subset_dir}" >&2
+    done < <(tail -n +2 ${dedupe_assessed} | cut -f2)
+    if [ "\$requested" -gt 0 ] && [ "\$copied" -ne "\$requested" ]; then
+      echo "CP_DEDUPE could not resolve every requested genome" >&2
       exit 1
     fi
     """
@@ -629,14 +704,14 @@ process PARSE_DEDUPE_KINGDOM {
     conda "${projectDir}/envs/utils.yaml"
 
     input:
-    path(dedupe_mqhp)
+    path(dedupe_assessed)
 
     output:
     path("dedupe_kingdom.tsv"), emit: mapping
 
     script:
     """
-    awk -F '\t' 'NR==1{next} { if (\$3 ~ /Archaea/) print \$2"\tArchaea"; else if (\$3 ~ /Bacteria/) print \$2"\tBacteria"; }' ${dedupe_mqhp} > dedupe_kingdom.tsv
+    awk -F '\t' 'NR==1{next} { if (\$3 ~ /Archaea/) print \$2"\tArchaea"; else if (\$3 ~ /Bacteria/) print \$2"\tBacteria"; else print \$2"\tUnknown"; }' ${dedupe_assessed} > dedupe_kingdom.tsv
     """
 }
 
@@ -647,15 +722,24 @@ process TRNASCAN {
     conda "${projectDir}/envs/trnascan.yaml"
     publishDir "${params.working_dir}/trnascan", mode: 'copy', overwrite: true
 
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    maxRetries 1
+
     input:
-    tuple val(id), val(kingdom), path(fasta)
+    tuple val(id), val(kingdom), path(fasta), val(retryToken)
 
     output:
     path("${id}.gff"), emit: gff
 
+    path("${id}.trna.assessment.json"), emit: assessment
+    path("${id}.trna.assessment.log"), emit: assessment_log
+
     script:
-    def flag = (kingdom == 'Archaea') ? '-A' : '-B'
+    def flag = kingdom == 'Archaea' ? '-A' : (kingdom == 'Bacteria' ? '-B' : (kingdom == 'Eukaryota' ? '-E' : '-G'))
     """
+    # Assessment runner: ${params.helper_assessment}; retry token: ${retryToken}
+    cat > assessment.sh <<'ASSESSMENT_SCRIPT'
+
     tRNAscan-SE -q -Q ${flag} \
       -o ${id}.output.txt \
       -m ${id}.stats.txt \
@@ -664,6 +748,9 @@ process TRNASCAN {
       -a ${id}.trna.fasta \
       -l ${id}.log \
       --thread ${task.cpus} ${fasta}
+ASSESSMENT_SCRIPT
+    python ${projectDir}/assessment_task.py trna ${id}.gff ${id}.trna.assessment.json assessment.sh --token ${retryToken} --inputs ${fasta}
+
     """
 }
 
@@ -681,6 +768,7 @@ process TRNASCAN_PARSE {
 
     script:
     """
+    # Helper implementation: ${params.helper_trnascan_parse}
     files=( ${gffs} )
     if [ "\${#files[@]}" -eq 0 ]; then
       echo -e "genome_id\ttrna_total\ttrna_unique" > trnascan_trna_counts.tsv
@@ -696,33 +784,61 @@ process GUNC {
     conda "${projectDir}/envs/gunc.yaml"
     publishDir "${params.working_dir}/gunc", mode: 'copy', overwrite: true
 
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    maxRetries 1
+
     input:
-    tuple val(dedupe_fasta_dir), val(gunc_db)
+    tuple val(batch_id), path(selected_fastas), val(gunc_db), val(retryToken)
 
     output:
-    path("gunc"), emit: outdir
+    path("gunc_${batch_id}"), emit: outdir
+
+    path("gunc_${batch_id}.assessment.json"), emit: assessment
+    path("gunc_${batch_id}.assessment.log"), emit: assessment_log
 
     script:
     """
+    # Assessment runner: ${params.helper_assessment}; retry token: ${retryToken}
+    cat > assessment.sh <<'ASSESSMENT_SCRIPT'
+
+    # Compact helper: ${params.helper_compact}
     if [ -z "${gunc_db}" ]; then
       echo "params.gunc_db is required" >&2
       exit 1
     fi
-    mkdir -p gunc dedupe_fasta
-    mapfile -t fastas < <(find "${dedupe_fasta_dir}" -maxdepth 1 -type f -name '*.fasta' | sort)
+    mkdir -p gunc_${batch_id} dedupe_fasta
+    fastas=( ${selected_fastas} )
     if [ "\${#fastas[@]}" -eq 0 ]; then
-      echo "No deduped FASTA files found under ${dedupe_fasta_dir}; skipping."
+      echo "No selected FASTA files supplied; skipping."
       exit 0
     fi
     for f in "\${fastas[@]}"; do
       cp "\$f" dedupe_fasta/
     done
-    gunc run -r ${gunc_db} -d dedupe_fasta -o gunc -e .fasta -t ${task.cpus}
+    gunc run -r ${gunc_db} -d dedupe_fasta -o gunc_${batch_id} -e .fasta -t ${task.cpus}
+ASSESSMENT_SCRIPT
+    python ${projectDir}/assessment_task.py gunc gunc_${batch_id} gunc_${batch_id}.assessment.json assessment.sh --token ${retryToken} --inputs ${selected_fastas}
+    ${params.compact_results ? "python " + projectDir + "/compact_task.py gunc_" + batch_id : "true"}
+    """
+}
+
+process COMBINE_GUNC {
+    cpus 1
+    conda "${projectDir}/envs/utils.yaml"
+    publishDir "${params.working_dir}/gunc", mode: 'copy', overwrite: true
+    input:
+    path(directories)
+    output:
+    path("gunc"), emit: outdir
+    script:
+    """
+    # Merge helper: ${params.helper_merge_gunc}
+    python ${projectDir}/merge_gunc_batches.py gunc ${directories}
     """
 }
 
 process SETUP_GTDBTK_DB {
-    cpus 1
+    cpus params.reference_cpus
     conda "${projectDir}/envs/reference_setup.yaml"
     publishDir "${params.working_dir}/references", mode: 'copy', overwrite: true
 
@@ -734,43 +850,9 @@ process SETUP_GTDBTK_DB {
 
     script:
     """
-    if [ -n "${ref_dir}" ]; then
-      mkdir -p "${ref_dir}"
-    fi
-    if [ ! -s "${gtdbtk_data_path}/mrca_red/gtdbtk_r220_bac120.tsv" ] && [ ! -s "${gtdbtk_data_path}/VERSION_CONFIG" ] && [ ! -s "${gtdbtk_data_path}/metadata/metadata.txt" ]; then
-      if [ "${allow_bootstrap}" = "true" ]; then
-        archive="${ref_dir}/gtdbtk_package.tar.gz"
-        tmpdir=\$(mktemp -d)
-        if command -v wget >/dev/null 2>&1; then
-          wget --no-check-certificate -O "${archive}" "${gtdbtk_package_url}"
-        else
-          curl -L -o "${archive}" "${gtdbtk_package_url}"
-        fi
-        tar -xzf "${archive}" -C "${tmpdir}"
-        if [ -f "${tmpdir}/release220/VERSION_CONFIG" ]; then
-          rm -rf "${gtdbtk_data_path}"
-          mkdir -p "${gtdbtk_data_path}"
-          cp -r "${tmpdir}/release220/." "${gtdbtk_data_path}/"
-        else
-          rm -rf "${gtdbtk_data_path}"
-          mkdir -p "${gtdbtk_data_path}"
-          tar -xzf "${archive}" -C "${gtdbtk_data_path}" --strip-components 1
-        fi
-        rm -rf "${tmpdir}"
-      else
-        echo "GTDB-Tk data path is missing or incomplete: ${gtdbtk_data_path}" >&2
-        exit 1
-      fi
-    fi
-    if [ ! -f "${gtdbtk_data_path}/VERSION_CONFIG" ] && [ ! -f "${gtdbtk_data_path}/metadata/metadata.txt" ] && [ ! -f "${gtdbtk_data_path}/mrca_red/gtdbtk_r220_bac120.tsv" ]; then
-      echo "GTDB-Tk data were not installed correctly under ${gtdbtk_data_path}" >&2
-      exit 1
-    fi
-    {
-      echo -e "reference\tpath\tstatus"
-      echo -e "gtdbtk\t${gtdbtk_data_path}\tready"
-      echo -e "source_url\t${gtdbtk_package_url}\tused"
-    } > gtdbtk_reference_ready.tsv
+    # Helper implementation: ${params.helper_setup_gtdbtk_db}
+    python ${projectDir}/database_install.py gtdbtk "${gtdbtk_data_path}" ${task.cpus}
+    printf 'reference\\tpath\\tstatus\\ngtdbtk\\t${gtdbtk_data_path}\\tready\\n' > gtdbtk_reference_ready.tsv
     """
 }
 
@@ -787,32 +869,15 @@ process SETUP_GUNC_DB {
 
     script:
     """
-    if [ -n "${ref_dir}" ]; then
-      mkdir -p "${ref_dir}"
-    fi
-    if [ ! -s "${gunc_db}" ]; then
-      if [ "${allow_bootstrap}" = "true" ]; then
-        mkdir -p "\$(dirname "${gunc_db}")"
-        gunc download_db "\$(dirname "${gunc_db}")"
-      else
-        echo "GUNC database file is missing or empty: ${gunc_db}" >&2
-        exit 1
-      fi
-    fi
-    if [ ! -s "${gunc_db}" ]; then
-      echo "GUNC database was not installed correctly at ${gunc_db}" >&2
-      exit 1
-    fi
-    {
-      echo -e "reference\tpath\tstatus"
-      echo -e "gunc\t${gunc_db}\tready"
-    } > gunc_reference_ready.tsv
+    # Helper implementation: ${params.helper_setup_gunc_db}
+    python ${projectDir}/database_install.py gunc "${new File(gunc_db.toString()).getParent()}"
+    printf 'reference\\tpath\\tstatus\\ngunc\\t${new File(gunc_db.toString()).getParent()}\\tready\\n' > gunc_reference_ready.tsv
     """
 }
 
 process SETUP_CHECKM_DB {
-    cpus 1
-    conda "${projectDir}/envs/checkm.yaml"
+    cpus params.reference_cpus
+    conda "${projectDir}/envs/reference_setup.yaml"
     publishDir "${params.working_dir}/references", mode: 'copy', overwrite: true
 
     input:
@@ -823,29 +888,9 @@ process SETUP_CHECKM_DB {
 
     script:
     """
-    if [ -n "${ref_dir}" ]; then
-      mkdir -p "${ref_dir}"
-    fi
-    export MPLCONFIGDIR="\$PWD/.mplconfig"
-    mkdir -p "\$MPLCONFIGDIR"
-    export CHECKM_DATA_PATH="${checkm_data_path}"
-    if [ ! -d "${checkm_data_path}" ] || [ -z "\$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 \\( -type d -o -type f \\) 2>/dev/null | head -n 1)" ]; then
-      if [ "${allow_bootstrap}" = "true" ]; then
-        mkdir -p "${checkm_data_path}"
-        checkm data download -p "${checkm_data_path}"
-      else
-        echo "CheckM data path is missing or empty: ${checkm_data_path}" >&2
-        exit 1
-      fi
-    fi
-    if [ -z "\$(find "${checkm_data_path}" -mindepth 1 -maxdepth 1 \\( -type d -o -type f \\) 2>/dev/null | head -n 1)" ]; then
-      echo "CheckM data were not installed correctly under ${checkm_data_path}" >&2
-      exit 1
-    fi
-    {
-      echo -e "reference\tpath\tstatus"
-      echo -e "checkm\t${checkm_data_path}\tready"
-    } > checkm_reference_ready.tsv
+    # Helper implementation: ${params.helper_setup_checkm_db}
+    python ${projectDir}/database_install.py checkm "${checkm_data_path}" ${task.cpus}
+    printf 'reference\\tpath\\tstatus\\ncheckm\\t${checkm_data_path}\\tready\\n' > checkm_reference_ready.tsv
     """
 }
 
@@ -855,12 +900,17 @@ process MERGE_MASTER {
     publishDir "${params.working_dir}", mode: 'copy', overwrite: true
 
     input:
-    path(dedupe_mqhp)
+    path(dedupe_assessed)
     path(barrnap_subunits)
     path(trna_counts)
+    path(gunc_dir)
+    path(assessment_receipts)
 
     output:
     path("Master_genome_QC.tsv"), emit: master
+    path("Selected_genome_QC.tsv"), emit: selected
+    path("Assessment_status.tsv"), emit: assessment_status
+    path("merge_work/gunc"), emit: gunc_data
     path("Master_genome_QC_All.pdf"), emit: plot1
     path("Master_genome_QC_All.png"), emit: plot2
     path("Master_genome_QC_MQHQ_16S.pdf"), emit: plot3
@@ -870,12 +920,18 @@ process MERGE_MASTER {
 
     script:
     """
-    mkdir -p merge_work/barrnap merge_work/dedupe merge_work/trnascan
+    # Helper implementation: ${params.helper_merge_master}
+    mkdir -p merge_work/barrnap merge_work/dedupe merge_work/trnascan merge_work/assessments
+    for f in ${assessment_receipts}; do cp "\$f" merge_work/assessments/; done
     cp ${barrnap_subunits} merge_work/barrnap/barrnap_subunit_counts.tsv
-    cp ${dedupe_mqhp} merge_work/dedupe/dedupe_mqhp.tsv
+    cp ${dedupe_assessed} merge_work/dedupe/dedupe_assessed.tsv
     cp ${trna_counts} merge_work/trnascan/trnascan_trna_counts.tsv
-    python ${projectDir}/merge_master.py merge_work
+    mkdir -p merge_work/gunc
+    python ${projectDir}/merge_gunc_batches.py merge_work/gunc ${gunc_dir}
+    python ${projectDir}/merge_master.py merge_work ${params.min_genome_size} ${params.max_genome_size} ${params.completeness} ${params.contamination} ${params.qscore_min} ${params.require_rrna_consistency}
     cp merge_work/Master_genome_QC.tsv .
+    cp merge_work/Selected_genome_QC.tsv .
+    cp merge_work/Assessment_status.tsv .
     cp merge_work/Master_genome_QC_All.pdf .
     cp merge_work/Master_genome_QC_All.png .
     cp merge_work/Master_genome_QC_MQHQ_16S.pdf .
@@ -894,6 +950,7 @@ process GENOME_QUALITY_ATLAS {
     input:
     path(master_tsv)
     path(gunc_dir)
+    path(atlas_fastas)
 
     output:
     path("genome_quality_atlas"), emit: outdir
@@ -911,7 +968,7 @@ process GENOME_QUALITY_ATLAS {
     def atlasAniResults = resolveAbsolutePath(params.atlas_ani_results)
     def atlasAniGenomeDir = resolveAbsolutePath(params.atlas_ani_genome_dir)
     if (!atlasAniGenomeDir) {
-        atlasAniGenomeDir = new File(params.working_dir.toString(), "dedupe/fasta").getAbsolutePath()
+        atlasAniGenomeDir = "atlas_genomes"
     }
     def atlasAniFastaColumn = params.atlas_ani_fasta_column?.toString()?.trim()
     def atlasAniFastaExts = params.atlas_ani_fasta_exts?.toString()?.trim()
@@ -922,7 +979,10 @@ process GENOME_QUALITY_ATLAS {
     def compareArgLines = atlasCompareColumns.collect { "    cmd+=( --compare-column ${shellQuote(it)} )" }.join("\n")
     def aniCompareArgLines = atlasAniCompareColumns.collect { "    cmd+=( --ani-compare-column ${shellQuote(it)} )" }.join("\n")
     """
+    # Helper implementation: ${params.helper_genome_quality_atlas}
     test -d ${gunc_dir}
+    mkdir -p atlas_genomes
+    for f in ${atlas_fastas}; do cp "\$f" atlas_genomes/; done
     cmd=(
       python ${projectDir}/genome_quality_atlas.py
       ${master_tsv}
@@ -952,7 +1012,7 @@ ${aniCompareArgLines}
     """
 }
 
-workflow {
+workflow COMPLETE {
     main:
         def resolvedRefDir = resolveAbsolutePath(params.ref_dir)
         def resolvedCheckmData = resolveAbsolutePath(params.checkm_data_path)
@@ -965,7 +1025,7 @@ workflow {
                 resolvedCheckmData = new File(resolvedRefDir, "checkm_data").getAbsolutePath()
             }
             if (!resolvedGTDBTK) {
-                resolvedGTDBTK = new File(resolvedRefDir, "gtdbtk_r220").getAbsolutePath()
+                resolvedGTDBTK = new File(resolvedRefDir, "gtdbtk_r226").getAbsolutePath()
             }
             if (!resolvedGuncDb) {
                 resolvedGuncDb = new File(new File(resolvedRefDir, "gunc_db"), "gunc_db_progenomes2.1.dmnd").getAbsolutePath()
@@ -1072,10 +1132,10 @@ workflow {
         stats_for_prune = stats.map { it }
         stats_for_combine = stats.map { it }
 
-        seqkit_stats_files = stats_for_combine.map { it[3] }.collect()
+        seqkit_stats_files = stats_for_combine.map { it[3] }.toSortedList()
         seqkit_combined = COMBINE_SEQKIT_STATS(seqkit_stats_files).stats
 
-        pruned = PRUNE_FASTA(stats_for_prune).pruned
+        pruned = PRUNE_FASTA(filtered_for_subset).pruned
 
         def checkmBatchSize = Math.max(1, params.checkm_batch_size as Integer)
         checkm_batches = pruned
@@ -1083,19 +1143,8 @@ workflow {
             .groupTuple()
             .flatMap { size, records ->
                 def out = []
-                def ordered = records.sort { a, b -> a[0].toString() <=> b[0].toString() }
-                def grouped = ordered.collate(checkmBatchSize)
-                for (group in grouped) {
-                    def fastas = group.collect { it[2] }
-                    def batchSeed = group.collect { it[0].toString() }.join("|")
-                    def batchId = java.security.MessageDigest
-                        .getInstance("MD5")
-                        .digest(batchSeed.getBytes("UTF-8"))
-                        .encodeHex()
-                        .toString()
-                        .substring(0, 12)
-                    out << tuple(size, batchId, fastas)
-                }
+                def grouped = balancedBatches(records.collect { it[2] }, checkmBatchSize, params.checkm_parallel_batches)
+                grouped.each { fastas -> out << tuple(size, batchId(fastas), fastas) }
                 return out
             }
 
@@ -1103,26 +1152,19 @@ workflow {
             checkm_batches.combine(checkm_ready).map { size, batch_id, fastas, ready -> tuple(size, batch_id, fastas, resolvedCheckmData) } :
             checkm_batches.map { size, batch_id, fastas -> tuple(size, batch_id, fastas, resolvedCheckmData) }
 
-        checkm = CHECKM_SINGLE(checkm_input).tsv
-        checkm_combined = COMBINE_CHECKM(checkm.collect())
+        checkm = CHECKM_SINGLE(checkm_input.map { row -> new ArrayList(row) + [assessmentToken('checkm/individual', "${row[0]}.batch${row[1]}")] }).tsv
+        checkm_combined = COMBINE_CHECKM(checkm.toSortedList())
 
-        qscore = QSCORE(checkm_combined.hpmq, seqkit_combined)
-        qscore_for_subset = qscore.mqhp.map { it }
-        qscore_for_dedupe = qscore.mqhp.map { it }
-
-        subset_input = filtered_for_subset
-            .combine(qscore_for_subset)
-            .map { id, size, fasta, qscore_file -> tuple(id, size, fasta, qscore_file) }
-
-        subset = SUBSET_GENOMES(subset_input).subset
+        qscore = QSCORE(checkm_combined.full, seqkit_combined, pruned.map { it[2] }.toSortedList())
+        qscore_for_dedupe = qscore.all.map { it }
+        // All nonempty genome variants reach taxonomy and RNA assessment.
+        subset = pruned.map { id, size, fasta -> fasta }
         subset_for_gtdbtk = subset.map { it }
         subset_for_ids = subset.map { it }
         subset_for_dedupe = subset.map { it }
         def gtdbtkBatchSize = Math.max(1, params.gtdbtk_batch_size as Integer)
-        subset_dir = new File(params.working_dir.toString(), "genomes_subset").getAbsolutePath()
-        gtdbtk_manifest_input = subset_for_gtdbtk
-            .collect()
-            .map { _ -> tuple(subset_dir, gtdbtkBatchSize) }
+        selected_files = subset_for_gtdbtk.toSortedList()
+        gtdbtk_manifest_input = selected_files.map { files -> tuple(files, gtdbtkBatchSize) }
         gtdbtk_manifests = PREP_GTDBTK_BATCHES(gtdbtk_manifest_input).manifests
             .flatMap { manifests -> normalizeToList(manifests) }
 
@@ -1138,40 +1180,43 @@ workflow {
                 tuple(batchId, fasta_manifest, resolvedGTDBTK)
             }
 
-        gtdbtk_batches_out = GTDBTK(gtdbtk_input).outdir
-        gtdbtk = COMBINE_GTDBTK(gtdbtk_batches_out.collect()).outdir
+        gtdbtk_staged = gtdbtk_input.combine(selected_files.map { [it] }).map { batchId, manifest, db, fastas ->
+            def names = manifest.toFile().readLines().toSet()
+            tuple(batchId, manifest, fastas.findAll { names.contains(it.name) }, db)
+        }
+        gtdbtk_batches_out = GTDBTK(gtdbtk_staged.map { row -> new ArrayList(row) + [assessmentToken('gtdbtk/individual', "gtdbtk_${row[0]}")] }).outdir
+        gtdbtk = COMBINE_GTDBTK(gtdbtk_batches_out.toSortedList()).outdir
         gtdbtk_map = PARSE_GTDBTK(gtdbtk).mapping
 
         subset_ids = subset_for_ids.map { f -> tuple(f.baseName, f) }
         barrnap_in = subset_ids.combine(gtdbtk_map)
 
-        rrna = BARRNAP(barrnap_in).rrna
+        rrna = BARRNAP(barrnap_in.map { row -> new ArrayList(row) + [assessmentToken('barrnap', "${row[0]}.rrna")] }).rrna
         rrna_for_blast = rrna.map { it }
         rrna_for_files = rrna.map { it }
         rrna_fastas = rrna_for_files.map { it[1] }
         rrna_gffs = rrna_for_files.map { it[2] }
 
-        blast = BLAST_RRNA(rrna_for_blast).blast
+        blast = BLAST_RRNA(rrna_for_blast.map { row -> new ArrayList(row) + [assessmentToken('barrnap', "${row[0]}.rrna_check")] }).blast
 
-        barblast = COMPARE_BARRNAP(blast.collect(), rrna_fastas.collect(), rrna_gffs.collect())
+        barblast = COMPARE_BARRNAP(blast.toSortedList(), rrna_fastas.toSortedList(), rrna_gffs.toSortedList())
 
         dedupe = DEDUPE(qscore_for_dedupe, barblast.pass, gtdbtk)
-        dedupe_for_cp = dedupe.mqhp.map { it }
-        dedupe_for_parse = dedupe.mqhp.map { it }
-        dedupe_for_merge = dedupe.mqhp.map { it }
+        dedupe_for_cp = dedupe.assessed.map { it }
+        dedupe_for_parse = dedupe.assessed.map { it }
+        dedupe_for_merge = dedupe.assessed.map { it }
 
-        subset_dir_for_dedupe = new File(params.working_dir.toString(), "genomes_subset").getAbsolutePath()
-        dedupe_fasta = CP_DEDUPE(dedupe_for_cp, subset_dir_for_dedupe).fasta
+        dedupe_fasta = CP_DEDUPE(dedupe_for_cp, selected_files).fasta.flatMap { normalizeToList(it) }
 
         dedupe_map = PARSE_DEDUPE_KINGDOM(dedupe_for_parse).mapping
-        dedupe_kingdom = dedupe_map.map { f ->
+        dedupe_kingdom = dedupe_map.flatMap { f ->
             def out = []
             f.toFile().readLines().findAll { it?.trim() }.each { line ->
                 def parts = line.split('\t')
                 out << tuple(parts[0], parts[1])
             }
             out
-        }.flatten()
+        }
 
         trna_in = subset_ids.join(dedupe_kingdom)
             .map { row ->
@@ -1181,26 +1226,84 @@ workflow {
                 tuple(id, kingdom, fasta)
             }
 
-        trna_gffs = TRNASCAN(trna_in).gff
+        trna_gffs = TRNASCAN(trna_in.map { row -> new ArrayList(row) + [assessmentToken('trnascan', "${row[0]}.trna")] }).gff
 
-        trna_counts = TRNASCAN_PARSE(trna_gffs.collect())
+        trna_counts = TRNASCAN_PARSE(trna_gffs.toSortedList())
 
-        dedupe_fasta_dir = new File(params.working_dir.toString(), "dedupe/fasta").getAbsolutePath()
-        gunc_input = bootstrapReferences ?
-            gunc_ready
-                .combine(dedupe_fasta.collect().map { _ -> tuple(dedupe_fasta_dir) })
-                .map { ready, fasta_dir -> tuple(fasta_dir, resolvedGuncDb) } :
-            dedupe_fasta.collect().map { _ ->
-                tuple(dedupe_fasta_dir, resolvedGuncDb)
-            }
-        gunc = GUNC(gunc_input).outdir
+        gunc_input = dedupe_fasta.toSortedList().flatMap { fs -> balancedBatches(fs, params.gunc_batch_size, params.gunc_parallel_batches).collect { group -> tuple(batchId(group), group) } }.combine(gunc_ready).map { id, fastas, ready -> tuple(id, fastas, resolvedGuncDb) }
+        gunc_batches = GUNC(gunc_input.map { row -> new ArrayList(row) + [assessmentToken('gunc', "gunc_${row[0]}")] }).outdir.toSortedList()
+        gunc = COMBINE_GUNC(gunc_batches).outdir
 
-        master = MERGE_MASTER(dedupe_for_merge, barblast.subunits, trna_counts.counts)
+        receipts = CHECKM_SINGLE.out.assessment.mix(GTDBTK.out.assessment, BARRNAP.out.assessment, BLAST_RRNA.out.assessment, TRNASCAN.out.assessment, GUNC.out.assessment).toSortedList()
+        master = MERGE_MASTER(dedupe_for_merge, barblast.subunits, trna_counts.counts, gunc, receipts)
         atlas = params.atlas_enabled ?
-            GENOME_QUALITY_ATLAS(master.master, gunc).outdir :
+            GENOME_QUALITY_ATLAS(master.master, master.gunc_data, dedupe_fasta.toSortedList()).outdir :
             Channel.empty()
 
     emit:
         master = master.master
         atlas = atlas
+}
+
+// Database installation is a separate local preparation phase in the CLI.
+workflow DATABASES {
+    if (params.databases.contains('checkm')) {
+        SETUP_CHECKM_DB(Channel.of([params.ref_dir, "${params.ref_dir}/checkm_data", true]))
+    }
+    if (params.databases.contains('gtdbtk')) {
+        SETUP_GTDBTK_DB(Channel.of([params.ref_dir, "${params.ref_dir}/gtdbtk_r226", params.gtdbtk_package_url, true]))
+    }
+    if (params.databases.contains('gunc')) {
+        SETUP_GUNC_DB(Channel.of([params.ref_dir, "${params.ref_dir}/gunc_db/gunc_db_progenomes2.1.dmnd", true]))
+    }
+}
+
+// Standalone stages use the same processes and file contracts as the full run.
+workflow PREPROCESS {
+    inputs = Channel.fromPath("${params.fasta_dir}/*.fasta", checkIfExists: true)
+        .flatMap { f -> filterSizes().collect { size -> tuple(genomeId(f), size.toString(), f) } }
+    f = FILTER_FASTA(inputs).fasta
+    s = SEQKIT_STAT(f).stats
+    COMBINE_SEQKIT_STATS(s.map { it[3] }.toSortedList())
+}
+workflow CHECKM_ONLY {
+    files = Channel.fromPath("${params.fasta_dir}/*.fasta").toSortedList()
+    batches = files.flatMap { fs -> balancedBatches(fs, params.checkm_batch_size, params.checkm_parallel_batches).collect { group -> tuple('full', batchId(group), group, params.checkm_data_path) } }
+    COMBINE_CHECKM(CHECKM_SINGLE(batches.map { row -> new ArrayList(row) + [assessmentToken('checkm/individual', "${row[0]}.batch${row[1]}")] }).tsv.toSortedList())
+}
+workflow TAXONOMY_ONLY {
+    files = Channel.fromPath("${params.fasta_dir}/*.fasta").toSortedList()
+    manifests = PREP_GTDBTK_BATCHES(files.map { fs -> tuple(fs, params.gtdbtk_batch_size) }).manifests.flatMap { normalizeToList(it) }
+    inputs = manifests.combine(files.map { [it] }).map { m, fs ->
+        def names = m.toFile().readLines().toSet()
+        tuple(m.baseName, m, fs.findAll { names.contains(it.name) }, params.gtdbtk_data_path)
+    }
+    COMBINE_GTDBTK(GTDBTK(inputs.map { row -> new ArrayList(row) + [assessmentToken('gtdbtk/individual', "gtdbtk_${row[0]}")] }).outdir.toSortedList())
+}
+workflow RRNA_ONLY {
+    inputs = Channel.fromPath("${params.fasta_dir}/*.fasta").map { f -> tuple(genomeId(f), f, file(params.kingdom_map)) }
+    rrna = BARRNAP(inputs.map { row -> new ArrayList(row) + [assessmentToken('barrnap', "${row[0]}.rrna")] }).rrna
+    blast = BLAST_RRNA(rrna.map { row -> new ArrayList(row) + [assessmentToken('barrnap', "${row[0]}.rrna_check")] }).blast
+    COMPARE_BARRNAP(blast.toSortedList(), rrna.map { it[1] }.toSortedList(), rrna.map { it[2] }.toSortedList())
+}
+workflow TRNA_ONLY {
+    inputs = Channel.fromPath("${params.fasta_dir}/*.fasta").map { f -> tuple(genomeId(f), params.kingdom, f) }
+    TRNASCAN_PARSE(TRNASCAN(inputs.map { row -> new ArrayList(row) + [assessmentToken('trnascan', "${row[0]}.trna")] }).gff.toSortedList())
+}
+workflow GUNC_ONLY {
+    files = Channel.fromPath("${params.fasta_dir}/*.fasta").toSortedList()
+    batches = GUNC(files.flatMap { fs -> balancedBatches(fs, params.gunc_batch_size, params.gunc_parallel_batches).collect { group -> tuple(batchId(group), group, params.gunc_db) } }.map { row -> new ArrayList(row) + [assessmentToken('gunc', "gunc_${row[0]}")] }).outdir.toSortedList()
+    COMBINE_GUNC(batches)
+}
+
+workflow {
+    if (params.stage == 'run') { COMPLETE() }
+    else if (params.stage == 'build_db') { DATABASES() }
+    else if (params.stage == 'preprocess') { PREPROCESS() }
+    else if (params.stage == 'quality') { CHECKM_ONLY() }
+    else if (params.stage == 'taxonomy') { TAXONOMY_ONLY() }
+    else if (params.stage == 'rrna') { RRNA_ONLY() }
+    else if (params.stage == 'trna') { TRNA_ONLY() }
+    else if (params.stage == 'chimera') { GUNC_ONLY() }
+    else { error "Unknown stage: ${params.stage}" }
 }

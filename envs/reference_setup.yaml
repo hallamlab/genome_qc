@@ -2,9 +2,10 @@ name: genome_qc_reference_setup
 channels:
   - conda-forge
   - bioconda
-  - defaults
 dependencies:
   - coreutils
   - curl
+  - rapidgzip=0.16.0
   - tar
   - wget
+  - python>=3.11

@@ -2,6 +2,5 @@ name: genome_qc_blast
 channels:
   - conda-forge
   - bioconda
-  - defaults
 dependencies:
   - blast

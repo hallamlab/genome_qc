@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+from statistics_inventory import write_inventory, archive_previous_statistics
+from genome_set_stats import split_by_sample
+
 import argparse
 import glob
 import math
@@ -469,7 +472,7 @@ def organize_output_tree(root_dir):
     total_files = 0
     index_paths = []
     for current_dir, dirnames, _ in os.walk(root_path):
-        dirnames[:] = [name for name in dirnames if name not in {"plots", "tables", "_organized", "selected_set", "phylogeny"}]
+        dirnames[:] = [name for name in dirnames if name not in {"plots", "tables", "_organized", "selected_set", "phylogeny", "previous_statistics"}]
         count, index_path = organize_directory_outputs(current_dir)
         if count > 0:
             total_files += count
@@ -484,7 +487,7 @@ def resolve_output_file(base_dir, filename):
     if direct.exists():
         return str(direct)
 
-    matches = [path for path in base_path.rglob(filename) if path.is_file()]
+    matches = [path for path in base_path.rglob(filename) if path.is_file() and "previous_statistics" not in path.parts]
     if not matches:
         return None
 
@@ -1621,6 +1624,7 @@ def summarize_best_set_sample_category_contributions(source_frame, selected, mem
     return summary.reset_index(drop=True)
 
 
+@split_by_sample
 def summarize_best_set_selection_preferences(member_table, selected, category_column):
     columns_by_category = [
         category_column,
@@ -1749,6 +1753,13 @@ def summarize_best_set_selection_preferences(member_table, selected, category_co
 
 
 def plot_best_set_selection_preferences(overall_df, pairwise_df, destination_dir, label, category_column, atlas_module):
+    if overall_df is not None and "sample" in overall_df and overall_df["sample"].nunique() > 1:
+        paths = []
+        for sample, subset in overall_df.groupby("sample", sort=True):
+            paired = pairwise_df.loc[pairwise_df["sample"].eq(sample)]
+            paths.extend(plot_best_set_selection_preferences(subset, paired, destination_dir,
+                str(label) + "_" + re.sub(r"[^A-Za-z0-9_.-]", "_", str(sample)), category_column, atlas_module))
+        return paths
     if overall_df is None or overall_df.empty:
         return []
 
@@ -2582,6 +2593,8 @@ def main():
     log_step(f"[info] atlas script: {atlas_script}")
     log_step(f"[info] global output dir: {output_dir}")
     organize_roots = {os.path.abspath(output_dir)}
+    if not args.skip_to_best:
+        archive_previous_statistics(output_dir)
 
     if args.skip_to_best:
         combined_master_path = resolve_output_file(output_dir, args.combined_master_name)
@@ -2625,6 +2638,7 @@ def main():
             )
             best_set_paths.extend(phylogeny_paths)
         log_step("[done] exported best-of-sample and best-of-best genome sets")
+        print("Statistics review inventory:", write_inventory(output_dir))
         print("Wrote:")
         for path in [combined_master_path] + best_set_paths:
             print(path)
@@ -2791,6 +2805,7 @@ def main():
         )
         written_paths.extend(phylogeny_paths)
 
+    print("Statistics review inventory:", write_inventory(output_dir))
     print("Wrote:")
     for path in written_paths:
         print(path)

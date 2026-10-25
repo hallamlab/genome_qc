@@ -14,8 +14,9 @@ trna_gffs = [x for x in glob.glob(os.path.join(trna_dir, "*.gff"))]
 gff_list = []
 for gff in trna_gffs:
 	
-	empty = os.stat(gff).st_size == 0
-	if not empty:
+	with open(gff) as handle:
+		has_records = any(line.strip() and not line.startswith('#') for line in handle)
+	if has_records:
 		gff_df = pd.read_csv(gff, sep='\t', header=None, comment='#')
 		gff_df.columns = ['seqid', 'source', 'type', 'start', 'end',
 						  'score', 'strand', 'phase', 'attributes'
@@ -25,7 +26,7 @@ for gff in trna_gffs:
 		trna_df['isotype'] = [x.split('isotype=')[1].split(';')[0] for x in trna_df['attributes']]
 		gff_list.append(trna_df)
 
-gff_cat_df = pd.concat(gff_list)
+gff_cat_df = pd.concat(gff_list) if gff_list else pd.DataFrame(columns=['seqid','source','type','start','end','score','strand','phase','attributes','genome_id','isotype'])
 gff_cat_df.to_csv(os.path.join(trna_dir, 'trnascan_gff_table.tsv'), sep='\t', index=False)
 
 gff_cnt_df = gff_cat_df.groupby(['genome_id'])['isotype'].size().reset_index()

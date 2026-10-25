@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genome-qc"
+version = "0.1.0"
+description = "Genome quality assessment and genome atlas controller"
+requires-python = ">=3.11"
+dependencies = ["numpy", "pandas", "scipy", "matplotlib", "seaborn", "statsmodels"]
+
+[project.scripts]
+genome_qc = "genome_qc.cli:main"
+genome-qc = "genome_qc.cli:main"
+
+[tool.setuptools]
+packages = ["genome_qc"]

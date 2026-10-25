@@ -1,0 +1,16 @@
+name: genome_qc
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  - mamba
+  - nextflow=26.10.3
+  - openjdk=21
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - seaborn
+  - statsmodels

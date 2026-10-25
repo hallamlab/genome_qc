@@ -1,0 +1,40 @@
+package:
+  name: genome-qc
+  version: '@VERSION@'
+source:
+  url: '@SOURCE@'
+  sha256: '@SHA256@'
+build:
+  skip: true  # [not (linux and x86_64)]
+  number: 0
+  script: '{{ PYTHON }} -m pip install . --no-deps --no-build-isolation -vv'
+requirements:
+  host:
+    - python 3.11
+    - pip
+    - setuptools >=68
+    - wheel
+  run:
+@DEPENDENCIES@
+test:
+  imports:
+    - genome_qc
+    - genome_qc.cli
+    - genome_qc.report
+  commands:
+    - genome_qc --version
+    - genome-qc --version
+    - genome_qc check
+    - genome_qc run --help
+    - genome_qc build_db --help
+    - genome_qc atlas --help
+    - genome_qc compare --help
+    - nextflow -version
+about:
+  home: https://github.com/hallamlab/genome_qc
+  license: GPL-3.0-only
+  license_file: LICENSE
+  summary: Genome assessment, genome atlas and interactive results explorer
+extra:
+  recipe-maintainers:
+    - RyloByte

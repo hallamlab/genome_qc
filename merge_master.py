@@ -5,7 +5,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import sys
 
-from summarize_metapathways_genomes import apply_figure_typography, plot_font_rc
+from genome_quality_atlas import apply_figure_typography, plot_font_rc, maybe_attach_gunc_summary
 
 
 def apply_plot_style():
@@ -373,7 +373,7 @@ def create_Contamination_Completeness_plot(mag_data, output_path):
 
 parent_dir = sys.argv[1]
 file_1 = 'barrnap_subunit_counts.tsv'
-file_2 = 'dedupe_mqhp.tsv'
+file_2 = 'dedupe_assessed.tsv'
 file_3 = 'trnascan_trna_counts.tsv'
 out_final = 'Master_genome_QC.tsv'
 master = pd.DataFrame()
@@ -397,14 +397,21 @@ dedupe_df = pd.read_csv(second_file_path,sep='\t')
 
 #Merge the two dataframes
 merged_df = pd.merge(dedupe_df, bar_piv_df, left_on='Bin Id', right_on='genome_id', how='left').drop('genome_id', axis=1)
-merged_df.fillna(0, inplace=True)
+# Only absent RNA detections are zero; unknown taxonomy is not a numeric zero.
+for column in ('5S_rRNA', '16S_rRNA', '23S_rRNA'):
+    if column not in merged_df:
+        merged_df[column] = 0
+    merged_df[column] = merged_df[column].fillna(0)
 #read the file into a pandas dataframe
 trna_df = pd.read_csv(third_file_path,sep='\t')
 merge2_df = pd.merge(merged_df, trna_df, left_on='Bin Id', right_on='genome_id', how='left').drop('genome_id', axis=1)
 
 #Create the final master table
 master = pd.concat([master, merge2_df])
-master[['Domain', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']] = master['classification'].str.split(';', expand=True)
+ranks = master['classification'].fillna('').astype(str).str.split(';', expand=True).reindex(columns=range(7)).fillna('')
+master[['Domain', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species']] = ranks
+for column in ('trna_total', 'trna_unique'):
+    master[column] = master[column].fillna(0)
 
 # remove prefix from each column
 master['Domain'] = master['Domain'].str.replace('d__', '')
@@ -424,6 +431,34 @@ else:
 
 print(final.head())
 print(final.columns)
+
+# Quality selection is recorded only after every assessment has completed.
+final = maybe_attach_gunc_summary(final, master_path=out_path)
+if os.path.isdir(os.path.join(parent_dir, 'assessments')):
+    from assessment_summary import attach
+    final = attach(final, parent_dir)
+else:
+    pd.DataFrame(columns=['Genome_Id','variant','stage','status','exit_code','reason','log','retry_token']).to_csv(os.path.join(parent_dir, 'Assessment_status.tsv'), sep='\t', index=False)
+bounds = [None if x.lower() in ('null', 'none', '') else float(x) for x in sys.argv[2:7]]
+minimum, maximum, comp, cont, qmin = bounds if len(bounds) == 5 else [None] * 5
+require_rrna = len(sys.argv) > 7 and sys.argv[7].lower() == 'true'
+def bound(column, value, lower=True):
+    if value is None:
+        return pd.Series(True, index=final.index)
+    numbers = pd.to_numeric(final[column], errors='coerce')
+    return numbers.ge(value) if lower else numbers.le(value)
+checks = {
+    'pass_genome_size': bound('sum_len', minimum) & bound('sum_len', maximum, False),
+    'pass_completeness': bound('Completeness', comp),
+    'pass_contamination': bound('Contamination', cont, False),
+    'pass_qscore': bound('qscore', qmin),
+    'pass_rRNA_check': final['pass_BARRNAP'].astype(str).str.strip().str.lower().isin(['true', '1', '1.0']) if require_rrna else pd.Series(True, index=final.index),
+}
+for name, values in checks.items():
+    final[name] = values.fillna(False)
+final['selected'] = final[list(checks)].all(axis=1)
+final['selection_reasons'] = final.apply(lambda row: ';'.join(name.removeprefix('pass_') for name in checks if not row[name]) or 'passed', axis=1)
+final.loc[final['selected']].to_csv(os.path.join(parent_dir, 'Selected_genome_QC.tsv'), sep='\t', index=False)
 
 #Save the master table
 final.to_csv(out_path, sep='\t', index=False)
