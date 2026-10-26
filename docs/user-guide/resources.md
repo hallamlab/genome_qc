@@ -14,6 +14,40 @@ It does not continuously monitor unrelated applications or resize running tools.
 On a shared server, use `--max_memory` and `--max_cpus` to reserve capacity for
 other users; on Slurm, the cluster scheduler manages node availability.
 
+## Choose your CPU and memory settings
+
+| Option | Meaning | Example |
+| --- | --- | --- |
+| `--threads` | CPUs allocated to a parallel task; default 8 | `--threads 8` |
+| `--max_cpus` | Aggregate local CPU scheduling budget | `--max_cpus 32` |
+| `--max_memory` | Aggregate memory scheduling budget | `--max_memory '96 GB'` |
+| `--memory` | Override each task's memory request | Usually leave unset initially |
+| `--max_tasks` | Cap queued/running workflow tasks | `--max_tasks 20` |
+| `--max_batch_size` | Upper bound on genomes in one balanced batch | Default 1000 |
+
+Eight threads and 32 total CPUs allow up to four eight-CPU tasks **only when**
+their memory reservations and dependencies also allow it. Setting `--max_tasks 100`
+does not force 100 tasks to run on a small server. Giving a task more threads
+also does not make a serial tool parallel. For GTDB placement, the disk-backed
+mode has its own limit described below.
+
+On Linux, these commands provide a quick view of your host:
+
+```bash
+nproc
+free -h
+df -h "$HOME"
+```
+
+Check the filesystem actually used for your databases, output and temporary work
+if those paths are on different disks. Free storage needs to cover downloads,
+extracted databases and analysis work simultaneously. Compact mode reduces the
+completed result; it does not eliminate peak working-space requirements.
+The controller's automatic memory budget does not reserve space against other
+users' programs. On a shared server, set limits agreed with its administrator.
+
+## Submit work through Slurm
+
 For Slurm, use shared paths accessible from compute nodes:
 
 ```bash
@@ -25,6 +59,19 @@ genome_qc run \
   --threads 8 --max_tasks 100 --submit_rate 60 \
   --time_limit 24h --compact_results
 ```
+
+Run the command from a host where `sbatch` is available and your cluster account
+is configured. No username or password is passed to Genome QC: Slurm uses your
+logged-in identity. `--account` is your allocation/project account; a partition
+is a scheduler-defined collection of nodes or queue with its own limits.
+Your cluster documentation tells you which account and partition to use.
+
+The example requires writable node-local `SLURM_TMPDIR` for compact execution.
+If the site does not provide it, configure an approved `--scratch_dir`; do not
+assume a login-node temporary directory is visible on a worker. The installed
+controller environment must also be accessible on workers. Check that database
+setup and environment creation are allowed on the host running the controller;
+these preparation steps need internet for anything not already installed.
 
 The cluster's default partition is used unless `--partition` is supplied.
 `--qos` and `--reservation` are also supported. Every job requests one node.

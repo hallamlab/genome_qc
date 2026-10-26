@@ -95,3 +95,25 @@ These flags do not delete the original input genomes or reference databases.
 
 Local orchestration tests cover normal and scratch execution, cached resume,
 and compact-output integrity. Actual Slurm execution still needs a cluster test.
+
+## Common first-run problems
+
+| What you see | What to check next |
+| --- | --- |
+| `genome_qc: command not found` | Activate the environment in this terminal and run `genome_qc check`. |
+| No FASTA inputs found | Check the directory, supported filename extensions and file permissions; reads are not genome inputs. |
+| Duplicate genome ID | Check filename stems in all nested directories, or assign unique IDs in a manifest. |
+| Inputs have changed | Use a new output directory for the changed input set. |
+| A task requests more memory than the budget | Check explicit global and per-tool requests against `--max_memory`; reducing a reservation does not reduce the tool's actual needs. |
+| Tasks wait while one large job runs | Check CPU and memory reservations and dependencies before concluding that scheduling is stalled. |
+| `python: command not found` inside a task | Check the task environment, not only Python in your terminal; see interrupted environment creation above. |
+| The explorer has incomplete assessments | Inspect `Assessment_status.tsv` and the relevant task log; a missing value is not a zero measurement. |
+| The browser cannot reach a remote report | Keep the report server and SSH tunnel running, and use matching port numbers. |
+
+For an issue report, include `genome_qc --version`, the exact command, the failing
+process name, its error output, and the relevant `logs/<run-id>/run.json` and
+`nextflow.log`. Explain whether this was a fresh run or a resume. Keep work and
+cache directories intact until the failure is understood. Task paths in the
+Nextflow log point to `.command.err`, `.command.out` and `.command.sh` while
+working files are retained; completed compact runs archive task logs in
+`logs/compact-task-logs.tar.gz`.

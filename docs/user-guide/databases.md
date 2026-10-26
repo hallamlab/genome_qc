@@ -48,6 +48,33 @@ GUNC currently uses its own `gunc download_db` command; the resumable HTTP
 downloader described above applies to GTDB-Tk and CheckM. Reference databases
 and retained download archives are not removed by compact-results cleanup.
 
+## Recognize the reference layout
+
+After setup, the root supplied with `-d` has this layout:
+
+```text
+genome-qc-databases/
+├── checkm_data/                  # CheckM reference files
+├── gtdbtk_r226/                  # Extracted GTDB R226 package
+└── gunc_db/
+    └── gunc_db_progenomes2.1.dmnd
+```
+
+Pass the parent `genome-qc-databases` directory to `-d`, not the GTDB directory
+or the GUNC file itself. If you already have this layout, point at it directly;
+there is no need to copy the references into each analysis output.
+
+Use a persistent location with enough free space and permission to write during
+setup. Setup receipts document downloaded references. Structural checks on an
+existing directory establish whether it is usable by the installer; they do not
+reconstruct a missing historical download provenance. Retain the original
+release information when bringing an existing database installation.
+
+The first setup needs internet. For a cluster with offline compute nodes,
+prepare references and the required task environments on an approved host with
+network access before submitting work that depends on them. Merely having the
+controller installed does not mean that all tool environments are already cached.
+
 ## Prepare references before an analysis
 
 ```bash

@@ -48,6 +48,31 @@ is active. **Clear genome subset** removes it.
 **Select genomes** saves documented subsets; see [selection](selection.md).
 The explorer does not change original analysis files.
 
+## A first pass through the explorer
+
+1. Open **Summary & atlas** and check the input and incomplete-assessment counts.
+   Click a count to inspect the genomes behind it.
+2. Open an atlas figure to view assembly quality and assessment patterns. ANI
+   and marker-tree figures are also available when those analyses produced results.
+3. In **Explore tables**, choose the master genome table. Search for a genome
+   ID or a taxonomic name, then add numeric bounds for the metrics you care about.
+4. Use **Use matching genomes across tables** when you want related tool tables
+   restricted to the same genomes. Clear the subset when returning to the whole cohort.
+5. Use **Select genomes** for a selection you intend to retain, and download both
+   its table and JSON record. These downloads do not overwrite your analysis.
+
+For example, completeness at least 90 and contamination at most 5 are entered
+as percentages on a 0–100 scale. Those values illustrate the controls; they are
+not universal quality requirements. Missing values are not treated as zero.
+Genome size and N50 are in base pairs. ANI is a percentage; alignment fractions
+are on a 0–1 scale. Always check the column and its meaning before applying a bound.
+
+Leave the report-serving terminal running while viewing results. Stop that
+server with **Ctrl+C** when finished; this does not delete results or rerun tools.
+If port 8765 is occupied, choose another port with `--port` and use the same
+number in the SSH tunnel and browser URL. A browser's `file://` view is not a
+replacement for serving the report when loading its supporting data.
+
 ## Provenance
 
 `logs/<run-id>/run.json` saves the invocation, resolved resource budgets,

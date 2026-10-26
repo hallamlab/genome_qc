@@ -22,6 +22,22 @@ records `pass_genome_size`, `pass_completeness`, `pass_contamination`,
 These flags retain the entire master table; the selected subset has its own TSV.
 `--filter_size` is different: it changes the contigs being measured.
 
+### Apply thresholds to a new run
+
+For example, to select genomes with completeness at least 90% and contamination
+at most 5% while still assessing and retaining measurements for every genome:
+
+```bash
+genome_qc run -i ~/genomes -o ~/genome-qc-output-selected \
+  -d ~/genome-qc-databases --threads 8 --max_cpus 32 \
+  --completeness 90 --contamination 5
+```
+
+These are example criteria, not recommended cutoffs for every study. Do not
+change thresholds and reuse an old output directory expecting a fresh analysis.
+For completed results, the explorer provides the simpler route: define and
+export a new subset without rerunning assessment tools or changing the master.
+
 ## Reproducible selection in the explorer
 
 Open **Select genomes** to start with the complete master table and no filters.

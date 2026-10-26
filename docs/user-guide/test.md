@@ -35,6 +35,31 @@ all tools succeeded. Repeat the exact `run` command with `--resume` to check
 cache reuse. For a fresh compact-mode test, use a **new** output directory and
 add `--compact_results`.
 
+## Check the results
+
+Use this checklist before starting a larger analysis:
+
+1. **Inputs accounted for:** compare the inventory's genome IDs with your input
+   filenames or manifest. Unexpected IDs often indicate extra FASTAs in a nested directory.
+2. **Assessments complete:** inspect `Assessment_status.tsv` and the explorer's
+   incomplete-assessment count. A successful program exit and a biologically
+   acceptable genome are different questions.
+3. **Measurements present:** inspect assembly lengths, completeness/contamination,
+   taxonomy and RNA counts for several genomes. A genuine zero RNA count is
+   different from an unavailable measurement.
+4. **ANI and tree outputs present:** check the ANI and phylogeny status tables.
+   A marker tree requires at least three usable genomes in that domain; a
+   smaller test may legitimately have no tree. See [phylogeny](phylogeny.md).
+5. **Explorer usable:** open a figure, filter a table and export a small subset.
+   Confirm that the exported IDs match your intended selection.
+6. **Resume behaves as expected:** for an unmodified noncompact run, repeat the
+   command with `--resume` and look for cached tasks. A fully completed compact
+   run instead verifies and reuses its retained final results.
+
+No quality thresholds are enabled by default, so it is normal for all assessed
+genomes to appear in `Selected_genome_QC.tsv`, including poor-quality genomes.
+Use [final selection](selection.md) when you are ready to define acceptance criteria.
+
 ## Developer tests
 
 The repository has unit tests plus opt-in Nextflow integration tests with synthetic

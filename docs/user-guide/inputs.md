@@ -11,6 +11,18 @@ The complete workflow is intended for prokaryotic genomes. The standalone RNA
 commands expose model choices, but this does not make the complete CheckM and
 GTDB-Tk workflow a eukaryotic genome assessment pipeline.
 
+### Avoid common input mistakes
+
+- Supply nucleotide assemblies, not protein FASTAs or sequencing reads.
+- Use a directory containing only the genomes intended for this analysis.
+  Discovery is recursive; files in nested directories are included too.
+- `sample.fna` and `sample.fasta.gz` both become ID `sample` and therefore conflict.
+  Rename them or assign distinct manifest IDs.
+- Use stable IDs without spaces. The same IDs connect taxonomy, quality metrics,
+  RNA predictions, ANI groups and tree tips throughout the results.
+- If input paths contain spaces, quote the paths in shell commands. A manifest
+  stores the path itself without shell quotation marks.
+
 ## Explicit manifests
 
 A tab-separated manifest requires `id` and `fasta` columns:
@@ -29,6 +41,23 @@ The controller records SHA-256 checksums and resolved paths in
 `inputs.resolved.json`. Reusing an output with changed inputs is rejected.
 Additional manifest columns are retained as input provenance; a full run does
 not automatically interpret them as an experimental design for atlas comparisons.
+
+### Create a small manifest in a terminal
+
+This example creates a real tab-separated file. Adjust the FASTA filenames to
+match your files first:
+
+```bash
+printf 'id\tfasta\nisolate_01\tgenomes/isolate_01.fna\nMAG_02\tgenomes/MAG_02.fasta.gz\n' > ~/genomes.tsv
+
+genome_qc run --manifest ~/genomes.tsv \
+  -o ~/genome-qc-output -d ~/genome-qc-databases \
+  --threads 8 --max_cpus 32
+```
+
+Because the manifest is in your home directory, `genomes/isolate_01.fna` resolves
+to `~/genomes/isolate_01.fna`. If you create the table in a spreadsheet, export it
+as tab-separated text, not CSV. Supply either `-i` or `--manifest`, not both.
 
 ## Contig-length variants
 

@@ -1,5 +1,24 @@
 # Installation
 
+## Choose an installation route
+
+| Your situation | Route |
+| --- | --- |
+| You want a normal installed command | Use the Mamba package once published |
+| You are testing the current source before publication | Use the source-install commands below |
+| You already have a working installation | Activate its environment; do not reinstall for every run |
+
+Commands in this guide are entered in a Linux terminal, not in Python or R.
+An environment is a separate collection of software packages. `mamba` creates or
+updates it; `conda activate genome_qc` makes its commands available in the current
+terminal. If neither command is available, install
+[Miniforge](https://github.com/conda-forge/miniforge), or use your institution's
+supported Conda/Mamba installation, and open a new terminal after shell setup.
+
+Genome QC currently targets 64-bit Linux. These instructions are not a tested
+native Windows or macOS installation route. A remote Linux server is suitable;
+[SSH forwarding](quickstart.md#open-the-results) lets you view its report locally.
+
 ## Mamba installation
 
 Genome QC is packaged as `genome-qc`; its command is `genome_qc` (with
