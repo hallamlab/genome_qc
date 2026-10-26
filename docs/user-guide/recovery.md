@@ -18,6 +18,20 @@ in the trace. Changing thread counts, batch membership or tool commands may
 invalidate affected tasks. Changed scientific settings require a new output
 under the controller's settings guard.
 
+## Interrupted environment creation
+
+If a run stops while Mamba is creating a task environment, a partial environment
+can remain in the cache. Nextflow may reuse that directory on resume. A missing
+executable despite its declaration in the environment YAML can indicate this
+case; inspect the failed task's `.command.run` for the exact environment path
+and its `conda-meta/history` for the installation record.
+
+Once no workflow is using that environment, move only the confirmed incomplete
+environment out of the cache and resume. Nextflow will recreate it. Preserve
+successful task work and the Nextflow session cache; do not clear the entire
+output directory. Automatic repair of incomplete environment caches is not yet
+implemented.
+
 ## Failed measurements are not quality exclusions
 
 CheckM, GTDB-Tk, rRNA prediction/comparison, tRNA prediction and GUNC record
@@ -38,7 +52,10 @@ eligible for retry while successful tasks remain eligible for caching. Wrapped
 assessment processes receive one Nextflow retry for whole-task exit 137/143;
 this does not guarantee that an out-of-memory job will fit on retry. Inspect the
 logs and adjust resource requests when needed. Global setup, invalid inputs,
-and final merging/reporting errors stop execution.
+and final merging/reporting errors stop execution. Missing required executables
+(including Python in task environments) and unexpected assessment-wrapper
+failures also stop execution; they are not treated as genome-quality outcomes.
+Task environments explicitly provide the Python used by their helpers.
 
 A final report can exist with incomplete assessments. Check the completion
 message and `logs/*/run.json`, not only Nextflow's successful-task count. The

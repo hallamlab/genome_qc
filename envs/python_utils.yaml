@@ -1,0 +1,8 @@
+name: genome_qc_python_utils
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - coreutils
+  - gawk

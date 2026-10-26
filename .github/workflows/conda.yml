@@ -20,6 +20,7 @@ on:
       - 'envs/**'
       - 'conda_recipe/**'
       - 'tests/test_workflow_integration.py'
+      - 'tests/test_task_runtime_contracts.py'
       - 'tests/tool_contract_fixture.py'
       - 'scripts/prepare_conda_recipe.py'
       - '.github/workflows/conda.yml'
@@ -74,6 +75,8 @@ jobs:
           cd "$RUNNER_TEMP"
           micromamba run -p "$RUNNER_TEMP/genome-qc-test" python -m unittest discover \
             -s "$GITHUB_WORKSPACE/tests" -p test_workflow_integration.py -v
+          micromamba run -p "$RUNNER_TEMP/genome-qc-test" python -m unittest discover \
+            -s "$GITHUB_WORKSPACE/tests" -p test_task_runtime_contracts.py -v
       - name: Record artifact checksums
         run: |
           cd dist/channel/linux-64

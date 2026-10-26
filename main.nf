@@ -209,7 +209,7 @@ process FILTER_FASTA {
     conda "${projectDir}/envs/seqkit.yaml"
     publishDir "${params.working_dir}/genomes_filtered", mode: 'copy', overwrite: true
 
-    errorStrategy 'ignore'
+    errorStrategy { task.exitStatus in [126, 127] ? 'terminate' : 'ignore' }
 
     input:
     tuple val(id), val(size), path(fasta)
@@ -231,7 +231,7 @@ process SEQKIT_STAT {
     conda "${projectDir}/envs/seqkit.yaml"
     publishDir "${params.working_dir}/seqkit/individual", mode: 'copy', overwrite: true
 
-    errorStrategy 'ignore'
+    errorStrategy { task.exitStatus in [126, 127] ? 'terminate' : 'ignore' }
 
     input:
     tuple val(id), val(size), path(fasta)
@@ -293,14 +293,18 @@ process COMBINE_SEQKIT_STATS {
     """
 }
 
+// Assessment launch shells check executables after Conda activation.
+// Keep these guards outside scientific scripts so successful task caches remain valid.
+// beforeScript runs before environment activation and cannot perform this check.
 process CHECKM_SINGLE {
+    shell(['/bin/bash', '-euo', 'pipefail', '-c', shellQuote('for executable in python checkm; do command -v "$executable" >/dev/null 2>&1 || { echo "Missing required executable: $executable (task environment)" >&2; exit 127; }; done; exec /bin/bash -euo pipefail "$@"'), '--'])
     tag "${size}.batch${batch_id}"
     cpus params.checkm_cpus
     maxForks params.checkm_max_forks
     conda "${projectDir}/envs/checkm.yaml"
     publishDir "${params.working_dir}/checkm/individual", mode: 'copy', overwrite: true
 
-    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'terminate' }
     maxRetries 1
 
     input:
@@ -406,13 +410,14 @@ process PREP_GTDBTK_BATCHES {
 }
 
 process GTDBTK {
+    shell(['/bin/bash', '-euo', 'pipefail', '-c', shellQuote('for executable in python gtdbtk; do command -v "$executable" >/dev/null 2>&1 || { echo "Missing required executable: $executable (task environment)" >&2; exit 127; }; done; exec /bin/bash -euo pipefail "$@"'), '--'])
     tag "batch${batch_id}"
     cpus params.gtdbtk_cpus
     maxForks params.gtdbtk_max_forks
     conda "${projectDir}/envs/gtdbtk.yaml"
     publishDir "${params.working_dir}/gtdbtk/individual", mode: 'copy', overwrite: true
 
-    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'terminate' }
     maxRetries 1
 
     input:
@@ -531,13 +536,14 @@ process PARSE_GTDBTK {
 }
 
 process BARRNAP {
+    shell(['/bin/bash', '-euo', 'pipefail', '-c', shellQuote('for executable in python barrnap; do command -v "$executable" >/dev/null 2>&1 || { echo "Missing required executable: $executable (task environment)" >&2; exit 127; }; done; exec /bin/bash -euo pipefail "$@"'), '--'])
     tag "${id}"
     cpus 1
     maxForks params.max_forks
     conda "${projectDir}/envs/barrnap.yaml"
     publishDir "${params.working_dir}/barrnap", mode: 'copy', overwrite: true
 
-    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'terminate' }
     maxRetries 1
 
     input:
@@ -567,13 +573,14 @@ ASSESSMENT_SCRIPT
 }
 
 process BLAST_RRNA {
+    shell(['/bin/bash', '-euo', 'pipefail', '-c', shellQuote('for executable in python makeblastdb blastn; do command -v "$executable" >/dev/null 2>&1 || { echo "Missing required executable: $executable (task environment)" >&2; exit 127; }; done; exec /bin/bash -euo pipefail "$@"'), '--'])
     tag "${id}"
     cpus 1
     maxForks params.max_forks
     conda "${projectDir}/envs/blast.yaml"
     publishDir "${params.working_dir}/barrnap", mode: 'copy', overwrite: true
 
-    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'terminate' }
     maxRetries 1
 
     input:
@@ -721,13 +728,14 @@ process PARSE_DEDUPE_KINGDOM {
 }
 
 process TRNASCAN {
+    shell(['/bin/bash', '-euo', 'pipefail', '-c', shellQuote('for executable in python tRNAscan-SE; do command -v "$executable" >/dev/null 2>&1 || { echo "Missing required executable: $executable (task environment)" >&2; exit 127; }; done; exec /bin/bash -euo pipefail "$@"'), '--'])
     tag "${id}"
     cpus params.trnascan_cpus
     maxForks params.trnascan_max_forks
     conda "${projectDir}/envs/trnascan.yaml"
     publishDir "${params.working_dir}/trnascan", mode: 'copy', overwrite: true
 
-    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'terminate' }
     maxRetries 1
 
     input:
@@ -785,11 +793,12 @@ process TRNASCAN_PARSE {
 }
 
 process GUNC {
+    shell(['/bin/bash', '-euo', 'pipefail', '-c', shellQuote('for executable in python gunc; do command -v "$executable" >/dev/null 2>&1 || { echo "Missing required executable: $executable (task environment)" >&2; exit 127; }; done; exec /bin/bash -euo pipefail "$@"'), '--'])
     cpus params.gunc_cpus
     conda "${projectDir}/envs/gunc.yaml"
     publishDir "${params.working_dir}/gunc", mode: 'copy', overwrite: true
 
-    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'ignore' }
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'terminate' }
     maxRetries 1
 
     input:
@@ -829,7 +838,7 @@ ASSESSMENT_SCRIPT
 
 process COMBINE_GUNC {
     cpus 1
-    conda "${projectDir}/envs/utils.yaml"
+    conda "${projectDir}/envs/python_utils.yaml"
     publishDir "${params.working_dir}/gunc", mode: 'copy', overwrite: true
     input:
     path(directories)
