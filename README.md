@@ -7,7 +7,7 @@ include ANI groups and annotated GTDB-marker trees. Every usable
 genome receives the applicable assessments before final selection; missing or
 failed measurements remain explicit.
 
-**[Full user guide](docs/user-guide/index.md)** · **[Test](docs/user-guide/test.md)** ·
+**[Full user guide](https://hallamlab-genome-qc.readthedocs.io/en/latest/)** · **[Test](https://hallamlab-genome-qc.readthedocs.io/en/latest/test.html)** ·
 **[Issues and feature requests](https://github.com/hallamlab/genome_qc/issues)**
 
 ## Quickstart
@@ -51,10 +51,10 @@ genome_qc run -i ~/genome-qc-test-inputs \
 genome_qc report -o ~/genome-qc-test-output --serve --port 8765
 ```
 
-The [test guide](docs/user-guide/test.md) explains what to check in the results.
+The [test guide](https://hallamlab-genome-qc.readthedocs.io/en/latest/test.html) explains what to check in the results.
 A public genome test bundle is not yet included; a small input set still requires
 the full reference databases. For input manifests, Slurm, resuming and compact
-outputs, continue with the **[full user guide](docs/user-guide/index.md)**.
+outputs, continue with the **[full user guide](https://hallamlab-genome-qc.readthedocs.io/en/latest/)**.
 
 ## Workflow
 
