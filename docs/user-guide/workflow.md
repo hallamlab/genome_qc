@@ -35,7 +35,8 @@ inputs are grouped at the start; the database guide details which tool uses each
 2. **Measure quality.** Run CheckM `lineage_wf` on nonempty variants. Combine
    completeness, contamination, strain heterogeneity and assembly statistics into
    the [Qscore](interpretation.md). No quality threshold removes a genome here.
-3. **Classify.** GTDB-Tk 2.6.1 uses GTDB R226; the command skips the initial ANI
+3. **Classify.** GTDB-Tk 2.8.0 uses GTDB R232 with `--place_species`, retaining
+   marker alignments and placement even for genomes assigned by the initial ANI
    screen. Its classification supplies taxonomic context and RNA model selection.
 4. **Check rRNAs.** barrnap predicts rRNA genes; BLAST+ self-comparisons and the
    consistency helper summarize agreement among the recovered rRNAs. These checks

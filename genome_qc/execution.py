@@ -107,7 +107,7 @@ def configuration(args, cache):
     # worker counts; do not give every tool GTDB-Tk's much larger reservation.
     task_memory = {name: request(default, name) for name, default in (
         ('checkm', '48 GB' if threads <= 8 else '64 GB'),
-        ('gtdb', '128 GB'), ('gunc', '128 GB'),
+        ('gtdb', '160 GB'), ('gunc', '128 GB'),
         ('trnascan', '32 GB'), ('atlas', '64 GB'))}
     active = {'run': tuple(task_memory), 'quality': ('checkm',),
               'taxonomy': ('gtdb',), 'chimera': ('gunc',), 'trna': ('trnascan',)}
@@ -163,4 +163,4 @@ def configuration(args, cache):
             limits.append(max(1, memory_bytes(budget) // memory_bytes(task_memory[tool])))
         batch_slots[tool] = max(1, min(limits))
     return '\n'.join(lines) + '\n', dict(cpus=cpus, memory=budget, threads=threads, max_tasks=jobs, task_memory=task_memory, batch_slots=batch_slots, gtdb_memory=task_memory['gtdb'],
-        gtdb_disk_backed=memory_bytes(task_memory['gtdb']) < memory_bytes('128 GB'))
+        gtdb_disk_backed=memory_bytes(task_memory['gtdb']) < memory_bytes('160 GB'))

@@ -41,7 +41,7 @@ params.ref_dir          = params.ref_dir          ?: ""
 params.checkm_data_path = params.checkm_data_path ?: ""
 params.gtdbtk_data_path = params.gtdbtk_data_path ?: ""
 params.gunc_db          = params.gunc_db          ?: ""
-params.gtdbtk_package_url = params.gtdbtk_package_url ?: "https://data.gtdb.ecogenomic.org/releases/release226/226.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r226_data.tar.gz"
+params.gtdbtk_package_url = params.gtdbtk_package_url ?: "https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz"
 params.debug            = params.debug            ?: false
 
 
@@ -81,9 +81,10 @@ def gtdbtkDbLooksValid(dbPath) {
     if (!root.exists() || !root.isDirectory()) {
         return false
     }
-    return new File(root, "VERSION_CONFIG").exists() ||
-           new File(root, "metadata/metadata.txt").exists() ||
-           new File(root, "mrca_red/gtdbtk_r226_bac120.tsv").exists()
+    def metadata = new File(root, "metadata/metadata.txt")
+    if (!metadata.isFile()) return false
+    def release = metadata.text =~ /(?m)^VERSION_DATA\s*=\s*['"]?(r[0-9]+)/
+    return release.find() && release.group(1) == 'r232'
 }
 
 def guncDbLooksValid(dbPath) {
@@ -431,7 +432,7 @@ process GTDBTK {
     path("gtdbtk_${batch_id}.assessment.log"), emit: assessment_log
 
     script:
-    def diskBacked = task.memory && task.memory.toMega() < 131072
+    def diskBacked = task.memory && task.memory.toMega() < 163840
     def placementCpus = Math.min(8, task.cpus as Integer)
     def placementArgs = diskBacked ? "--scratch_dir .gtdb-pplacer --pplacer_cpus ${placementCpus}" : ''
     """
@@ -450,7 +451,7 @@ process GTDBTK {
     echo "GTDB placement: ${diskBacked ? 'disk-backed, pplacer CPUs=' + placementCpus : 'in-memory'}; memory=${task.memory}"
     mkdir -p .gtdb-pplacer
     trap 'rm -rf -- .gtdb-pplacer' EXIT
-    gtdbtk classify_wf ${placementArgs} --skip_ani_screen --genome_dir genomes --out_dir gtdbtk_${batch_id} --cpus ${task.cpus} -x fasta
+    gtdbtk classify_wf ${placementArgs} --place_species --genome_dir genomes --out_dir gtdbtk_${batch_id} --cpus ${task.cpus} -x fasta
 ASSESSMENT_SCRIPT
     python ${projectDir}/assessment_task.py gtdbtk gtdbtk_${batch_id} gtdbtk_${batch_id}.assessment.json assessment.sh --token ${retryToken} --inputs ${batch_fastas}
     # Preserve user alignments before cleanup: ${params.helper_marker_alignments}
@@ -1079,7 +1080,7 @@ workflow COMPLETE {
                 resolvedCheckmData = new File(resolvedRefDir, "checkm_data").getAbsolutePath()
             }
             if (!resolvedGTDBTK) {
-                resolvedGTDBTK = new File(resolvedRefDir, "gtdbtk_r226").getAbsolutePath()
+                resolvedGTDBTK = new File(resolvedRefDir, "gtdbtk_r232").getAbsolutePath()
             }
             if (!resolvedGuncDb) {
                 resolvedGuncDb = new File(new File(resolvedRefDir, "gunc_db"), "gunc_db_progenomes2.1.dmnd").getAbsolutePath()
@@ -1097,7 +1098,7 @@ workflow COMPLETE {
                 throw new IllegalArgumentException("CheckM data path is missing or empty: ${resolvedCheckmData}")
             }
             if (!gtdbtkDbLooksValid(resolvedGTDBTK)) {
-                throw new IllegalArgumentException("GTDB-Tk data path is missing or incomplete: ${resolvedGTDBTK}")
+                throw new IllegalArgumentException("GTDB-Tk requires a complete R232 data path; missing, incompatible or incomplete: ${resolvedGTDBTK}")
             }
             if (!guncDbLooksValid(resolvedGuncDb)) {
                 throw new IllegalArgumentException("GUNC database file is missing or empty: ${resolvedGuncDb}")
@@ -1308,7 +1309,7 @@ workflow DATABASES {
         SETUP_CHECKM_DB(Channel.of([params.ref_dir, "${params.ref_dir}/checkm_data", true]))
     }
     if (params.databases.contains('gtdbtk')) {
-        SETUP_GTDBTK_DB(Channel.of([params.ref_dir, "${params.ref_dir}/gtdbtk_r226", params.gtdbtk_package_url, true]))
+        SETUP_GTDBTK_DB(Channel.of([params.ref_dir, "${params.ref_dir}/gtdbtk_r232", params.gtdbtk_package_url, true]))
     }
     if (params.databases.contains('gunc')) {
         SETUP_GUNC_DB(Channel.of([params.ref_dir, "${params.ref_dir}/gunc_db/gunc_db_progenomes2.1.dmnd", true]))

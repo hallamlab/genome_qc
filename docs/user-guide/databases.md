@@ -1,24 +1,26 @@
 # Databases
 
 The database root selected with `-d` contains `checkm_data/`,
-`gtdbtk_r226/` and `gunc_db/`. Without `-d`, it defaults to
+`gtdbtk_r232/` and `gunc_db/`. Without `-d`, it defaults to
 `~/.local/share/genome_qc/databases`. Reuse this root between runs.
 
-GTDB R226 is paired with GTDB-Tk 2.6.1. R220/R232 databases are not reused
-under this configuration. Classification uses `--skip_ani_screen` to retain
-the pre-R232 workflow that skips the initial ANI screen.
+GTDB R232 is paired with GTDB-Tk 2.8.0. R220/R226 databases are not reused
+under this configuration. Classification uses `--place_species`: the initial
+skani ANI screen runs, and genomes assigned there are also processed for marker
+alignment and reference-tree placement. This preserves the alignments needed
+for the downstream cohort phylogeny.
 See the [official release compatibility table](https://ecogenomics.github.io/GTDBTk/installing/index.html).
 
-GTDB-Tk R226 and CheckM archives are downloaded over HTTPS with pinned checksum
+GTDB-Tk R232 and CheckM archives are downloaded over HTTPS with pinned checksum
 verification. The installer reports transferred GiB, percentage when the server
 provides a size, and transfer speed about every ten seconds. Transient failures
 retry up to five attempts with bounded exponential backoff. HTTP range requests
 resume partial downloads; servers that ignore range requests trigger a safe
 restart instead. Corrupt downloads are discarded and retried.
 
-If `DATABASE_ROOT/gtdbtk_r226_data.tar.gz` already exists, it is verified
+If `DATABASE_ROOT/gtdbtk_r232_data.tar.gz` already exists, it is verified
 against the pinned archive checksum and extracted automatically into
-`DATABASE_ROOT/gtdbtk_r226/`. No manual extraction or archive copy is needed.
+`DATABASE_ROOT/gtdbtk_r232/`. No manual extraction or archive copy is needed.
 Your supplied archive is preserved after installation; a checksum mismatch
 stops installation without deleting it or silently downloading a replacement.
 The same lookup applies to the official CheckM archive filename.
@@ -55,7 +57,7 @@ After setup, the root supplied with `-d` has this layout:
 ```text
 genome-qc-databases/
 ├── checkm_data/                  # CheckM reference files
-├── gtdbtk_r226/                  # Extracted GTDB R226 package
+├── gtdbtk_r232/                  # Extracted GTDB R232 package
 └── gunc_db/
     └── gunc_db_progenomes2.1.dmnd
 ```
@@ -86,3 +88,16 @@ A full `run` performs this preparation automatically. Standalone `quality`,
 `taxonomy` and `chimera` prepare the reference they require. Files under the
 reference root are shared, not bundled into a software package or container.
 Do not rename a database from a different release to make it appear compatible.
+
+## Updating from R226
+
+The default database directory is now `gtdbtk_r232/`. An existing `gtdbtk_r226/`
+directory is left untouched; it is not renamed or used with GTDB-Tk 2.8.0.
+Run `build_db` against your existing database root to install R232 alongside it.
+Existing compatible CheckM and GUNC references are reused.
+
+Use a **new analysis output directory** for the R232 analysis. The completed
+300-genome development test used R226 and GTDB-Tk 2.6.1; it does not validate
+R232 classifications or runtime. Retain its original provenance when comparing
+results across releases. Taxonomic assignments may change because both the
+reference release and GTDB-Tk classification behavior changed.

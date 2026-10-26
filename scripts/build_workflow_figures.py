@@ -15,7 +15,7 @@ def figure(detailed=False):
     def edge(points,arrow=True): edges.append((points,arrow))
     def down(a,b): edge([(cx,a+21),(cx,b-24)])
     node('genomes',250,45,'input',['Genome FASTAs'])
-    node('references',635,45,'input',['Reference databases','(CheckM, GTDB R226, GUNC)'],'right')
+    node('references',635,45,'input',['Reference databases','(CheckM, GTDB R232, GUNC)'],'right')
     edge([(250,65),(250,105),(cx,105)],False)
     edge([(635,65),(635,105),(cx,105)],False);dots.append((cx,105))
     upper=[('prepare','Preprocessing','(SeqKit)'),
@@ -28,7 +28,7 @@ def figure(detailed=False):
                ('statistics','Assembly statistics','(SeqKit)'),
                ('quality','Completeness / contamination','(CheckM lineage_wf)'),
                ('qscore','Composite quality score','(Genome QC)'),
-               ('taxonomy','Taxonomic classification','(GTDB-Tk, R226)'),
+               ('taxonomy','Taxonomic classification','(GTDB-Tk, R232)'),
                ('rrna','Predict rRNA genes','(barrnap)'),
                ('consistency','Within-genome rRNA consistency','(BLAST+, Genome QC)'),
                ('representative','Choose one contig-length variant','(Qscore, N50, length)')]

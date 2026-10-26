@@ -191,7 +191,7 @@ def _run(args, root, output, control):
         print('Balanced batching (FASTA bytes; maximum 1000 genomes): ' + ', '.join(f"{tool} up to {budgets['batch_slots'][tool]} concurrent batches" for tool in active), flush=True)
     params['compact_results'] = args.compact_results
     params.update(stage=args.command, working_dir=str(output), ref_dir='', checkm_data_path=str(database / 'checkm_data'),
-                  gtdbtk_data_path=str(database / 'gtdbtk_r226'),
+                  gtdbtk_data_path=str(database / 'gtdbtk_r232'),
                   gunc_db=str(database / 'gunc_db/gunc_db_progenomes2.1.dmnd'))
     for key in ('checkm_cpus', 'gtdbtk_cpus', 'gunc_cpus', 'trnascan_cpus', 'atlas_ani_threads', 'atlas_cpus'):
         params[key] = threads

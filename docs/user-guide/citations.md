@@ -12,7 +12,7 @@ this guide. No Genome QC paper or DOI is asserted here.
 | Mamba | Isolated dependency environments | [Project](https://github.com/mamba-org/mamba) |
 | SeqKit | FASTA preprocessing and assembly statistics | [Project](https://github.com/shenwei356/seqkit) |
 | CheckM | Completeness, contamination and strain heterogeneity | Parks et al. (2015), [DOI: 10.1101/gr.186072.114](https://doi.org/10.1101/gr.186072.114); [project](https://github.com/Ecogenomics/CheckM) |
-| GTDB-Tk | Genome taxonomy; this workflow uses 2.6.1 with R226 | Chaumeil et al. (2022), [DOI: 10.1093/bioinformatics/btac672](https://doi.org/10.1093/bioinformatics/btac672); [documentation](https://ecogenomics.github.io/GTDBTk/) |
+| GTDB-Tk | Genome taxonomy; this workflow uses 2.8.0 with R232 | Chaumeil et al. (2022), [DOI: 10.1093/bioinformatics/btac672](https://doi.org/10.1093/bioinformatics/btac672); [documentation](https://ecogenomics.github.io/GTDBTk/) |
 | GTDB | Taxonomic reference release | [Database](https://gtdb.ecogenomic.org/) |
 | barrnap | rRNA gene prediction | [Project](https://github.com/tseemann/barrnap) |
 | BLAST+ | rRNA self-comparison | [NCBI BLAST](https://blast.ncbi.nlm.nih.gov/Blast.cgi) |

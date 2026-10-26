@@ -80,7 +80,7 @@ the example deliberately raises these limits. The login node's CPU and memory
 capacity does not constrain cluster jobs. Optional aggregate CPU/memory limits
 conservatively reduce the job cap using the largest task request.
 Tool-specific defaults are CheckM 48 GiB with up to eight threads (64 GiB above
-eight), GUNC 128 GiB, GTDB-Tk 128 GiB, tRNA prediction 32 GiB, and atlas 64 GiB.
+eight), GUNC 128 GiB, GTDB-Tk 160 GiB, tRNA prediction 32 GiB, and atlas 64 GiB.
 Small tasks request 4 GiB; merge, deduplication and quality scoring request 8 GiB.
 CheckM's full reference tree requires approximately 40 GB according to its
 [installation guide](https://github.com/Ecogenomics/CheckM/wiki/Installation).
@@ -130,12 +130,18 @@ See [failure handling and resume](recovery.md).
 
 ## Automatic GTDB memory handling
 
+GTDB-Tk documents roughly 140 GB for bacterial R232 placement, with memory
+varying by pplacer thread count. Genome QC reserves 160 GiB by default when
+available and enables disk-backed placement below that reservation. This is a
+conservative scheduling choice, not an upstream hard minimum. See the
+[GTDB-Tk hardware requirements](https://ecogenomics.github.io/GTDBTk/installing/index.html#hardware-requirements).
+
 On smaller local servers, default task reservations are capped to the usable
 memory budget. The automatic aggregate budget already excludes 10% headroom;
 this is not deducted a second time from individual task requests. An explicit
 `--memory` request larger than the budget still produces an error.
 
-When a GTDB task receives less than 128 GiB for R226, Genome QC automatically
+When a GTDB task receives less than 160 GiB for R232, Genome QC automatically
 passes GTDB-Tk's `--scratch_dir` and uses up to eight pplacer CPUs, capped by
 the task's CPU allocation (`--threads` and CPU budgets). Other parallel GTDB
 steps continue to receive `--threads` CPUs. Larger requests use normal in-memory

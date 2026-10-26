@@ -18,7 +18,7 @@ import time
 
 SPECS = {
     'checkm': ('https://zenodo.org/records/7401545/files/checkm_data_2015_01_16.tar.gz', '631012fa598c43fdeb88c619ad282c4d'),
-    'gtdbtk': ('https://data.gtdb.ecogenomic.org/releases/release226/226.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r226_data.tar.gz', '24b476ea5a4ef30519d461e56cc4a27f'),
+    'gtdbtk': ('https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz', '25a59e0352b1fd150c589f56559767d4'),
 }
 
 
@@ -122,7 +122,7 @@ def valid(name, root):
         if not metadata.is_file():
             return False
         release = re.search(r'^VERSION_DATA\s*=\s*[\'"]?(r[0-9]+)', metadata.read_text(), re.M)
-        return bool(release and release[1] == 'r226') and all(
+        return bool(release and release[1] == 'r232') and all(
             (root / p).is_dir() for p in ('markers', 'masks', 'pplacer', 'metadata', 'radii', 'taxonomy', 'mrca_red', 'skani', 'split'))
     return (root / 'gunc_db_progenomes2.1.dmnd').is_file() and (root / 'gunc_db_progenomes2.1.dmnd').stat().st_size > 0
 

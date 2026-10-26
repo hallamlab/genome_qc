@@ -58,7 +58,7 @@ class WorkflowIntegration(unittest.TestCase):
             checkm = work / 'db/checkm'; checkm.mkdir(parents=True)
             (checkm / 'fixture').touch()
             gtdb = work / 'db/gtdb/metadata'; gtdb.mkdir(parents=True)
-            (gtdb / 'metadata.txt').touch()
+            (gtdb / 'metadata.txt').write_text('VERSION_DATA=r232\n')
             (work / 'db/gunc.dmnd').write_text('fixture\n')
             output = work / 'output'
             params = dict(compact_results=compact_mode, stage='run', filter_size='', working_dir=str(output),

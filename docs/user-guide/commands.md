@@ -15,7 +15,7 @@ A full `run` wires these stages together automatically.
 | Command | Purpose | Required input |
 | --- | --- | --- |
 | `run` | Complete genome assessment, final selection, atlas and explorer | `-i` or `--manifest` |
-| `build_db` | Install/reuse CheckM, GTDB R226 and GUNC references | `-o`, optional `-d` |
+| `build_db` | Install/reuse CheckM, GTDB R232 and GUNC references | `-o`, optional `-d` |
 | `preprocess` | Contig-length variants and assembly statistics | Genome FASTAs |
 | `quality` | CheckM assessment of supplied genomes | Genome FASTAs |
 | `taxonomy` | GTDB-Tk classification | Genome FASTAs |

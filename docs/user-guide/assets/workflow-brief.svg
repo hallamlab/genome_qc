@@ -35,7 +35,7 @@
 <g id="node-references" data-node-kind="input">
 <circle cx="635" cy="45" r="18" fill="#DAE8FC" stroke="#6C8EBF" stroke-width="3"/>
 <text x="671" y="39.5" font-size="20" text-anchor="start">Reference databases</text>
-<text x="671" y="64.5" font-size="17" text-anchor="start">(CheckM, GTDB R226, GUNC)</text>
+<text x="671" y="64.5" font-size="17" text-anchor="start">(CheckM, GTDB R232, GUNC)</text>
 </g>
 <g id="node-prepare" data-node-kind="process">
 <path d="M440 144 L461 165 L440 186 L419 165 Z" fill="#FFFFFF" stroke="#111111" stroke-width="1.2"/>

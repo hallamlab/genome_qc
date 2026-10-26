@@ -55,7 +55,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(resources['threads'], 8)
         _, resources = configuration(self.args('--executor', 'slurm', '--account', 'x',
             '--max_tasks', '100', '--max_cpus', '32', '--max_memory', '256 GB'), '/cache')
-        self.assertEqual(resources['max_tasks'], 2)
+        self.assertEqual(resources['max_tasks'], 1)
 
     def test_small_server_automatically_uses_disk_backed_placement(self):
         with patch('genome_qc.execution.capacity', return_value=(32, '108 GB')):
@@ -65,6 +65,16 @@ class ExecutionTests(unittest.TestCase):
         from genome_qc.execution import memory_bytes
         self.assertLessEqual(memory_bytes(resources['gtdb_memory']), memory_bytes('108 GB'))
         self.assertIn(resources['gtdb_memory'], config)
+
+    def test_r232_reservation_and_scratch_threshold(self):
+        from genome_qc.execution import memory_bytes
+        with patch('genome_qc.execution.capacity', return_value=(32, '256 GB')):
+            _, resources = configuration(self.args(), '/cache')
+        self.assertEqual(memory_bytes(resources['gtdb_memory']), memory_bytes('160 GB'))
+        _, resources = configuration(self.args('--executor', 'slurm', '--account', 'x', '--gtdb_memory', '140 GB'), '/cache')
+        self.assertTrue(resources['gtdb_disk_backed'])
+        _, resources = configuration(self.args('--executor', 'slurm', '--account', 'x', '--gtdb_memory', '160 GB'), '/cache')
+        self.assertFalse(resources['gtdb_disk_backed'])
 
     def test_large_server_preserves_in_memory_mode(self):
         with patch('genome_qc.execution.capacity', return_value=(32, '256 GB')):

@@ -6,4 +6,4 @@ dependencies:
   - python=3.11
   - numpy<2
   - setuptools<81
-  - gtdbtk=2.6.1
+  - gtdbtk=2.8.0

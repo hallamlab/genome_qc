@@ -133,9 +133,10 @@ class ReleaseValidationTests(unittest.TestCase):
             for name in ('markers', 'masks', 'pplacer', 'metadata', 'radii', 'taxonomy', 'mrca_red', 'skani', 'split'):
                 (root / name).mkdir()
             metadata = root / 'metadata/metadata.txt'
-            metadata.write_text('VERSION_DATA=r220\n')
-            self.assertFalse(installer.valid('gtdbtk', root))
-            metadata.write_text('VERSION_DATA=r226\n')
+            for release in ('r220', 'r226'):
+                metadata.write_text(f'VERSION_DATA={release}\n')
+                self.assertFalse(installer.valid('gtdbtk', root))
+            metadata.write_text('VERSION_DATA=r232\n')
             self.assertTrue(installer.valid('gtdbtk', root))
             metadata.unlink()
             self.assertFalse(installer.valid('gtdbtk', root))
@@ -166,13 +167,13 @@ class SuppliedArchiveTests(unittest.TestCase):
     def test_bad_local_archive_preserved_without_network(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            archive = root / 'gtdbtk_r226_data.tar.gz'
+            archive = root / 'gtdbtk_r232_data.tar.gz'
             archive.write_bytes(b'bad archive')
             with patch('database_install.urllib.request.urlopen', side_effect=AssertionError('no network')):
                 with self.assertRaisesRegex(RuntimeError, 'original preserved'):
-                    installer.install('gtdbtk', root / 'gtdbtk_r226')
+                    installer.install('gtdbtk', root / 'gtdbtk_r232')
             self.assertEqual(archive.read_bytes(), b'bad archive')
-            self.assertFalse((root / 'gtdbtk_r226').exists())
+            self.assertFalse((root / 'gtdbtk_r232').exists())
 
 
 @unittest.skipUnless(__import__('shutil').which('rapidgzip'), 'rapidgzip integration dependency')
