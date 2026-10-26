@@ -80,6 +80,7 @@ class WorkflowIntegration(unittest.TestCase):
             env = {**os.environ, 'PATH': str(bins) + os.pathsep + os.environ['PATH'],
                    'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1', 'MPLCONFIGDIR': str(work / 'mpl')}
             command = ['nextflow', '-c', str(work / 'test.config'), 'run', str(runtime / 'main.nf'),
+                       '-ansi-log', 'false',
                        '-params-file', str(work / 'params.json'), '-work-dir', str(work / 'work')]
             first = subprocess.run(command, cwd=work, env=env, text=True, capture_output=True, timeout=300)
             self.assertEqual(first.returncode, 0, first.stdout + first.stderr + (work / '.nextflow.log').read_text()[-12000:])
