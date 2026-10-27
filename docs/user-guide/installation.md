@@ -4,8 +4,8 @@
 
 | Your situation | Route |
 | --- | --- |
-| You want a normal installed command | Use the Mamba package once published |
-| You are testing the current source before publication | Use the source-install commands below |
+| You want a normal installed command | Use the Mamba package |
+| You are developing or testing source changes | Use the source-install commands below |
 | You already have a working installation | Activate its environment; do not reinstall for every run |
 
 Commands in this guide are entered in a Linux terminal, not in Python or R.
@@ -22,7 +22,7 @@ native Windows or macOS installation route. A remote Linux server is suitable;
 ## Mamba installation
 
 Genome QC is packaged as `genome-qc`; its command is `genome_qc` (with
-`genome-qc` also available as an alias). The intended public installation is:
+`genome-qc` also available as an alias). Install it with:
 
 ```bash
 mamba create -n genome_qc --override-channels --strict-channel-priority \
@@ -32,10 +32,10 @@ genome_qc --version
 genome_qc check
 ```
 
-**Publication status:** the Conda recipe and package-validation workflow are in
-this repository. Upload to the HallamLab channel is pending; use the public
-command above once that package is published. This route requires no checkout,
-Git dependency install, or separate pip step.
+Version 0.1.0 is published on the normal `hallamlab` Anaconda channel for
+64-bit Linux. The full R232 end-to-end test, package integration tests and
+public-channel installation passed. No special label, checkout, Git dependency
+install or separate pip step is needed.
 
 Use 64-bit Linux with Mamba available on `PATH`.
 [Miniforge](https://github.com/conda-forge/miniforge) supplies Conda and Mamba.

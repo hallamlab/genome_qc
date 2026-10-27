@@ -21,9 +21,8 @@ conda activate genome_qc
 genome_qc check
 ```
 
-**Publication status:** the package recipe and validation workflow are prepared;
-the HallamLab upload is pending. The command above is the public installation
-route once published. No Git checkout or pip step is needed for that route.
+Genome QC 0.1.0 is available from the HallamLab Anaconda channel. The package
+installs the controller and workflow assets without a Git checkout or pip step.
 See [installation](docs/user-guide/installation.md) for package and developer details.
 
 Put your genome FASTAs in `~/genomes`, then run:

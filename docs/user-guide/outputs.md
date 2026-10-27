@@ -36,6 +36,13 @@ inspection of assessed, selected, unselected or incomplete subsets. Figure
 previews open enlarged views and PDFs. The atlas describes the original cohort;
 interactive table filters do not recalculate figures.
 
+Figures follow a consistent reading order: overall atlas, integrity versus
+recoverability, quality-score distribution, hallmark contributions, recovery
+patterns, taxonomy-associated quality, threshold landscape, ANI summary, and
+annotated phylogeny. Additional comparison figures follow. Existing output
+indexes use this order when served with the updated software; no analysis
+rerun is needed.
+
 **Explore tables** supports numeric ranges, taxonomy/text filters, sorting,
 column selection and CSV export. Numeric endpoints are inclusive; missing values
 cannot satisfy an active numeric bound. Criteria combine with AND. Exports
