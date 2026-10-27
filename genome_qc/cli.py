@@ -18,6 +18,7 @@ from .inputs import discover, stage
 from .runtime import runtime_root
 from .execution import add_options, configuration, literal, memory_bytes, capacity
 from . import compact
+from .hpc import preflight, save_packages
 
 ENTRIES = {'run': None, 'build_db': 'DATABASES', 'preprocess': 'PREPROCESS',
            'quality': 'CHECKM_ONLY', 'taxonomy': 'TAXONOMY_ONLY',
@@ -171,6 +172,7 @@ def _run(args, root, output, control):
     threads = budgets['threads']
     locations_file.write_text(json.dumps(locations, indent=2))
     database = Path(args.database).expanduser().resolve()
+    controller_limits = preflight(output, database) if args.executor == 'slurm' else {}
     digest = hashlib.sha256()
     for source in sorted(Path(__file__).parent.glob('*.py')):
         digest.update(source.name.encode()); digest.update(source.read_bytes())
@@ -248,7 +250,7 @@ def _run(args, root, output, control):
                        'run', str(root / 'main.nf'),
                        '-params-file', str(dbparams), '-work-dir', str(control / 'database-work')]
     receipt = {'invocation': vars(args).copy(), 'resources': budgets, 'version': __version__, 'command': command, 'database_command': preparation, 'params': params,
-               'status': 'planned', 'started_utc': stamp}
+               'status': 'planned', 'started_utc': stamp, 'controller_limits': controller_limits}
     receipt_path = logs / 'run.json'
     receipt_path.write_text(json.dumps(receipt, indent=2, default=str))
     if args.plan:
@@ -291,15 +293,11 @@ def _run(args, root, output, control):
         receipt['status'] = 'failed'
         raise
     finally:
-        receipt_path.write_text(json.dumps(receipt, indent=2, default=str))
-        packages = {}
-        for metadata_dir in cache.glob('*/conda-meta'):
-            records = []
-            for record in sorted(metadata_dir.glob('*.json')):
-                installed = json.loads(record.read_text())
-                records.append({key: installed.get(key) for key in ('name', 'version', 'build', 'channel', 'sha256')})
-            packages[metadata_dir.parent.name] = records
-        (logs / 'environment-packages.json').write_text(json.dumps(packages, indent=2))
+        try:
+            receipt_path.write_text(json.dumps(receipt, indent=2, default=str))
+        except Exception as exc:
+            print(f'WARNING: Could not update run receipt {receipt_path}: {exc}', file=sys.stderr)
+        save_packages(cache, logs / 'environment-packages.json')
 
     if args.compact_results and receipt['status'] == 'complete_with_assessment_failures':
         print('Retaining work and cache for failed-assessment recovery; compact completion is deferred.')

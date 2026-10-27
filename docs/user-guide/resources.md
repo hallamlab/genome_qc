@@ -158,6 +158,13 @@ RAM use but does not impose a hard memory ceiling or guarantee that arbitrary
 inputs fit. Capping other tools' default memory reservations does not reduce
 their actual memory requirements.
 
+Even a few genomes require large reference indices and tree caches to be loaded.
+On slow or shared storage, this I/O can dominate runtime, especially with
+disk-backed placement. A small full-workflow test is therefore not necessarily
+quick. Use fast local scratch when available, allow space for the placement
+files, and follow the task log and process activity rather than interpreting a
+quiet placement log as a stalled run.
+
 ## What runs where
 
 Database setup and environment solving occur on the controller host. Scientific
@@ -171,3 +178,46 @@ visible to the compute nodes. Worker-local scratch is temporary execution space,
 not a replacement for those shared paths. See the upstream
 [Nextflow Conda guide](https://www.nextflow.io/docs/latest/conda.html) and
 [Slurm executor documentation](https://www.nextflow.io/docs/latest/executor.html#slurm).
+
+## Keep the controller within cluster limits
+
+For large Slurm runs, use a compute-node allocation for the controller when
+cluster policy permits submitting jobs from compute nodes. `--max_tasks` bounds
+queued and running worker jobs; it does not cap Nextflow's JVM heap or native
+threads. Genome QC reports detected controller process and cgroup limits and
+warns about restrictive thread limits. This check cannot predict every runtime
+limit, and a missing detected limit does not establish unlimited resources.
+
+Download the [controller submission template](examples/controller.sbatch), activate
+your installed Genome QC environment, then submit it with shared absolute paths:
+
+```bash
+sbatch --account=YOUR_ACCOUNT controller.sbatch run \
+  -i /shared/project/genomes \
+  -o /shared/project/genome-qc-output \
+  -d /shared/project/genome-qc-databases \
+  --executor slurm --account YOUR_ACCOUNT \
+  --threads 8 --max_tasks 100 --submit_rate 60 \
+  --time_limit 24h --compact_results
+```
+
+The template requests four controller CPUs and 32 GiB, with a default 4-GiB
+Nextflow heap. Existing `NXF_OPTS` takes precedence. Adjust the controller walltime,
+partition and allocation to site policy. Worker requests remain independent of
+this allocation. A heap cap does not cap total JVM/native memory or thread count.
+
+Database preparation always runs on the controller host, including with
+`--executor slurm`. Prepare databases in advance with `genome_qc build_db` on a
+host where downloads and extraction are permitted. Analysis reuses complete
+databases. Conda environments also require controller-side preparation and
+network access on first use; a compute node without network access needs those
+environments prepared beforehand.
+
+Compact mode uses worker scratch and trims disposable GTDB/GUNC products before
+copying them back. Shared Nextflow checkpoints and environment caches remain
+until successful completion; unresolved failures retain them for recovery.
+Budget for peak usage, not only final results. Startup filesystem space/inode
+counts do **not** measure user or project quotas: consult your site's quota tool.
+Do not delete work directories while jobs are active. Input manifests must remain
+unchanged on resume; completed compact outputs are verified against their saved
+inputs, settings, implementation and product checksums.
