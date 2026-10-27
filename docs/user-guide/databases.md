@@ -101,3 +101,11 @@ Use a **new analysis output directory** for the R232 analysis. The completed
 R232 classifications or runtime. Retain its original provenance when comparing
 results across releases. Taxonomic assignments may change because both the
 reference release and GTDB-Tk classification behavior changed.
+
+The subsequent three-genome R232 end-to-end validation completed successfully:
+all 21 genome/tool assessments, ANI outputs, marker phylogeny, annotated tree,
+atlas, explorer integrity and compact cleanup passed, including retained-output
+checksum verification. This is an installation/interoperability check, not a
+large-cohort accuracy benchmark. On the validation server, disk-backed GTDB
+placement alone took approximately 3 hours 49 minutes; a small input set is
+therefore not a quick installation test. Use the [setup check](test.md) first.

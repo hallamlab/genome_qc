@@ -47,7 +47,7 @@ The integration suite checks normal execution, failure continuation/recovery,
 compact scratch handling, deterministic bounded batches and cached resume.
 A real-genome run remains necessary to validate external-tool interoperability.
 
-## Distribution plan
+## Distribution and release validation
 
 The primary release route is an **Anaconda-hosted Conda package installed
 with Mamba**. The recipe packages the controller, workflow assets and environment
@@ -64,17 +64,20 @@ a local container success does not establish HPC support.
 
 Before publication:
 
-1. Validate the ongoing full-workflow real-genome test, including incomplete
+1. Validate a full-workflow real-genome test, including incomplete
    assessments, atlas, explorer, balanced batching and compact output.
 2. Build a Conda artifact from the intended revision, install it in a clean
    environment, and run CLI, packaged-asset and integration checks.
-3. Provide a small distributable real-genome test with provenance and reuse terms.
-4. Validate the image against the same test; record versions and image digest.
+3. Keep the public quickstart focused on the fast controller setup check. Full
+   biological validation is an optional, resource-intensive developer/user test.
+4. For a future container release, validate the image separately and record its
+   versions and image digest; this is not a claim of existing container support.
 5. Publish only through explicit release jobs after tests pass. Keep Zenodo
    deposits manual and check that no study/manuscript files enter artifacts.
 
-The Anaconda organization/channel, package name, release version, Quay repository
-and RTD hostname should be agreed before activation. Publishing credentials belong
+The Conda destination is `hallamlab/genome-qc`; documentation is hosted at
+`https://hallamlab-genome-qc.readthedocs.io/en/latest/`. Quay distribution is a
+separate future release task. Publishing credentials belong
 in the repository's secret store, never in documentation or source files.
 See [Conda build documentation](https://docs.conda.io/projects/conda-build/en/latest/)
 and [Quay repository permissions](https://docs.quay.io/guides/repo-permissions.html).
