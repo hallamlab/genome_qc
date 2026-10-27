@@ -16,15 +16,14 @@ Install the Conda package with Mamba on 64-bit Linux:
 
 ```bash
 mamba create -n genome_qc --override-channels --strict-channel-priority \
-  -c conda-forge -c bioconda -c hallamlab/label/test genome-qc=0.1.0
+  -c conda-forge -c bioconda -c hallamlab genome-qc
 conda activate genome_qc
 genome_qc check
 ```
 
-**Test release:** version 0.1.0 is available on Anaconda's `hallamlab/label/test`
-channel for local and HPC evaluation. Package and workflow integration checks
-passed; the full R232 biological validation is still in progress. The stable
-`main` channel is not yet published. No Git checkout or pip step is needed.
+**Publication status:** the package recipe and validation workflow are prepared;
+the HallamLab upload is pending. The command above is the public installation
+route once published. No Git checkout or pip step is needed for that route.
 See [installation](docs/user-guide/installation.md) for package and developer details.
 
 Put your genome FASTAs in `~/genomes`, then run:
