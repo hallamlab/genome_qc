@@ -40,21 +40,27 @@ before your first full run: even a small genome set needs substantial reference
 storage and memory. Open `http://127.0.0.1:8765` to inspect the results, filter
 linked tables and export a documented genome selection.
 
-## Test the installation
+## Check the installation
 
-Start with a few bacterial or archaeal genome FASTAs in `~/genome-qc-test-inputs`:
+Verify the installed controller without downloading databases or running genome assessments:
 
 ```bash
-genome_qc run -i ~/genome-qc-test-inputs \
-  -o ~/genome-qc-test-output -d ~/genome-qc-databases \
-  --threads 8 --max_cpus 32
-genome_qc report -o ~/genome-qc-test-output --serve --port 8765
+conda activate genome_qc
+genome_qc --version
+genome_qc check
+genome_qc run --help
 ```
 
-The [test guide](https://hallamlab-genome-qc.readthedocs.io/en/latest/test.html) explains what to check in the results.
-A public genome test bundle is not yet included; a small input set still requires
-the full reference databases. For input manifests, Slurm, resuming and compact
-outputs, continue with the **[full user guide](https://hallamlab-genome-qc.readthedocs.io/en/latest/)**.
+`check` verifies that Nextflow, Java and Mamba are available on `PATH`. It does
+not validate reference databases or biological tool execution. This is the
+recommended initial setup check. A full biological run, even with only a few
+genomes, can take hours because GTDB must load and place sequences against large
+reference trees; it is not a quick installation test.
+
+For optional full-workflow validation and interpreting results, see the
+[test guide](https://hallamlab-genome-qc.readthedocs.io/en/latest/test.html).
+For manifests, Slurm, resuming and compact outputs, see the
+**[full user guide](https://hallamlab-genome-qc.readthedocs.io/en/latest/)**.
 
 ## Workflow
 

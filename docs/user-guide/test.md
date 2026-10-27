@@ -1,6 +1,6 @@
-# Test the installation
+# Check your setup and validate results
 
-## Check the controller
+## Quick setup check (recommended)
 
 After [installation](installation.md):
 
@@ -12,8 +12,16 @@ genome_qc run --help
 ```
 
 These checks do not download databases or validate biological predictions.
+`check` verifies the availability of Nextflow, Java and Mamba on `PATH`.
+This is the recommended initial installation check; the full analysis below
+is optional and is not required just to verify the controller setup.
 
-## Run a small real-genome test
+## Optional full biological validation
+
+**Allow hours, not minutes.** A few genomes still require large reference trees
+and indices; disk-backed GTDB placement can dominate runtime. This validation
+is for checking the complete scientific workflow on suitable hardware, not a
+quick installation test.
 
 Put a few bacterial or archaeal genome FASTAs you are permitted to use in
 `~/genome-qc-test-inputs`. Use unique filenames. A small genome set reduces task

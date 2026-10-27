@@ -1,8 +1,24 @@
 # Quickstart
 
-[Install Genome QC](installation.md), then put your genome FASTAs in an input
-directory. Each file represents one genome. Compressed FASTAs are accepted.
-Use a server suitable for the [reference and memory requirements](resources.md).
+## Check your setup first
+
+[Install Genome QC](installation.md), then verify the controller in your terminal:
+
+```bash
+conda activate genome_qc
+genome_qc --version
+genome_qc check
+genome_qc run --help
+```
+
+These commands do not download reference databases or run genome assessments.
+`check` confirms that Nextflow, Java and Mamba are available on `PATH`; it does
+not test biological tools or database contents. You do not need to run a
+three-genome analysis to check the installation. Even a few genomes can take
+hours in GTDB reference-tree placement, particularly with disk-backed scratch.
+
+Once the setup check passes, use your own genome FASTAs for the analysis below.
+Full biological validation is optional and described in the [test guide](test.md).
 
 ## Before you begin
 
@@ -45,8 +61,8 @@ genome_qc check
 
 Choose CPU limits that fit your server. The examples below assume 32 available
 CPUs; they are not a requirement. [Resource settings](resources.md) explain how
-to adapt them. A three-genome test still loads the same large reference databases
-as a larger analysis.
+to adapt them. Small-input analyses still load the same large reference databases
+as larger analyses.
 
 ## Run from FASTAs to the atlas
 
