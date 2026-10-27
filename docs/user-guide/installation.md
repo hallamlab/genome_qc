@@ -4,8 +4,8 @@
 
 | Your situation | Route |
 | --- | --- |
-| You want a normal installed command | Use the Mamba package once published |
-| You are testing the current source before publication | Use the source-install commands below |
+| You want a normal installed command | Use the Mamba test-channel package |
+| You are developing or testing source changes | Use the source-install commands below |
 | You already have a working installation | Activate its environment; do not reinstall for every run |
 
 Commands in this guide are entered in a Linux terminal, not in Python or R.
@@ -22,20 +22,21 @@ native Windows or macOS installation route. A remote Linux server is suitable;
 ## Mamba installation
 
 Genome QC is packaged as `genome-qc`; its command is `genome_qc` (with
-`genome-qc` also available as an alias). The intended public installation is:
+`genome-qc` also available as an alias). Install the public test release with:
 
 ```bash
 mamba create -n genome_qc --override-channels --strict-channel-priority \
-  -c conda-forge -c bioconda -c hallamlab genome-qc
+  -c conda-forge -c bioconda -c hallamlab/label/test genome-qc
 conda activate genome_qc
 genome_qc --version
 genome_qc check
 ```
 
-**Publication status:** the Conda recipe and package-validation workflow are in
-this repository. Upload to the HallamLab channel is pending; use the public
-command above once that package is published. This route requires no checkout,
-Git dependency install, or separate pip step.
+**Test release:** version 0.1.0 is published on Anaconda under
+`hallamlab/label/test`. Package and workflow integration tests have passed; the
+full R232 biological validation remains in progress. Use this channel for local
+and HPC evaluation. Stable `hallamlab` publication is still pending. This route
+requires no checkout, Git dependency install, or separate pip step.
 
 Use 64-bit Linux with Mamba available on `PATH`.
 [Miniforge](https://github.com/conda-forge/miniforge) supplies Conda and Mamba.
@@ -57,7 +58,7 @@ Finish or stop an active analysis before updating the installed software:
 
 ```bash
 mamba update -n genome_qc --override-channels --strict-channel-priority \
-  -c conda-forge -c bioconda -c hallamlab genome-qc
+  -c conda-forge -c bioconda -c hallamlab/label/test genome-qc
 ```
 
 For reproducibility, request a specific published version with
