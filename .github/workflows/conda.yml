@@ -22,6 +22,8 @@ on:
       - 'tests/test_workflow_integration.py'
       - 'tests/test_task_runtime_contracts.py'
       - 'tests/test_hpc_safeguards.py'
+      - 'tests/test_figure_order.py'
+      - 'tests/test_explorer_filters.py'
       - 'tests/tool_contract_fixture.py'
       - 'scripts/prepare_conda_recipe.py'
       - '.github/workflows/conda.yml'
@@ -83,6 +85,13 @@ jobs:
           cd "$RUNNER_TEMP"
           micromamba run -p "$RUNNER_TEMP/genome-qc-test" python -m unittest discover \
             -s "$GITHUB_WORKSPACE/tests" -p test_hpc_safeguards.py -v
+      - name: Validate explorer ordering and filters
+        run: |
+          cd "$RUNNER_TEMP"
+          micromamba run -p "$RUNNER_TEMP/genome-qc-test" python -m unittest discover \
+            -s "$GITHUB_WORKSPACE/tests" -p test_figure_order.py -v
+          micromamba run -p "$RUNNER_TEMP/genome-qc-test" python -m unittest discover \
+            -s "$GITHUB_WORKSPACE/tests" -p test_explorer_filters.py -v
       - name: Record artifact checksums
         run: |
           cd dist/channel/linux-64

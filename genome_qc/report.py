@@ -15,6 +15,36 @@ import math
 import re
 
 
+# Order the gallery by interpretation, not filename or directory traversal.
+# Match suffixes so custom atlas prefixes retain the same presentation.
+FIGURE_SEQUENCE = (
+    '_atlas', '_integrity_recoverability', '_qscore_distribution',
+    '_hallmark_contributions', '_recovery_patterns', '_taxonomy_qscore',
+    '_threshold_landscape',
+)
+
+
+def artifact_order(path):
+    path = Path(path)
+    if path.parts and path.parts[0] == 'genome_quality_atlas':
+        if len(path.parts) == 2:
+            for rank, suffix in enumerate(FIGURE_SEQUENCE):
+                if path.stem.endswith(suffix):
+                    return (rank, path.as_posix())
+        if 'ani' in path.parts:
+            return (7, path.as_posix())
+        if 'phylogeny' in path.parts:
+            return (8, path.as_posix())
+        return (9, path.as_posix())
+    return (10, path.as_posix())
+
+
+def artifacts(db):
+    return sorted((dict(id=i, path=path) for i, path in
+                   db.execute('SELECT id,path FROM artifacts')),
+                  key=lambda item: artifact_order(item['path']))
+
+
 def build(output):
     output = Path(output).resolve()
     reports = output / 'reports'
@@ -225,7 +255,7 @@ def serve(output, port):
             try:
                 with closing(sqlite3.connect(index.resolve().as_uri() + '?mode=ro', uri=True)) as db:
                     if parsed.path == '/api/artifacts':
-                        content = json.dumps([dict(id=i, path=path) for i, path in db.execute('SELECT id,path FROM artifacts ORDER BY path')]).encode()
+                        content = json.dumps(artifacts(db)).encode()
                         mime = 'application/json'
                     elif parsed.path == '/artifact':
                         record = db.execute('SELECT path FROM artifacts WHERE id=?', (p.get('id', ''),)).fetchone()
