@@ -1,6 +1,8 @@
 # Commands
 
-See the generated [CLI reference](cli-reference.md) for every controller flag.
+See the generated [CLI reference](cli-reference.md) for every public command and flag, including standalone analyses and nested
+render commands. The [column dictionary](output-columns.md) explains the resulting
+measurements and audit fields.
 
 The complete `run` also builds [cohort ANI groups and annotated marker trees](phylogeny.md)
 by default. These use the shared resource controls and need no study labels.

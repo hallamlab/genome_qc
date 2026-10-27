@@ -55,6 +55,7 @@ recovery
 :caption: Results and reference
 
 outputs
+output-columns
 selection
 phylogeny
 interpretation

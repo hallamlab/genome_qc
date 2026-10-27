@@ -1,5 +1,8 @@
 # Results and explorer
 
+See the [column dictionary](output-columns.md) for exact field names, units,
+formulas, missing values and assessment/selection semantics.
+
 ## Files to start with
 
 | Path | Contents |

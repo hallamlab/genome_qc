@@ -53,3 +53,19 @@ Only `docs/user-guide/` is public documentation. The Sphinx page allow-list in
 `conf.py` deliberately excludes adjacent local manuscripts and research results.
 Add new public pages to that list and to the appropriate landing-page navigation
 group. Do not include study-specific manuscripts, tables or figures.
+
+## Keep reference pages current
+
+`python scripts/build_cli_reference.py` regenerates help for every public
+subcommand, including nested render commands. Run it in a Python environment
+with NumPy, pandas, SciPy and statsmodels available for the standalone parsers;
+it invokes only `--help` and does not start analyses. Ordinary Sphinx/RTD builds
+use the checked-in reference and do not need those additional imports.
+
+When output schemas change, update [the column dictionary](output-columns.md)
+from the producing code, including units, missing-value behavior, formulas and
+status enums. Check named table headers from a completed validation run against
+the dictionary. Treat headerless upstream files separately rather than mistaking
+their first data row for column names. Optional metadata columns retain the
+user-supplied definitions. Do not copy validation datasets or study tables into
+the documentation tree.
