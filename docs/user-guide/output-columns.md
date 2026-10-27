@@ -155,6 +155,8 @@ and assessment stage:
 `genome_quality_atlas/<prefix>_annotated.tsv` adds these to the master table.
 The default prefix is `genome_quality`. These are descriptive workflow scores,
 not calibrated probabilities or substitutes for direct inspection of genomes.
+For biological interpretation and worked examples, see
+[Integrity and recoverability](interpretation.md#integrity-and-recoverability).
 
 | Column | Units | Definition |
 | --- | --- | --- |

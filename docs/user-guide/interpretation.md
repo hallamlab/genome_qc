@@ -31,6 +31,81 @@ or complete. Failed prediction/comparison receives a missing assessment rather
 than a successful no-hit result. Inspect the RNA counts and tool statuses with the
 flag. `--require_rrna_consistency` is disabled by default.
 
+## Integrity and recoverability
+
+These two atlas scores describe complementary aspects of the **assembled genome**:
+its marker-based completeness and contamination, and the RNA gene features recovered
+in its sequence. Both range from 0 to 1; neither is a probability or a percentage
+of the genome recovered.
+
+### Integrity: how favorable is the completeness–contamination balance?
+
+Integrity summarizes whether an assembly contains much of the expected genome
+content while showing little marker-based evidence of contamination. It uses
+CheckM completeness and contamination and takes the **weaker of the two components**.
+A high completeness estimate therefore cannot compensate for high contamination,
+and low contamination cannot compensate for substantial missing sequence.
+
+The completeness component increases from 0 at 50% completeness to 1 at 90%.
+The contamination component decreases from 1 at 5% contamination to 0 at 10%.
+Values beyond these ranges are capped. For example:
+
+- A genome with 70% completeness and 2% contamination has integrity **0.5**,
+  limited by completeness.
+- A genome with 95% completeness and 7.5% contamination also has integrity
+  **0.5**, but is limited by contamination.
+- Integrity **1** means completeness is at least 90% and contamination is at
+  most 5%. It does not distinguish a 90%-complete assembly from a 99%-complete one.
+
+Always inspect the underlying measurements to understand a low or intermediate
+score. Integrity does not assess every possible assembly error or establish that
+all contigs belong to the same organism. Contiguity, RNA features and GUNC findings
+provide separate evidence and are not included in this score.
+
+### Recoverability: which RNA gene hallmarks did the assembly recover?
+
+Recoverability describes the representation of RNA genes involved in the cell's
+translation machinery: **16S, 23S and 5S rRNA, plus a tRNA diversity criterion**.
+Despite its name, it measures features already recovered in this assembly, not
+how likely further sequencing or reassembly is to recover more of the genome.
+
+Each of the four components contributes up to one quarter of the score. Each
+rRNA component uses its weighted count, capped at 1; the tRNA component is 1 when
+at least 18 distinct predicted tRNA isotype labels are present and 0 otherwise.
+Thus, three fully scored rRNA components with the tRNA criterion unmet give
+**0.75**. Two fully scored rRNA components plus the tRNA criterion also give
+**0.75**. Inspect the individual RNA columns or recovery pattern to see which
+features account for the score.
+
+Partial rRNA predictions contribute fractional counts, and several partial
+predictions can add up to a fully scored component. A score of 1 therefore does
+not by itself establish intact full-length rRNA genes, a linked rRNA operon, or
+a complete chromosome. Conversely, a missing predicted feature does not establish
+that the organism lacks it: the sequence may be absent from the assembly or not
+recognized by the prediction step. This score does not measure gene expression,
+cellular activity or metabolic capability.
+
+### Reading the two scores together
+
+In the integrity-versus-recoverability plot, integrity is on the horizontal axis
+and recoverability on the vertical axis. Use their combination to decide what to
+inspect next:
+
+| Score pattern | Biological reading and next check |
+| --- | --- |
+| High integrity, high recoverability | Favorable marker-based quality with recovered RNA hallmarks. Inspect raw quality metrics and other assessments before selecting the genome. |
+| High integrity, low recoverability | Favorable marker-based quality, but some RNA hallmarks are absent or partially recovered. Check the specific RNA features, especially if the intended analysis depends on them. |
+| Low integrity, high recoverability | RNA hallmarks are represented, but completeness or contamination remains limiting. RNA recovery does not resolve that limitation; inspect CheckM and GUNC results. |
+| Low integrity, low recoverability | Both the marker-based quality profile and recovered RNA features are limited. The genome may still support specific gene-level observations, but absence claims require caution. |
+
+“High” and “low” here are reading aids, not additional selection thresholds.
+Missing assessments are unavailable rather than evidence of biological absence.
+The scores are descriptive: they do not automatically exclude genomes under the
+default settings. Integrity of 1 alone also does not establish a high-quality
+tier, which has additional RNA requirements and stricter completeness and
+contamination boundaries. See the [atlas column definitions](output-columns.md#atlas-derived-columns)
+for exact formulas, recovery patterns and tier rules.
+
 ## Atlas and selection
 
 Atlas annotations summarize multiple evidence types. Quality tiers and derived
