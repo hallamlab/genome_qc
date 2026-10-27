@@ -6,6 +6,11 @@ on:
         description: Publish the validated package to Anaconda (main only)
         type: boolean
         default: false
+      publication_label:
+        description: Anaconda label (test permits HPC testing before real-genome validation completes)
+        type: choice
+        options: [main, test]
+        default: main
       real_genome_test_passed:
         description: Confirm the full real-genome workflow test passed for this release
         type: boolean
@@ -34,11 +39,12 @@ jobs:
       - name: Validate publication request
         env:
           PUBLISH: ${{ inputs.publish_anaconda || false }}
+          PUBLICATION_LABEL: ${{ inputs.publication_label || 'main' }}
           REAL_TEST_PASSED: ${{ inputs.real_genome_test_passed || false }}
         run: |
           if [[ "$PUBLISH" == true ]]; then
             [[ "$GITHUB_REF" == refs/heads/main ]] || { echo 'Publish from main after merging the tested refactor.'; exit 1; }
-            [[ "$REAL_TEST_PASSED" == true ]] || { echo 'Confirm the full real-genome test passed before publication.'; exit 1; }
+            [[ "$PUBLICATION_LABEL" == test || "$REAL_TEST_PASSED" == true ]] || { echo 'Confirm the full real-genome test passed before publication.'; exit 1; }
           fi
   conda:
     needs: validate-request
@@ -109,6 +115,7 @@ jobs:
       run:
         shell: bash -el {0}
     env:
+      PUBLICATION_LABEL: ${{ inputs.publication_label || 'main' }}
       ANACONDA_OWNER: ${{ vars.ANACONDA_OWNER || 'hallamlab' }}
     steps:
       - uses: actions/download-artifact@v4
@@ -135,13 +142,13 @@ jobs:
           BINSTAR_API_TOKEN: ${{ secrets.ANACONDA_API_TOKEN }}
         run: |
           test -n "$BINSTAR_API_TOKEN" || { echo 'Set ANACONDA_API_TOKEN in repository secrets or the release environment.'; exit 1; }
-          anaconda upload --user "$ANACONDA_OWNER" --label main packages/channel/linux-64/genome-qc-*.conda
+          anaconda upload --user "$ANACONDA_OWNER" --label "$PUBLICATION_LABEL" packages/channel/linux-64/genome-qc-*.conda
       - name: Install published version from Anaconda
         run: |
           micromamba create -y -p "$RUNNER_TEMP/published-genome-qc" \
             --override-channels --strict-channel-priority \
-            -c conda-forge -c bioconda -c "$ANACONDA_OWNER" "genome-qc=$PACKAGE_VERSION"
+            -c conda-forge -c bioconda -c "$ANACONDA_OWNER/label/$PUBLICATION_LABEL" "genome-qc=$PACKAGE_VERSION"
           micromamba run -p "$RUNNER_TEMP/published-genome-qc" genome_qc --version
           micromamba run -p "$RUNNER_TEMP/published-genome-qc" genome_qc check
           micromamba run -p "$RUNNER_TEMP/published-genome-qc" genome_qc run --help
-          echo "Published and installed genome-qc $PACKAGE_VERSION from $ANACONDA_OWNER." >> "$GITHUB_STEP_SUMMARY"
+          echo "Published and installed genome-qc $PACKAGE_VERSION from $ANACONDA_OWNER/label/$PUBLICATION_LABEL." >> "$GITHUB_STEP_SUMMARY"
