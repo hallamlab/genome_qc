@@ -7,7 +7,7 @@ on:
         type: boolean
         default: false
       real_genome_test_passed:
-        description: Confirm biological validation: full real-genome baseline plus any changed-stage tests
+        description: "Confirm biological validation: full real-genome baseline plus any changed-stage tests"
         type: boolean
         default: false
   pull_request:
