@@ -15,6 +15,8 @@ class PackageSourceTests(unittest.TestCase):
         self.assertIn('envs/cohort_phylogeny.yaml',files)
         self.assertIn('genome_qc/explorer.py',files)
         self.assertIn('assessment_summary.py',files)
+        self.assertIn('small_task_batch.py',files)
+        self.assertIn('envs/rrna_batch.yaml',files)
         self.assertIn('envs/gtdbtk.yaml',files)
         self.assertFalse(any(p.startswith(('docs/','preview/','tests/','scripts/')) for p in files))
         self.assertFalse(any(Path(p).suffix in ('.docx','.pdf','.tsv','.sif') for p in files))

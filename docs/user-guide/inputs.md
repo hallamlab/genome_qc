@@ -80,3 +80,7 @@ Genomes with no usable variant remain visible in the input inventory.
 `genome_qc compare` uses a different manifest: `sample`, `category`, and
 `run_directory`, with an optional `bin_id_token_index`. Its rows refer to completed
 Genome QC runs, not FASTA files. See [standalone analyses](commands.md).
+
+Directory discovery is recursive by default. Add `--no_recursive` to restrict `-i`
+to files directly inside that directory. The CLI prints counts for each discovered
+parent directory. Use a manifest when excluding particular genomes or subfolders.

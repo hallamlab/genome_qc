@@ -17,7 +17,7 @@ class ExecutionTests(unittest.TestCase):
                      '/sys/fs/cgroup/cpu.max': 'max 100000',
                      '/sys/fs/cgroup/memory.max': 'max',
                      '/sys/fs/cgroup/memory.current': str(used * 1024**3)}
-            with patch.object(Path, 'read_text', lambda p: files[str(p)]), \
+            with patch.object(Path, 'read_text', lambda p: files.get(str(p), 'max')), \
                     patch('os.sched_getaffinity', return_value=set(range(32))):
                 cpus, budget = capacity()
             self.assertEqual(cpus, 32)
@@ -28,7 +28,7 @@ class ExecutionTests(unittest.TestCase):
         files = {'/proc/meminfo': f'MemTotal: {120 * 1024**2} kB\n',
                  '/sys/fs/cgroup/cpu.max': '800000 100000',
                  '/sys/fs/cgroup/memory.max': str(40 * 1024**3)}
-        with patch.object(Path, 'read_text', lambda p: files[str(p)]), \
+        with patch.object(Path, 'read_text', lambda p: files.get(str(p), 'max')), \
                 patch('os.sched_getaffinity', return_value=set(range(32))):
             cpus, budget = capacity()
         self.assertEqual(cpus, 8)

@@ -61,7 +61,7 @@ class WorkflowIntegration(unittest.TestCase):
             (gtdb / 'metadata.txt').write_text('VERSION_DATA=r232\n')
             (work / 'db/gunc.dmnd').write_text('fixture\n')
             output = work / 'output'
-            params = dict(compact_results=compact_mode, stage='run', filter_size='', working_dir=str(output),
+            params = dict(small_batch_size=3, small_batch_cpus=2, max_forks=2, compact_results=compact_mode, stage='run', filter_size='', working_dir=str(output),
                           fasta_dir=str(stage(discover(inputs), output)),
                           checkm_data_path=str(checkm), gtdbtk_data_path=str(gtdb.parent),
                           gunc_db=str(work / 'db/gunc.dmnd'), checkm_cpus=1, gtdbtk_cpus=32 if compact_mode else 1,

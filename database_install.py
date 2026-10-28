@@ -1,4 +1,6 @@
 """Locked, atomic database installation; called in a tool-specific environment."""
+import argparse
+import gzip
 import fcntl
 import hashlib
 import json
@@ -16,7 +18,10 @@ import http.client
 import re
 import time
 
+# GUNC pins match gunc.gunc_database DB_DOWNLOADS['progenomes_2.1'].
+GUNC_DMND_MD5 = '447c9330056b02f29f30fe81fe4af4eb'
 SPECS = {
+    'gunc': ('https://zenodo.org/records/19631736/files/gunc_db_progenomes2.1.dmnd.gz', 'bc93a855e0760aad5c4e5f2d0e26da46'),
     'checkm': ('https://zenodo.org/records/7401545/files/checkm_data_2015_01_16.tar.gz', '631012fa598c43fdeb88c619ad282c4d'),
     'gtdbtk': ('https://data.gtdb.ecogenomic.org/releases/release232/232.0/auxillary_files/gtdbtk_package/full_package/gtdbtk_r232_data.tar.gz', '25a59e0352b1fd150c589f56559767d4'),
 }
@@ -155,56 +160,107 @@ def extract_archive(archive, payload, threads):
         finally:
             process.stdout.close()
 
-def install(name, destination, threads=1):
-    if name not in ('checkm', 'gtdbtk', 'gunc'):
+# Conservative planning allowances, not user/project quota measurements.
+SPACE_GIB = {'checkm': 3, 'gtdbtk': 180, 'gunc': 20}
+
+
+def space_check(name, directory, download_only=False, retained_bytes=0):
+    free = shutil.disk_usage(directory).free
+    estimate = SPACE_GIB[name] * 1024**3
+    if download_only:
+        estimate = {'checkm': 1, 'gtdbtk': 65, 'gunc': 8}[name] * 1024**3
+    estimate = max(0, estimate - retained_bytes)
+    print(f'{name}: filesystem free={free / 1024**3:.1f} GiB; planning allowance={estimate / 1024**3:.0f} GiB. User/project quotas may be smaller.', flush=True)
+    if free < estimate:
+        raise RuntimeError(f'{name}: insufficient filesystem space for preparation; choose a larger database location with -d')
+
+
+def install(name, destination, threads=1, download_only=False, extract_only=False, attempts=20, url=None):
+    if name not in SPECS:
         raise ValueError(f'Unknown reference database: {name}')
+    if download_only and extract_only:
+        raise ValueError('download_only and extract_only are mutually exclusive')
     dest = Path(destination).expanduser().resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
     with (dest.parent / ('.' + dest.name + '.lock')).open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if valid(name, dest):
+        # Only remove our marked staging directories for this exact destination.
+        # The destination lock proves no other installer for it is active.
+        for stale in dest.parent.glob('.' + name + '-install-*'):
+            marker = stale / '.genome-qc-install.json'
+            try:
+                owned = not stale.is_symlink() and stale.stat().st_uid == os.getuid()
+                if owned and json.loads(marker.read_text()).get('destination') == str(dest):
+                    shutil.rmtree(stale)
+            except (OSError, ValueError):
+                pass
+        if valid(name, dest) and not download_only:
             print(f'{name}: using {dest}', flush=True)
             return
-        if dest.exists():
+        if dest.exists() and not download_only:
             raise RuntimeError(f'{dest} exists but is incomplete. Preserve/remove it explicitly or choose a new database directory.')
+        canonical_url, expected = SPECS[name]
+        source_url = url or canonical_url
+        basename = Path(urllib.parse.urlparse(canonical_url).path).name
+        supplied = dest.parent / basename
+        key = hashlib.sha256((canonical_url + expected).encode()).hexdigest()[:24]
+        managed = dest.parent / '.downloads' / (dest.name + '-' + key + '.tar.gz.part')
+        archive = supplied if supplied.is_file() else managed
+        if extract_only and not archive.is_file():
+            raise RuntimeError(f'{name}: --extract_only requires {supplied} (or a retained verified download); no download attempted')
+        if supplied.is_file() or extract_only:
+            md5, sha = hashes(archive)
+            if md5 != expected:
+                raise RuntimeError(f'{name}: checksum mismatch for supplied archive {archive}; original preserved, installation not published')
+            if not download_only:
+                space_check(name, dest.parent, retained_bytes=archive.stat().st_size)
+        else:
+            space_check(name, dest.parent, download_only)
+            md5, sha = download(source_url, archive, expected, attempts=attempts)
+        if download_only:
+            if archive != supplied:
+                archive.replace(supplied)
+            supplied.with_name(supplied.name + '.provenance.json').write_text(json.dumps(
+                dict(source_url=source_url, md5=md5, sha256=sha, bytes=supplied.stat().st_size), indent=2) + '\n')
+            print(f'{name}: verified archive ready: {supplied}', flush=True)
+            return
         with tempfile.TemporaryDirectory(prefix='.' + name + '-install-', dir=dest.parent) as tmp:
-            work = Path(tmp); payload = work / 'payload'; payload.mkdir()
-            receipt = {'database': name}
-            if name in SPECS:
-                url, expected = SPECS[name]
-                key = hashlib.sha256((url + expected).encode()).hexdigest()[:24]
-                supplied = dest.parent / Path(urllib.parse.urlparse(url).path).name
-                managed_archive = not supplied.is_file()
-                archive = (dest.parent / '.downloads' / (dest.name + '-' + key + '.tar.gz.part')) if managed_archive else supplied
-                if managed_archive:
-                    md5, sha = download(url, archive, expected)
-                else:
-                    print(f'{name}: verifying existing archive {archive}; no download needed', flush=True)
-                    md5, sha = hashes(archive)
-                    if md5 != expected:
-                        raise RuntimeError(f'{name}: checksum mismatch for supplied archive {archive}; original preserved, installation not published')
-                    receipt['source_archive'] = str(archive)
-                print(f'{name}: extracting verified archive; temporary extraction is in {work}', flush=True)
+            work = Path(tmp)
+            (work / '.genome-qc-install.json').write_text(json.dumps({'destination': str(dest)}))
+            payload = work / 'payload'; payload.mkdir()
+            print(f'{name}: extracting verified archive; temporary extraction is in {work}', flush=True)
+            if name == 'gunc':
+                target = payload / 'gunc_db_progenomes2.1.dmnd'
+                with gzip.open(archive, 'rb') as source, target.open('wb') as output:
+                    shutil.copyfileobj(source, output, CHUNK)
+                if hashes(target)[0] != GUNC_DMND_MD5:
+                    raise RuntimeError('GUNC extracted database checksum mismatch')
+            else:
                 extract_archive(archive, payload, threads)
                 candidates = [payload] + [p for p in payload.iterdir() if p.is_dir()]
                 payload = next((p for p in candidates if valid(name, p)), payload)
-                receipt.update(source_url=url, md5=md5, sha256=sha)
-            else:
-                subprocess.run(['gunc', 'download_db', str(payload), '--database', 'progenomes_2.1'], check=True)
-                db = payload / 'gunc_db_progenomes2.1.dmnd'
-                sha = hashlib.sha256()
-                with db.open('rb') as f:
-                    for chunk in iter(lambda: f.read(8 * 1024 * 1024), b''): sha.update(chunk)
-                receipt.update(source='gunc download_db --database progenomes_2.1', sha256=sha.hexdigest())
             if not valid(name, payload):
-                raise RuntimeError(f'{name}: extracted database is incomplete')
+                raise RuntimeError(f'{name}: extracted database is incomplete; installation not published')
+            receipt = dict(database=name, source_url=source_url, md5=md5, sha256=sha,
+                           source_archive=str(archive), archive_bytes=archive.stat().st_size)
             receipt['files'] = {str(p.relative_to(payload)): p.stat().st_size for p in payload.rglob('*') if p.is_file()}
             (payload / 'genome_qc_database.json').write_text(json.dumps(receipt, indent=2) + '\n')
             os.replace(payload, dest)
-            if name in SPECS and managed_archive:
+            if archive == managed:
                 archive.unlink(missing_ok=True)
             print(f'{name}: installed {dest}', flush=True)
 
 
 if __name__ == '__main__':
-    install(*sys.argv[1:])
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('name', choices=sorted(SPECS)); p.add_argument('destination')
+    p.add_argument('threads', type=int, nargs='?', default=1)
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument('--download-only', action='store_true')
+    mode.add_argument('--extract-only', action='store_true')
+    p.add_argument('--attempts', type=int, default=20)
+    p.add_argument('--url')
+    a = p.parse_args()
+    if a.threads < 1 or a.attempts < 1:
+        p.error('threads and attempts must be positive')
+    install(a.name, a.destination, a.threads, a.download_only, a.extract_only, a.attempts, a.url)

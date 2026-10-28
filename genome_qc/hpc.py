@@ -66,3 +66,31 @@ def save_packages(cache, destination):
         destination.write_text(json.dumps(packages, indent=2))
     except Exception as exc:
         print(f'WARNING: Could not save environment provenance to {destination}: {exc}', file=sys.stderr, flush=True)
+
+
+def workload_estimate(genomes, variants, batch_size, max_batch_size, slots, submit_rate, environment_count):
+    """Planning envelope; task count is an upper estimate before assessment losses."""
+    import math
+    n = genomes * variants
+    def batches(count, cap, parallel):
+        return min(count, max(math.ceil(count / cap), parallel)) if count else 0
+    small = 3 * variants * batches(genomes, batch_size, slots['small'])
+    large = sum(variants * batches(genomes, max_batch_size, slots[name])
+                for name in ('checkm', 'gtdb', 'gunc'))
+    # Merges, selection, atlas, ANI and phylogeny; optional branches may reduce it.
+    tasks = small + large + 20
+    return dict(genomes=genomes, variants=variants, task_upper_estimate=tasks,
+                minimum_submission_minutes=round(tasks / submit_rate, 1),
+                peak_files_low=40*n + 12*tasks + 10000*environment_count,
+                peak_files_high=100*n + 20*tasks + 20000*environment_count,
+                caveat='File envelope includes shared task inputs/outputs and environments; excludes database contents and other runs. It is not a quota guarantee.')
+
+
+def describe_workload(estimate, executor, file_budget=None):
+    print(f"Planning estimate: up to approximately {estimate['task_upper_estimate']:,} tasks; "
+          f"peak files roughly {estimate['peak_files_low']:,}–{estimate['peak_files_high']:,} including environments.", flush=True)
+    if executor == 'slurm':
+        print(f"Submission-only lower bound at configured rate: {estimate['minimum_submission_minutes'] / 60:.1f} hours (queueing and execution add time).", flush=True)
+    print(estimate['caveat'], flush=True)
+    if file_budget and estimate['peak_files_high'] > file_budget:
+        print(f'WARNING: Estimated peak files exceed your --file_budget of {file_budget:,}. Reduce shared intermediates or use an adequately sized allocation-local work directory; check cluster quota before proceeding.', flush=True)

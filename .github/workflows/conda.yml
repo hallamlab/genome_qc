@@ -7,7 +7,7 @@ on:
         type: boolean
         default: false
       real_genome_test_passed:
-        description: Confirm the full real-genome workflow test passed for this release
+        description: Confirm biological validation: full real-genome baseline plus any changed-stage tests
         type: boolean
         default: false
   pull_request:
@@ -22,6 +22,9 @@ on:
       - 'tests/test_workflow_integration.py'
       - 'tests/test_task_runtime_contracts.py'
       - 'tests/test_hpc_safeguards.py'
+      - 'tests/test_hpc_scale.py'
+      - 'tests/test_small_task_batch.py'
+      - 'tests/test_database_download.py'
       - 'tests/test_figure_order.py'
       - 'tests/test_explorer_filters.py'
       - 'tests/tool_contract_fixture.py'
@@ -40,7 +43,7 @@ jobs:
         run: |
           if [[ "$PUBLISH" == true ]]; then
             [[ "$GITHUB_REF" == refs/heads/main ]] || { echo 'Publish from main after merging the tested refactor.'; exit 1; }
-            [[ "$REAL_TEST_PASSED" == true ]] || { echo 'Confirm the full real-genome test passed before publication.'; exit 1; }
+            [[ "$REAL_TEST_PASSED" == true ]] || { echo 'Confirm biological validation passed before publication (full real-genome baseline plus changed-stage validation for maintenance releases).'; exit 1; }
           fi
   conda:
     needs: validate-request
@@ -59,6 +62,11 @@ jobs:
           create-args: >-
             python=3.11 conda-build conda-index pyyaml
             -c conda-forge
+      - name: Validate HPC resource and database safeguards
+        run: |
+          python -m unittest discover -s tests -p test_hpc_scale.py -v
+          python -m unittest discover -s tests -p test_database_download.py -v
+          python -m unittest discover -s tests -p test_small_task_batch.py -v
       - name: Prepare allow-listed source and recipe
         run: python scripts/prepare_conda_recipe.py --output dist/conda-source
       - name: Build package and test installed CLI

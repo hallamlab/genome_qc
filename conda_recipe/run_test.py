@@ -10,7 +10,7 @@ from genome_qc.report import build
 root = runtime_root()
 assert root == Path(sys.prefix) / 'share/genome_qc', root
 for name in ('main.nf', 'nextflow.config', 'database_install.py', 'assessment_task.py',
-             'assessment_summary.py', 'merge_gunc_batches.py', 'genome_quality_atlas.py',
+             'small_task_batch.py', 'envs/rrna_batch.yaml', 'assessment_summary.py', 'merge_gunc_batches.py', 'genome_quality_atlas.py',
              'envs/checkm.yaml', 'envs/gtdbtk.yaml', 'envs/gunc.yaml', 'envs/reference_setup.yaml'):
     assert (root / name).is_file(), name
 with tempfile.TemporaryDirectory() as temp:

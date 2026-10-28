@@ -14,7 +14,7 @@ See the [official release compatibility table](https://ecogenomics.github.io/GTD
 GTDB-Tk R232 and CheckM archives are downloaded over HTTPS with pinned checksum
 verification. The installer reports transferred GiB, percentage when the server
 provides a size, and transfer speed about every ten seconds. Transient failures
-retry up to five attempts with bounded exponential backoff. HTTP range requests
+retry up to 20 attempts with bounded exponential backoff. HTTP range requests
 resume partial downloads; servers that ignore range requests trigger a safe
 restart instead. Corrupt downloads are discarded and retried.
 
@@ -46,8 +46,7 @@ prevents duplicate concurrent installation. Existing complete installations
 are reused; existing incomplete destination directories require explicit
 attention rather than being overwritten.
 
-GUNC currently uses its own `gunc download_db` command; the resumable HTTP
-downloader described above applies to GTDB-Tk and CheckM. Reference databases
+GUNC uses the same verified, resumable archive downloader as GTDB-Tk and CheckM. Reference databases
 and retained download archives are not removed by compact-results cleanup.
 
 ## Recognize the reference layout
@@ -109,3 +108,54 @@ checksum verification. This is an installation/interoperability check, not a
 large-cohort accuracy benchmark. On the validation server, disk-backed GTDB
 placement alone took approximately 3 hours 49 minutes; a small input set is
 therefore not a quick installation test. Use the [setup check](test.md) first.
+
+## Download on one host, install on another
+
+On HPC, explicitly select a shared project database directory with `-d`; the
+home-directory default may exceed your home quota. Preparation checks filesystem
+free space against conservative allowances, but it cannot establish your remaining
+user/project quota. Check that separately using the site's tools.
+
+Fetch verified archives on a host where the site permits downloads:
+
+```bash
+genome_qc build_db -o database-download-log \
+  -d /project/PROJECT/genome-qc-databases \
+  --download_only --download_attempts 20
+```
+
+Then, on a compute allocation with the same database directory mounted:
+
+```bash
+genome_qc build_db -o database-install-log \
+  -d /project/PROJECT/genome-qc-databases \
+  --extract_only --threads 16
+```
+
+`--extract_only` never downloads reference data. Tool environments may still need
+Mamba packages on first use; prepare a shared `--conda_cache` on a network-enabled
+host if compute nodes cannot reach package repositories. Existing complete
+installations are reused. `--download_only` prepares archives without installing
+references, including when an installed database already exists.
+
+You can also supply these exact files directly under the database root:
+
+| Database | Archive filename |
+| --- | --- |
+| CheckM | `checkm_data_2015_01_16.tar.gz` |
+| GTDB-Tk R232 | `gtdbtk_r232_data.tar.gz` |
+| GUNC proGenomes 2.1 | `gunc_db_progenomes2.1.dmnd.gz` |
+
+All three use pinned archive checksums; GUNC also verifies the decompressed
+DIAMOND database. Supplied archives are preserved. For an alternate download
+location, add `--db_url checkm=https://HOST/checkm_data_2015_01_16.tar.gz`
+(or `gtdbtk=URL` / `gunc=URL`). This changes the source, not the required database
+release or checksum. URLs and checksums are recorded in provenance receipts.
+Transfers retain partial downloads; `--download_attempts` controls the bounded
+retry count (default 20). A slow source may still require a different permitted
+host or mirror.
+
+Interrupted installations can leave temporary extraction directories. The next
+installer removes only staging directories marked as belonging to its exact
+destination, under the destination lock. Unmarked older directories are preserved
+for manual review; the installer never broadly deletes similarly named folders.

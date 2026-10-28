@@ -32,7 +32,7 @@ genome_qc --version
 genome_qc check
 ```
 
-Version 0.1.0 is published on the normal `hallamlab` Anaconda channel for
+Genome QC is published on the normal `hallamlab` Anaconda channel for
 64-bit Linux. The full R232 end-to-end test, package integration tests and
 public-channel installation passed. No special label, checkout, Git dependency
 install or separate pip step is needed.

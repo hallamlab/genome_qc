@@ -21,7 +21,7 @@ conda activate genome_qc
 genome_qc check
 ```
 
-Genome QC 0.1.0 is available from the HallamLab Anaconda channel. The package
+Genome QC is available from the HallamLab Anaconda channel. The package
 installs the controller and workflow assets without a Git checkout or pip step.
 See [installation](docs/user-guide/installation.md) for package and developer details.
 

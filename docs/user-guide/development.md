@@ -115,13 +115,13 @@ genome_qc check
 `.github/workflows/conda.yml` builds and validates the artifact, installs it into a
 clean environment and runs synthetic Nextflow integration tests against its
 installed workflow assets. Public upload is not triggered by a normal build.
-The ongoing real-genome assessment remains a separate biological interoperability
+Real-genome assessment remains a separate biological interoperability
 test; mocked tool responses do not replace it.
 
 ## Publishing to Anaconda
 
 The package name is `genome-qc`; the default owner/channel is `hallamlab`.
-The current candidate version is `0.1.0`. Confirm the intended release version
+The current version is `0.1.1`. Confirm the intended release version
 before publishing. Quay and Zenodo are separate from this workflow.
 
 One-time GitHub setup:
@@ -134,7 +134,7 @@ One-time GitHub setup:
    different organization; otherwise it defaults to `hallamlab`.
 3. Configure the **release** environment's approval rules if wanted.
 
-After the full real-genome test passes and the refactor is merged to `main`, open
+After biological validation passes and the changes are on `main`, open
 **Actions → Build, validate and publish Conda package → Run workflow**. Select
 `main`, enable **publish_anaconda**, and confirm **real_genome_test_passed**.
 Leaving publication unchecked builds and tests without uploading anything.
@@ -149,5 +149,32 @@ failed public-install check remains published and needs investigation before
 announcing the release.
 
 Keep the workflow run URL and its `genome-qc-conda` artifact with the release
-record. The full real-genome test is a separately confirmed release prerequisite;
+record. Biological validation is a separately confirmed release prerequisite;
 the synthetic integration checks cannot establish biological accuracy.
+
+For a maintenance release with unchanged heavyweight methods and references,
+validation may combine a completed full real-genome baseline with real-tool
+reruns of every changed biological stage. Compare the new results with the
+baseline and record the scope explicitly. A change to a heavyweight method,
+reference release or its scientific inputs requires corresponding real-tool
+validation; do not treat mocked responses as evidence that those changes work.
+The release confirmation covers this documented biological validation together
+with the packaged integration checks.
+
+### 0.1.1 HPC maintenance validation
+
+This update batches lightweight full-workflow stages, adds Slurm-allocation memory
+detection, introduces explicit fresh-work sessions, and improves database
+preparation and storage planning. The CheckM, GTDB-Tk R232 and GUNC assessment
+methods and reference releases are unchanged.
+
+Validation uses the completed three-genome R232 end-to-end run as the biological
+baseline, with new real-tool preprocessing, barrnap/BLAST and tRNAscan-SE batch
+runs on those same three genomes. Their sequence statistics, rRNA counts and
+consistency summaries, and tRNA counts must match the baseline. The Nextflow
+integration tests additionally exercise multi-genome batches, failed assessments,
+resume, scratch execution, compact results, ANI, phylogeny and the explorer.
+
+Slurm settings are covered by resource/configuration regression tests. Actual
+Fir scheduler behavior and peak file usage still require cluster validation;
+local tests do not establish those site-specific properties.

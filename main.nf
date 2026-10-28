@@ -203,6 +203,83 @@ def batchId(files) {
     return java.security.MessageDigest.getInstance('MD5').digest(files.collect { it.name }.join('|').getBytes('UTF-8')).encodeHex().toString().substring(0, 12)
 }
 
+// Batch membership and order are deterministic; per-genome receipts are kept.
+def smallBatches(records, fastaIndex) {
+    def byPath = records.collectEntries { [(it[fastaIndex].toString()): it] }
+    return balancedBatches(records.collect { it[fastaIndex] }, params.small_batch_size, params.max_forks)
+        .collect { files -> files.collect { byPath[it.toString()] } }
+}
+
+process PREPROCESS_BATCH {
+    tag "${batch_id}"
+    cpus params.small_batch_cpus
+    maxForks params.max_forks
+    conda "${projectDir}/envs/seqkit.yaml"
+    publishDir "${params.working_dir}/genomes_pruned", mode: 'copy', overwrite: true, pattern: 'results/*', saveAs: { filename -> new File(filename).getName() }
+    input:
+    tuple val(batch_id), val(records), path(fastas)
+    output:
+    path('results'), emit: results
+    script:
+    def manifest = groovy.json.JsonOutput.toJson(records)
+    def helper = helperDigest(['small_task_batch.py', 'assessment_task.py'])
+    """
+    # Batch helper: ${helper}
+    cat > batch.json <<'BATCH_JSON'
+    ${manifest}
+BATCH_JSON
+    python ${projectDir}/small_task_batch.py preprocess batch.json --cpus ${task.cpus} ${params.compact_results ? '--compact' : ''}
+    """
+}
+
+process RRNA_BATCH {
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'terminate' }
+    maxRetries 1
+    tag "${batch_id}"
+    cpus params.small_batch_cpus
+    maxForks params.max_forks
+    conda "${projectDir}/envs/rrna_batch.yaml"
+    publishDir "${params.working_dir}/barrnap", mode: 'copy', overwrite: true, pattern: 'results/*', saveAs: { filename -> new File(filename).getName() }
+    input:
+    tuple val(batch_id), val(records), path(fastas)
+    output:
+    path('results'), emit: results
+    script:
+    def manifest = groovy.json.JsonOutput.toJson(records)
+    def helper = helperDigest(['small_task_batch.py', 'assessment_task.py'])
+    """
+    # Batch helper: ${helper}
+    cat > batch.json <<'BATCH_JSON'
+    ${manifest}
+BATCH_JSON
+    python ${projectDir}/small_task_batch.py rrna batch.json --cpus ${task.cpus} ${params.compact_results ? '--compact' : ''}
+    """
+}
+
+process TRNA_BATCH {
+    errorStrategy { task.exitStatus in [137, 143] && task.attempt <= 1 ? 'retry' : 'terminate' }
+    maxRetries 1
+    tag "${batch_id}"
+    cpus params.trnascan_cpus
+    maxForks params.max_forks
+    conda "${projectDir}/envs/trnascan.yaml"
+    publishDir "${params.working_dir}/trnascan", mode: 'copy', overwrite: true, pattern: 'results/*', saveAs: { filename -> new File(filename).getName() }
+    input:
+    tuple val(batch_id), val(records), path(fastas)
+    output:
+    path('results'), emit: results
+    script:
+    def manifest = groovy.json.JsonOutput.toJson(records)
+    def helper = helperDigest(['small_task_batch.py', 'assessment_task.py'])
+    """
+    # Batch helper: ${helper}
+    cat > batch.json <<'BATCH_JSON'
+    ${manifest}
+BATCH_JSON
+    python ${projectDir}/small_task_batch.py trna batch.json --cpus ${task.cpus} ${params.compact_results ? '--compact' : ''}
+    """
+}
+
 process FILTER_FASTA {
     tag "${id}.${size}"
     cpus 1
@@ -852,6 +929,14 @@ process COMBINE_GUNC {
     """
 }
 
+def databaseOptions(name) {
+    def flags = " --attempts ${params.db_attempts}"
+    if (params.db_download_only) flags += ' --download-only'
+    if (params.db_extract_only) flags += ' --extract-only'
+    if (params.db_urls[name]) flags += ' --url ' + shellQuote(params.db_urls[name])
+    return flags
+}
+
 process SETUP_GTDBTK_DB {
     cpus params.reference_cpus
     conda "${projectDir}/envs/reference_setup.yaml"
@@ -866,14 +951,14 @@ process SETUP_GTDBTK_DB {
     script:
     """
     # Helper implementation: ${params.helper_setup_gtdbtk_db}
-    python ${projectDir}/database_install.py gtdbtk "${gtdbtk_data_path}" ${task.cpus}
-    printf 'reference\\tpath\\tstatus\\ngtdbtk\\t${gtdbtk_data_path}\\tready\\n' > gtdbtk_reference_ready.tsv
+    python ${projectDir}/database_install.py gtdbtk "${gtdbtk_data_path}" ${task.cpus} ${databaseOptions('gtdbtk')}
+    printf 'reference\\tpath\\tstatus\\ngtdbtk\\t${gtdbtk_data_path}\\t${params.db_download_only ? 'downloaded' : 'ready'}\\n' > gtdbtk_reference_ready.tsv
     """
 }
 
 process SETUP_GUNC_DB {
-    cpus 1
-    conda "${projectDir}/envs/gunc.yaml"
+    cpus params.reference_cpus
+    conda "${projectDir}/envs/reference_setup.yaml"
     publishDir "${params.working_dir}/references", mode: 'copy', overwrite: true
 
     input:
@@ -885,8 +970,8 @@ process SETUP_GUNC_DB {
     script:
     """
     # Helper implementation: ${params.helper_setup_gunc_db}
-    python ${projectDir}/database_install.py gunc "${new File(gunc_db.toString()).getParent()}"
-    printf 'reference\\tpath\\tstatus\\ngunc\\t${new File(gunc_db.toString()).getParent()}\\tready\\n' > gunc_reference_ready.tsv
+    python ${projectDir}/database_install.py gunc "${new File(gunc_db.toString()).getParent()}" ${task.cpus} ${databaseOptions('gunc')}
+    printf 'reference\\tpath\\tstatus\\ngunc\\t${new File(gunc_db.toString()).getParent()}\\t${params.db_download_only ? 'downloaded' : 'ready'}\\n' > gunc_reference_ready.tsv
     """
 }
 
@@ -904,8 +989,8 @@ process SETUP_CHECKM_DB {
     script:
     """
     # Helper implementation: ${params.helper_setup_checkm_db}
-    python ${projectDir}/database_install.py checkm "${checkm_data_path}" ${task.cpus}
-    printf 'reference\\tpath\\tstatus\\ncheckm\\t${checkm_data_path}\\tready\\n' > checkm_reference_ready.tsv
+    python ${projectDir}/database_install.py checkm "${checkm_data_path}" ${task.cpus} ${databaseOptions('checkm')}
+    printf 'reference\\tpath\\tstatus\\ncheckm\\t${checkm_data_path}\\t${params.db_download_only ? 'downloaded' : 'ready'}\\n' > checkm_reference_ready.tsv
     """
 }
 
@@ -1178,19 +1263,24 @@ workflow COMPLETE {
             ).ready :
             Channel.of("validated")
 
-        filtered = FILTER_FASTA(raw_genomes).fasta
-        filtered_for_stats = filtered.map { it }
-        filtered_for_subset = filtered.map { it }
-        filtered_fastas = filtered_for_subset.map { it[2] }
-
-        stats = SEQKIT_STAT(filtered_for_stats).stats
-        stats_for_prune = stats.map { it }
-        stats_for_combine = stats.map { it }
-
-        seqkit_stats_files = stats_for_combine.map { it[3] }.toSortedList()
-        seqkit_combined = COMBINE_SEQKIT_STATS(seqkit_stats_files).stats
-
-        pruned = PRUNE_FASTA(filtered_for_subset).pruned
+        preprocess_input = raw_genomes.toSortedList().flatMap { rows ->
+            rows.groupBy { it[1] }.values().collectMany { group ->
+                smallBatches(group, 2).collect { batch ->
+                    tuple(batchId(batch.collect { it[2] }) + '-' + batch[0][1],
+                          batch.collect { [it[0], it[1], it[2].name, Math.max(assessmentToken('genomes_pruned', "${it[0]}.${it[1]}.preprocess").toInteger(), assessmentToken('genomes_pruned', "${it[0]}.${it[1]}.sequence_stats").toInteger()).toString()] }, batch.collect { it[2] })
+                }
+            }
+        }
+        preprocessed = PREPROCESS_BATCH(preprocess_input).results
+        pruned = preprocessed.flatMap { dir ->
+            file("${dir}/*.fasta").with { value -> normalizeToList(value) }.findAll { it.exists() }.collect { f ->
+                def stem = f.baseName
+                def at = stem.lastIndexOf('.')
+                tuple(stem.substring(0, at), stem.substring(at + 1), f)
+            }
+        }
+        stats = preprocessed.flatMap { dir -> normalizeToList(file("${dir}/*.seqkit.tsv")).findAll { it.exists() } }
+        seqkit_combined = COMBINE_SEQKIT_STATS(stats.toSortedList()).stats
 
         def checkmBatchSize = Math.max(1, params.checkm_batch_size as Integer)
         checkm_batches = pruned
@@ -1246,14 +1336,21 @@ workflow COMPLETE {
         subset_ids = subset_for_ids.map { f -> tuple(f.baseName, f) }
         barrnap_in = subset_ids.combine(gtdbtk_map)
 
-        rrna = BARRNAP(barrnap_in.map { row -> new ArrayList(row) + [assessmentToken('barrnap', "${row[0]}.rrna")] }).rrna
-        rrna_for_blast = rrna.map { it }
-        rrna_for_files = rrna.map { it }
-        rrna_fastas = rrna_for_files.map { it[1] }
-        rrna_gffs = rrna_for_files.map { it[2] }
-
-        blast = BLAST_RRNA(rrna_for_blast.map { row -> new ArrayList(row) + [assessmentToken('barrnap', "${row[0]}.rrna_check")] }).blast
-
+        rrna_input = barrnap_in.toSortedList().flatMap { rows ->
+            smallBatches(rows, 1).collect { batch ->
+                def kingdoms = batch[0][2].toFile().readLines().findAll { it.trim() }.collectEntries { line ->
+                    def fields = line.split('\t'); [(fields[0]): fields[1]]
+                }
+                tuple(batchId(batch.collect { it[1] }), batch.collect { row ->
+                    [row[0], kingdoms.get(row[0], 'Bacteria'), row[1].name,
+                     assessmentToken('barrnap', "${row[0]}.rrna"), assessmentToken('barrnap', "${row[0]}.rrna_check")]
+                }, batch.collect { it[1] })
+            }
+        }
+        rrna = RRNA_BATCH(rrna_input).results
+        rrna_fastas = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.rRNA.fasta")) }
+        rrna_gffs = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.rRNA.gff")) }
+        blast = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.blastout")) }
         barblast = COMPARE_BARRNAP(blast.toSortedList(), rrna_fastas.toSortedList(), rrna_gffs.toSortedList())
 
         dedupe = DEDUPE(qscore_for_dedupe, barblast.pass, gtdbtk)
@@ -1281,7 +1378,13 @@ workflow COMPLETE {
                 tuple(id, kingdom, fasta)
             }
 
-        trna_gffs = TRNASCAN(trna_in.map { row -> new ArrayList(row) + [assessmentToken('trnascan', "${row[0]}.trna")] }).gff
+        trna_input = trna_in.toSortedList().flatMap { rows -> smallBatches(rows, 2).collect { batch ->
+            tuple(batchId(batch.collect { it[2] }), batch.collect { row ->
+                [row[0], row[1], row[2].name, assessmentToken('trnascan', "${row[0]}.trna")]
+            }, batch.collect { it[2] })
+        } }
+        trna_results = TRNA_BATCH(trna_input).results
+        trna_gffs = trna_results.flatMap { dir -> normalizeToList(file("${dir}/*.gff")) }
 
         trna_counts = TRNASCAN_PARSE(trna_gffs.toSortedList())
 
@@ -1289,7 +1392,8 @@ workflow COMPLETE {
         gunc_batches = GUNC(gunc_input.map { row -> new ArrayList(row) + [assessmentToken('gunc', "gunc_${row[0]}")] }).outdir.toSortedList()
         gunc = COMBINE_GUNC(gunc_batches).outdir
 
-        receipts = CHECKM_SINGLE.out.assessment.mix(GTDBTK.out.assessment, BARRNAP.out.assessment, BLAST_RRNA.out.assessment, TRNASCAN.out.assessment, GUNC.out.assessment).toSortedList()
+        rna_receipts = rrna.mix(trna_results).flatMap { dir -> normalizeToList(file("${dir}/*.assessment.json")) }
+        receipts = CHECKM_SINGLE.out.assessment.mix(GTDBTK.out.assessment, rna_receipts, GUNC.out.assessment).toSortedList()
         master = MERGE_MASTER(dedupe_for_merge, barblast.subunits, trna_counts.counts, gunc, receipts)
         ani = params.cohort_ani_enabled ? COHORT_ANI(master.master, dedupe_fasta.toSortedList()).results : Channel.value([])
         phylogeny = params.cohort_phylogeny_enabled ?

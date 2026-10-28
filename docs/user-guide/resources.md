@@ -221,3 +221,76 @@ counts do **not** measure user or project quotas: consult your site's quota tool
 Do not delete work directories while jobs are active. Input manifests must remain
 unchanged on resume; completed compact outputs are verified against their saved
 inputs, settings, implementation and product checksums.
+
+## Large cohorts: plan before submitting
+
+The complete workflow batches preprocessing, rRNA prediction/self-comparison and
+tRNA prediction, as well as CheckM, GTDB-Tk and GUNC. `--small_batch_size` sets the
+maximum number of genomes in a lightweight batch (default 128; maximum 1000).
+Batch membership is balanced by input FASTA bytes and stable for the same inputs
+and resource settings. Each RNA assessment still has its own genome status and
+log. A failed assessment does not prevent the other genomes in its batch from
+being assessed; infrastructure failures still fail the task. Resume may repeat
+successful genomes sharing a batch with a failed genome.
+
+Preprocessing and rRNA batches run up to `--threads` single-CPU genome assessments
+concurrently within their allocation. tRNA batches run genomes sequentially,
+giving each tRNAscan-SE invocation the task's thread allocation. No batch launches
+more tool workers than its requested CPUs. Standalone subcommands retain their
+existing task structure; the new combined batches apply to `run`.
+
+Plan a large Slurm run before starting it:
+
+```bash
+genome_qc run --manifest bins_manifest.tsv \
+  -o /scratch/PROJECT/genome-qc-output \
+  -d /project/PROJECT/genome-qc-databases \
+  --executor slurm --account YOUR_ACCOUNT \
+  --threads 8 --max_tasks 20 --submit_rate 6 \
+  --small_batch_size 128 --compact_results \
+  --file_budget 300000 --plan
+```
+
+Replace paths, account and `--file_budget` with your site's values. The file budget
+is the quota **remaining for this run**, not your total quota. Planning hashes the
+inputs and writes the plan but does not stage/decompress the genomes or launch
+analyses. The plan includes approximate task counts, the submission-only time
+bound at the chosen rate, and a deliberately broad peak-file envelope. The file
+estimate includes environments and shared intermediate files, excludes databases
+and other runs, and is not a quota guarantee. Check the site's quota tools;
+filesystem free space does not report a user's remaining allocation. Remove
+`--plan` when ready to execute.
+
+Keep `--work_dir` and `--conda_cache` on shared storage for distributed Slurm
+execution. Compact mode uses each worker's `SLURM_TMPDIR` for temporary execution
+and returns required outputs to shared work storage for resume. Batching reduces
+scheduler and filesystem overhead; it does not remove all per-genome outputs.
+Changing batch size or resource-driven batch membership can invalidate affected
+batch caches, so keep these settings unchanged when cache reuse matters.
+
+### One allocation with the local executor
+
+For a site where a single sufficiently large allocation is preferable, run the
+local executor inside `sbatch`. It now detects `SLURM_MEM_PER_NODE` or
+`SLURM_MEM_PER_CPU` with the allocated CPU count, together with job/ancestor cgroup
+limits. The smallest applicable memory capacity is used, leaving 10% headroom.
+Slurm worker requests are not limited by the controller allocation when using
+`--executor slurm`.
+
+For example, after activating Genome QC inside an allocation:
+
+```bash
+genome_qc run --manifest bins_manifest.tsv \
+  -o /scratch/PROJECT/genome-qc-output \
+  -d /project/PROJECT/genome-qc-databases \
+  --executor local --threads 8 \
+  --work_dir "$SLURM_TMPDIR/work" \
+  --conda_cache "$SLURM_TMPDIR/conda" \
+  --scratch_dir "$SLURM_TMPDIR" --compact_results
+```
+
+The allocation must have enough local disk and time. If node-local work disappears
+at job termination, it cannot supply resume checkpoints. Use `--fresh_work` on a
+replacement allocation to recompute unchanged inputs/settings; do not delete
+internal controller records by hand. Shared work storage is preferable when
+resuming after interruption is important.

@@ -10,7 +10,7 @@ from pathlib import Path
 SUFFIXES = ('.fasta.gz', '.fna.gz', '.fa.gz', '.fasta', '.fna', '.fa')
 
 
-def discover(directory=None, manifest=None):
+def discover(directory=None, manifest=None, recursive=True):
     rows = []
     if manifest:
         manifest = Path(manifest).resolve()
@@ -22,7 +22,8 @@ def discover(directory=None, manifest=None):
                 path = Path(row['fasta']).expanduser()
                 rows.append({**row, 'fasta': str((manifest.parent / path).resolve())})
     else:
-        for path in sorted(Path(directory).expanduser().resolve().rglob('*')):
+        root = Path(directory).expanduser().resolve()
+        for path in sorted(root.rglob('*') if recursive else root.glob('*')):
             suffix = next((s for s in SUFFIXES if path.name.lower().endswith(s)), None)
             if path.is_file() and suffix:
                 rows.append({'id': path.name[:-len(suffix)], 'fasta': str(path)})

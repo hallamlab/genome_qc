@@ -18,7 +18,7 @@ from .inputs import discover, stage
 from .runtime import runtime_root
 from .execution import add_options, configuration, literal, memory_bytes, capacity
 from . import compact
-from .hpc import preflight, save_packages
+from .hpc import preflight, save_packages, workload_estimate, describe_workload
 
 ENTRIES = {'run': None, 'build_db': 'DATABASES', 'preprocess': 'PREPROCESS',
            'quality': 'CHECKM_ONLY', 'taxonomy': 'TAXONOMY_ONLY',
@@ -72,12 +72,25 @@ def parser():
         if name != 'build_db':
             source = s.add_mutually_exclusive_group(required=True)
             source.add_argument('-i', '--input', help='Genome FASTA directory (searched recursively)')
+            s.add_argument('--no_recursive', action='store_true', help='Only discover FASTAs directly inside -i; do not search subdirectories')
             source.add_argument('--manifest', help='TSV with id and fasta; relative paths resolve beside the manifest')
         s.add_argument('-o', '--output', required=True)
         s.add_argument('-d', '--database', default='~/.local/share/genome_qc/databases')
         s.add_argument('--threads', type=positive, default=8)
         add_options(s.add_argument_group('Execution and resources'), tools=None if name == 'run' else {'quality': ('checkm',), 'taxonomy': ('gtdb',), 'trna': ('trnascan',), 'chimera': ('gunc',)}.get(name, ()))
-        s.add_argument('--resume', action='store_true')
+        restart = s.add_mutually_exclusive_group()
+        restart.add_argument('--resume', action='store_true')
+        restart.add_argument('--fresh_work', action='store_true', help='Start a new execution session with unchanged inputs/settings; permit changed work/cache paths')
+        if name == 'run':
+            s.add_argument('--small_batch_size', type=batch_limit, default=128, help='Maximum genomes per lightweight task batch [128]')
+        if name == 'build_db':
+            modes = s.add_mutually_exclusive_group()
+            modes.add_argument('--download_only', action='store_true', help='Fetch verified reference archives without installing')
+            modes.add_argument('--extract_only', action='store_true', help='Install supplied archives without downloading')
+            s.add_argument('--download_attempts', type=positive, default=20)
+            s.add_argument('--db_url', action='append', default=[], metavar='NAME=URL', help='Alternate archive URL for checkm, gtdbtk or gunc; pinned checksum remains required')
+        if name == 'run':
+            s.add_argument('--file_budget', type=positive, help='Available file quota for this run; warn if the planning envelope exceeds it')
         s.add_argument('--plan', action='store_true', help='Validate inputs and save commands without executing')
         s.add_argument('--params', type=Path, help='Advanced Nextflow parameters as a JSON object')
         if name in ('run', 'quality', 'taxonomy', 'chimera'):
@@ -158,11 +171,12 @@ def _run(args, root, output, control):
     work = (Path(args.work_dir).expanduser().resolve() / ('genome-qc-' + hashlib.sha256(str(output).encode()).hexdigest()[:16])) if args.work_dir else control / 'work'
     locations = {'work': str(work), 'cache': str(cache)}
     locations_file = control / 'execution-paths.json'
-    if locations_file.exists() and json.loads(locations_file.read_text()) != locations:
-        raise ValueError('Work/cache locations changed; keep the original paths for resume or use a new output directory.')
+    prior_locations = json.loads(locations_file.read_text()) if locations_file.exists() else {}
+    if prior_locations and {k: prior_locations.get(k) for k in locations} != locations and not args.fresh_work:
+        raise ValueError('Work/cache locations changed; keep the original paths for --resume, or use --fresh_work to recompute unchanged inputs/settings.')
     config, budgets = configuration(args, cache)
     if args.executor == 'local':
-        source = 'explicit limit' if args.max_memory else '90% of physical/cgroup capacity'
+        source = 'explicit limit' if args.max_memory else '90% of physical/cgroup/Slurm capacity'
         print(f"Local scheduling: CPU budget={budgets['cpus']}; memory budget={budgets['memory']} ({source}); jobs start as reservations become available", flush=True)
     print('Task memory reservations: ' + ', '.join(
         f'{name}={value}' for name, value in budgets['task_memory'].items()), flush=True)
@@ -170,8 +184,10 @@ def _run(args, root, output, control):
         mode = f"disk-backed; pplacer uses {min(8, budgets['threads'])} CPUs" if budgets['gtdb_disk_backed'] else 'in-memory'
         print(f"GTDB placement: {mode}; task memory={budgets['gtdb_memory']}; other parallel tools use up to {budgets['threads']} CPUs", flush=True)
     threads = budgets['threads']
-    locations_file.write_text(json.dumps(locations, indent=2))
+
     database = Path(args.database).expanduser().resolve()
+    if args.database == '~/.local/share/genome_qc/databases':
+        print('NOTICE: Default databases are stored under HOME; complete references need roughly 180 GiB of preparation space. On HPC, use -d with project storage and check your quota.', flush=True)
     controller_limits = preflight(output, database) if args.executor == 'slurm' else {}
     digest = hashlib.sha256()
     for source in sorted(Path(__file__).parent.glob('*.py')):
@@ -192,6 +208,20 @@ def _run(args, root, output, control):
         active = {'run': ('checkm', 'gtdb', 'gunc'), 'quality': ('checkm',), 'taxonomy': ('gtdb',), 'chimera': ('gunc',)}[args.command]
         print('Balanced batching (FASTA bytes; maximum 1000 genomes): ' + ', '.join(f"{tool} up to {budgets['batch_slots'][tool]} concurrent batches" for tool in active), flush=True)
     params['compact_results'] = args.compact_results
+    if args.command == 'run':
+        params['small_batch_size'] = args.small_batch_size
+        params['small_batch_cpus'] = threads
+    if args.command == 'build_db':
+        params['db_download_only'] = args.download_only
+        params['db_extract_only'] = args.extract_only
+        params['db_attempts'] = args.download_attempts
+        urls = {}
+        for item in args.db_url:
+            name, sep, url = item.partition('=')
+            if not sep or name not in ('checkm', 'gtdbtk', 'gunc') or not url.startswith(('https://', 'http://')):
+                raise ValueError('--db_url requires checkm|gtdbtk|gunc=https://...')
+            urls[name] = url
+        params['db_urls'] = urls
     params.update(stage=args.command, working_dir=str(output), ref_dir='', checkm_data_path=str(database / 'checkm_data'),
                   gtdbtk_data_path=str(database / 'gtdbtk_r232'),
                   gunc_db=str(database / 'gunc_db/gunc_db_progenomes2.1.dmnd'))
@@ -199,14 +229,30 @@ def _run(args, root, output, control):
         params[key] = threads
     rows = []
     if args.command != 'build_db':
-        rows = discover(args.input, args.manifest)
+        rows = discover(args.input, args.manifest, recursive=not args.no_recursive)
+        if args.input:
+            from collections import Counter
+            for directory, count in sorted(Counter(str(Path(r['fasta']).parent) for r in rows).items()):
+                print(f'Input discovery: {count} FASTAs in {directory}', flush=True)
         params['fasta_dir'] = str(control / 'inputs')
         if args.command == 'rrna':
             kingdom_map = control / 'kingdoms.tsv'
             kingdom_map.write_text(''.join(f"{r['id']}\t{args.kingdom}\n" for r in rows))
             params['kingdom_map'] = str(kingdom_map)
         params['kingdom'] = getattr(args, 'kingdom', 'Bacteria')
+    estimate = None
+    if args.command == 'run':
+        sizes = params.get('filter_size', '')
+        variants = len(sizes) if isinstance(sizes, list) else len(str(sizes).split()) or 1
+        estimate = workload_estimate(len(rows), variants, args.small_batch_size, min(params[k + '_batch_size'] for k in ('checkm', 'gtdbtk', 'gunc')),
+                    {**budgets['batch_slots'], 'small': int(params['max_forks'])}, args.submit_rate, len(list((root / 'envs').glob('*.yaml'))))
+        describe_workload(estimate, args.executor, args.file_budget)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8]
+    if args.resume and locations_file.exists():
+        previous = json.loads(locations_file.read_text())
+        work = Path(previous.get('session_work', work))
+    if args.fresh_work:
+        work = work / ('fresh-' + stamp)
     logs = output / 'logs' / stamp
     logs.mkdir(parents=True)
     cfg = logs / 'controller.config'
@@ -214,20 +260,27 @@ def _run(args, root, output, control):
     parameters = logs / 'params.json'
     parameters.write_text(json.dumps(params, indent=2) + '\n')
     scientific = {key: value for key, value in params.items()
-                  if key not in ('implementation_digest', 'compact_results', 'max_forks') and not key.endswith(('_cpus', '_threads', '_memory', '_time', '_max_forks', '_parallel_batches'))}
+                  if key not in ('implementation_digest', 'compact_results', 'max_forks', 'small_batch_size', 'db_download_only', 'db_extract_only', 'db_attempts', 'db_urls') and not key.endswith(('_cpus', '_threads', '_memory', '_time', '_max_forks', '_parallel_batches'))}
     identity = compact.signature(rows, scientific, params['implementation_digest'])
-    cleanup_paths = [work, control / 'database-work', control / 'analysis-session', control / 'database-session']
+    session = 'analysis-session'
+    if args.fresh_work:
+        session += '-' + stamp
+    elif args.resume:
+        session = prior_locations.get('session', session)
+    cleanup_paths = [work, control / 'database-work', control / session, control / 'database-session']
     if compact.completed(output, identity):
         if not json.loads((output / 'compact-results.json').read_text())['cleanup_complete']:
             compact.finish(output, identity, cleanup_paths, cache, bool(args.conda_cache), rows, database)
         print(f'Completed compact results verified: {output / "reports"}')
         return
-    if rows:
+    if rows and not args.plan:
         stage(rows, output)
     settings_path = control / (args.command + '.settings.json')
     if settings_path.exists() and json.loads(settings_path.read_text()) != scientific:
         raise ValueError('Analysis settings changed for this output directory; use a new output directory to avoid mixing results.')
     settings_path.write_text(json.dumps(scientific, indent=2))
+    if not args.plan:
+        locations_file.write_text(json.dumps({**locations, 'session_work': str(work), 'session': session}, indent=2))
     executable = shutil.which('nextflow') or 'nextflow'
     command = [executable, '-c', str(cfg), '-log', str(logs / 'nextflow.log'),
                'run', str(root / 'main.nf'), '-params-file', str(parameters),
@@ -249,7 +302,7 @@ def _run(args, root, output, control):
         preparation = [executable, '-c', str(dbconfig), '-log', str(logs / 'databases.log'),
                        'run', str(root / 'main.nf'),
                        '-params-file', str(dbparams), '-work-dir', str(control / 'database-work')]
-    receipt = {'invocation': vars(args).copy(), 'resources': budgets, 'version': __version__, 'command': command, 'database_command': preparation, 'params': params,
+    receipt = {'planning_estimate': estimate, 'invocation': vars(args).copy(), 'resources': budgets, 'version': __version__, 'command': command, 'database_command': preparation, 'params': params,
                'status': 'planned', 'started_utc': stamp, 'controller_limits': controller_limits}
     receipt_path = logs / 'run.json'
     receipt_path.write_text(json.dumps(receipt, indent=2, default=str))
@@ -264,7 +317,7 @@ def _run(args, root, output, control):
             execute(preparation, db_cwd, logs / 'database-console.log')
         if args.command != 'build_db':
             print(f'Running {args.command}: {len(rows)} genomes; {threads} threads per parallel tool; executor={args.executor}', flush=True)
-            analysis_cwd = control / 'analysis-session'
+            analysis_cwd = control / session
             analysis_cwd.mkdir(exist_ok=True)
             execute(command, analysis_cwd, logs / 'console.log')
             if args.command == 'run':

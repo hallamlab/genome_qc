@@ -117,3 +117,17 @@ cache directories intact until the failure is understood. Task paths in the
 Nextflow log point to `.command.err`, `.command.out` and `.command.sh` while
 working files are retained; completed compact runs archive task logs in
 `logs/compact-task-logs.tar.gz`.
+
+## Start over after allocation-local work disappears
+
+`--fresh_work` starts a new execution session and permits changed `--work_dir` and
+`--conda_cache` locations. It is mutually exclusive with `--resume`. Inputs and
+scientific settings must still match the existing output; use a new output
+directory if they have changed. Existing result files are not evidence that this
+new session has finished: inspect the new run receipt and final status.
+
+For example, resubmit the same allocation script with `--fresh_work` added when
+its previous `$SLURM_TMPDIR` has been removed. Subsequent `--resume` calls with
+that session's work/cache locations reuse the recorded fresh session. Earlier
+work directories are preserved rather than silently deleted. No option can
+recover checkpoints that the cluster has already removed.

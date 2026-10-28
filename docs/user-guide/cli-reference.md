@@ -42,7 +42,8 @@ assume they reproduce `run` cohort groups without reviewing their configuration.
 
 ```text
 usage: genome_qc [-h] [--version]
-                 {run,build_db,preprocess,quality,taxonomy,rrna,trna,chimera,atlas,compare,phylogeny,render,check,report} ...
+                 {run,build_db,preprocess,quality,taxonomy,rrna,trna,chimera,atlas,compare,phylogeny,render,check,report}
+                 ...
 
 Genome quality assessment and genome atlas
 
@@ -63,10 +64,10 @@ options:
 ## run
 
 ```text
-usage: genome_qc run [-h] (-i INPUT | --manifest MANIFEST) -o OUTPUT
-                     [-d DATABASE] [--threads THREADS] [--max_cpus MAX_CPUS]
-                     [--max_memory MAX_MEMORY] [--memory MEMORY]
-                     [--checkm_memory CHECKM_MEMORY]
+usage: genome_qc run [-h] [-i INPUT] [--no_recursive] [--manifest MANIFEST] -o
+                     OUTPUT [-d DATABASE] [--threads THREADS]
+                     [--max_cpus MAX_CPUS] [--max_memory MAX_MEMORY]
+                     [--memory MEMORY] [--checkm_memory CHECKM_MEMORY]
                      [--gtdb_memory GTDB_MEMORY] [--gunc_memory GUNC_MEMORY]
                      [--trnascan_memory TRNASCAN_MEMORY]
                      [--atlas_memory ATLAS_MEMORY] [--max_tasks MAX_TASKS]
@@ -76,7 +77,9 @@ usage: genome_qc run [-h] (-i INPUT | --manifest MANIFEST) -o OUTPUT
                      [--submit_rate SUBMIT_RATE] [--work_dir WORK_DIR]
                      [--conda_cache CONDA_CACHE] [--keep_work]
                      [--compact_results] [--scratch_dir SCRATCH_DIR]
-                     [--resume] [--plan] [--params PARAMS]
+                     [--resume | --fresh_work]
+                     [--small_batch_size SMALL_BATCH_SIZE]
+                     [--file_budget FILE_BUDGET] [--plan] [--params PARAMS]
                      [--max_batch_size MAX_BATCH_SIZE]
                      [--filter_size FILTER_SIZE]
                      [--min_genome_size MIN_GENOME_SIZE]
@@ -90,13 +93,23 @@ usage: genome_qc run [-h] (-i INPUT | --manifest MANIFEST) -o OUTPUT
 
 options:
   -h, --help            show this help message and exit
-  -i, --input INPUT     Genome FASTA directory (searched recursively)
+  -i INPUT, --input INPUT
+                        Genome FASTA directory (searched recursively)
+  --no_recursive        Only discover FASTAs directly inside -i; do not search
+                        subdirectories
   --manifest MANIFEST   TSV with id and fasta; relative paths resolve beside
                         the manifest
-  -o, --output OUTPUT
-  -d, --database DATABASE
+  -o OUTPUT, --output OUTPUT
+  -d DATABASE, --database DATABASE
   --threads THREADS
   --resume
+  --fresh_work          Start a new execution session with unchanged
+                        inputs/settings; permit changed work/cache paths
+  --small_batch_size SMALL_BATCH_SIZE
+                        Maximum genomes per lightweight task batch [128]
+  --file_budget FILE_BUDGET
+                        Available file quota for this run; warn if the
+                        planning envelope exceeds it
   --plan                Validate inputs and save commands without executing
   --params PARAMS       Advanced Nextflow parameters as a JSON object
   --max_batch_size MAX_BATCH_SIZE
@@ -108,7 +121,8 @@ Execution and resources:
                         Slurm has no default aggregate cap
   --max_memory MAX_MEMORY
                         Total memory budget; local defaults to 90% of
-                        physical/cgroup capacity, not free RAM at startup
+                        physical/cgroup/Slurm capacity, not free RAM at
+                        startup
   --memory MEMORY       Override memory requested per task unless a tool-
                         specific override is supplied
   --checkm_memory CHECKM_MEMORY
@@ -190,14 +204,24 @@ usage: genome_qc build_db [-h] -o OUTPUT [-d DATABASE] [--threads THREADS]
                           [--submit_rate SUBMIT_RATE] [--work_dir WORK_DIR]
                           [--conda_cache CONDA_CACHE] [--keep_work]
                           [--compact_results] [--scratch_dir SCRATCH_DIR]
-                          [--resume] [--plan] [--params PARAMS]
+                          [--resume | --fresh_work]
+                          [--download_only | --extract_only]
+                          [--download_attempts DOWNLOAD_ATTEMPTS]
+                          [--db_url NAME=URL] [--plan] [--params PARAMS]
 
 options:
   -h, --help            show this help message and exit
-  -o, --output OUTPUT
-  -d, --database DATABASE
+  -o OUTPUT, --output OUTPUT
+  -d DATABASE, --database DATABASE
   --threads THREADS
   --resume
+  --fresh_work          Start a new execution session with unchanged
+                        inputs/settings; permit changed work/cache paths
+  --download_only       Fetch verified reference archives without installing
+  --extract_only        Install supplied archives without downloading
+  --download_attempts DOWNLOAD_ATTEMPTS
+  --db_url NAME=URL     Alternate archive URL for checkm, gtdbtk or gunc;
+                        pinned checksum remains required
   --plan                Validate inputs and save commands without executing
   --params PARAMS       Advanced Nextflow parameters as a JSON object
 
@@ -206,7 +230,8 @@ Execution and resources:
                         Slurm has no default aggregate cap
   --max_memory MAX_MEMORY
                         Total memory budget; local defaults to 90% of
-                        physical/cgroup capacity, not free RAM at startup
+                        physical/cgroup/Slurm capacity, not free RAM at
+                        startup
   --memory MEMORY       Override memory requested per task unless a tool-
                         specific override is supplied
   --max_tasks MAX_TASKS
@@ -235,29 +260,34 @@ Execution and resources:
 ## preprocess
 
 ```text
-usage: genome_qc preprocess [-h] (-i INPUT | --manifest MANIFEST) -o OUTPUT
-                            [-d DATABASE] [--threads THREADS]
-                            [--max_cpus MAX_CPUS] [--max_memory MAX_MEMORY]
-                            [--memory MEMORY] [--max_tasks MAX_TASKS]
-                            [--executor {local,slurm}] [--account ACCOUNT]
-                            [--partition PARTITION] [--qos QOS]
-                            [--reservation RESERVATION]
+usage: genome_qc preprocess [-h] [-i INPUT] [--no_recursive]
+                            [--manifest MANIFEST] -o OUTPUT [-d DATABASE]
+                            [--threads THREADS] [--max_cpus MAX_CPUS]
+                            [--max_memory MAX_MEMORY] [--memory MEMORY]
+                            [--max_tasks MAX_TASKS] [--executor {local,slurm}]
+                            [--account ACCOUNT] [--partition PARTITION]
+                            [--qos QOS] [--reservation RESERVATION]
                             [--time_limit TIME_LIMIT]
                             [--submit_rate SUBMIT_RATE] [--work_dir WORK_DIR]
                             [--conda_cache CONDA_CACHE] [--keep_work]
                             [--compact_results] [--scratch_dir SCRATCH_DIR]
-                            [--resume] [--plan] [--params PARAMS]
-                            [--filter_size FILTER_SIZE]
+                            [--resume | --fresh_work] [--plan]
+                            [--params PARAMS] [--filter_size FILTER_SIZE]
 
 options:
   -h, --help            show this help message and exit
-  -i, --input INPUT     Genome FASTA directory (searched recursively)
+  -i INPUT, --input INPUT
+                        Genome FASTA directory (searched recursively)
+  --no_recursive        Only discover FASTAs directly inside -i; do not search
+                        subdirectories
   --manifest MANIFEST   TSV with id and fasta; relative paths resolve beside
                         the manifest
-  -o, --output OUTPUT
-  -d, --database DATABASE
+  -o OUTPUT, --output OUTPUT
+  -d DATABASE, --database DATABASE
   --threads THREADS
   --resume
+  --fresh_work          Start a new execution session with unchanged
+                        inputs/settings; permit changed work/cache paths
   --plan                Validate inputs and save commands without executing
   --params PARAMS       Advanced Nextflow parameters as a JSON object
 
@@ -266,7 +296,8 @@ Execution and resources:
                         Slurm has no default aggregate cap
   --max_memory MAX_MEMORY
                         Total memory budget; local defaults to 90% of
-                        physical/cgroup capacity, not free RAM at startup
+                        physical/cgroup/Slurm capacity, not free RAM at
+                        startup
   --memory MEMORY       Override memory requested per task unless a tool-
                         specific override is supplied
   --max_tasks MAX_TASKS
@@ -299,28 +330,35 @@ Preprocessing:
 ## quality
 
 ```text
-usage: genome_qc quality [-h] (-i INPUT | --manifest MANIFEST) -o OUTPUT
-                         [-d DATABASE] [--threads THREADS]
-                         [--max_cpus MAX_CPUS] [--max_memory MAX_MEMORY]
-                         [--memory MEMORY] [--checkm_memory CHECKM_MEMORY]
+usage: genome_qc quality [-h] [-i INPUT] [--no_recursive]
+                         [--manifest MANIFEST] -o OUTPUT [-d DATABASE]
+                         [--threads THREADS] [--max_cpus MAX_CPUS]
+                         [--max_memory MAX_MEMORY] [--memory MEMORY]
+                         [--checkm_memory CHECKM_MEMORY]
                          [--max_tasks MAX_TASKS] [--executor {local,slurm}]
                          [--account ACCOUNT] [--partition PARTITION]
                          [--qos QOS] [--reservation RESERVATION]
                          [--time_limit TIME_LIMIT] [--submit_rate SUBMIT_RATE]
                          [--work_dir WORK_DIR] [--conda_cache CONDA_CACHE]
                          [--keep_work] [--compact_results]
-                         [--scratch_dir SCRATCH_DIR] [--resume] [--plan]
-                         [--params PARAMS] [--max_batch_size MAX_BATCH_SIZE]
+                         [--scratch_dir SCRATCH_DIR] [--resume | --fresh_work]
+                         [--plan] [--params PARAMS]
+                         [--max_batch_size MAX_BATCH_SIZE]
 
 options:
   -h, --help            show this help message and exit
-  -i, --input INPUT     Genome FASTA directory (searched recursively)
+  -i INPUT, --input INPUT
+                        Genome FASTA directory (searched recursively)
+  --no_recursive        Only discover FASTAs directly inside -i; do not search
+                        subdirectories
   --manifest MANIFEST   TSV with id and fasta; relative paths resolve beside
                         the manifest
-  -o, --output OUTPUT
-  -d, --database DATABASE
+  -o OUTPUT, --output OUTPUT
+  -d DATABASE, --database DATABASE
   --threads THREADS
   --resume
+  --fresh_work          Start a new execution session with unchanged
+                        inputs/settings; permit changed work/cache paths
   --plan                Validate inputs and save commands without executing
   --params PARAMS       Advanced Nextflow parameters as a JSON object
   --max_batch_size MAX_BATCH_SIZE
@@ -332,7 +370,8 @@ Execution and resources:
                         Slurm has no default aggregate cap
   --max_memory MAX_MEMORY
                         Total memory budget; local defaults to 90% of
-                        physical/cgroup capacity, not free RAM at startup
+                        physical/cgroup/Slurm capacity, not free RAM at
+                        startup
   --memory MEMORY       Override memory requested per task unless a tool-
                         specific override is supplied
   --checkm_memory CHECKM_MEMORY
@@ -364,29 +403,35 @@ Execution and resources:
 ## taxonomy
 
 ```text
-usage: genome_qc taxonomy [-h] (-i INPUT | --manifest MANIFEST) -o OUTPUT
-                          [-d DATABASE] [--threads THREADS]
-                          [--max_cpus MAX_CPUS] [--max_memory MAX_MEMORY]
-                          [--memory MEMORY] [--gtdb_memory GTDB_MEMORY]
-                          [--max_tasks MAX_TASKS] [--executor {local,slurm}]
-                          [--account ACCOUNT] [--partition PARTITION]
-                          [--qos QOS] [--reservation RESERVATION]
+usage: genome_qc taxonomy [-h] [-i INPUT] [--no_recursive]
+                          [--manifest MANIFEST] -o OUTPUT [-d DATABASE]
+                          [--threads THREADS] [--max_cpus MAX_CPUS]
+                          [--max_memory MAX_MEMORY] [--memory MEMORY]
+                          [--gtdb_memory GTDB_MEMORY] [--max_tasks MAX_TASKS]
+                          [--executor {local,slurm}] [--account ACCOUNT]
+                          [--partition PARTITION] [--qos QOS]
+                          [--reservation RESERVATION]
                           [--time_limit TIME_LIMIT]
                           [--submit_rate SUBMIT_RATE] [--work_dir WORK_DIR]
                           [--conda_cache CONDA_CACHE] [--keep_work]
                           [--compact_results] [--scratch_dir SCRATCH_DIR]
-                          [--resume] [--plan] [--params PARAMS]
+                          [--resume | --fresh_work] [--plan] [--params PARAMS]
                           [--max_batch_size MAX_BATCH_SIZE]
 
 options:
   -h, --help            show this help message and exit
-  -i, --input INPUT     Genome FASTA directory (searched recursively)
+  -i INPUT, --input INPUT
+                        Genome FASTA directory (searched recursively)
+  --no_recursive        Only discover FASTAs directly inside -i; do not search
+                        subdirectories
   --manifest MANIFEST   TSV with id and fasta; relative paths resolve beside
                         the manifest
-  -o, --output OUTPUT
-  -d, --database DATABASE
+  -o OUTPUT, --output OUTPUT
+  -d DATABASE, --database DATABASE
   --threads THREADS
   --resume
+  --fresh_work          Start a new execution session with unchanged
+                        inputs/settings; permit changed work/cache paths
   --plan                Validate inputs and save commands without executing
   --params PARAMS       Advanced Nextflow parameters as a JSON object
   --max_batch_size MAX_BATCH_SIZE
@@ -398,7 +443,8 @@ Execution and resources:
                         Slurm has no default aggregate cap
   --max_memory MAX_MEMORY
                         Total memory budget; local defaults to 90% of
-                        physical/cgroup capacity, not free RAM at startup
+                        physical/cgroup/Slurm capacity, not free RAM at
+                        startup
   --memory MEMORY       Override memory requested per task unless a tool-
                         specific override is supplied
   --gtdb_memory GTDB_MEMORY
@@ -429,27 +475,33 @@ Execution and resources:
 ## rrna
 
 ```text
-usage: genome_qc rrna [-h] (-i INPUT | --manifest MANIFEST) -o OUTPUT
-                      [-d DATABASE] [--threads THREADS] [--max_cpus MAX_CPUS]
-                      [--max_memory MAX_MEMORY] [--memory MEMORY]
-                      [--max_tasks MAX_TASKS] [--executor {local,slurm}]
-                      [--account ACCOUNT] [--partition PARTITION] [--qos QOS]
+usage: genome_qc rrna [-h] [-i INPUT] [--no_recursive] [--manifest MANIFEST]
+                      -o OUTPUT [-d DATABASE] [--threads THREADS]
+                      [--max_cpus MAX_CPUS] [--max_memory MAX_MEMORY]
+                      [--memory MEMORY] [--max_tasks MAX_TASKS]
+                      [--executor {local,slurm}] [--account ACCOUNT]
+                      [--partition PARTITION] [--qos QOS]
                       [--reservation RESERVATION] [--time_limit TIME_LIMIT]
                       [--submit_rate SUBMIT_RATE] [--work_dir WORK_DIR]
                       [--conda_cache CONDA_CACHE] [--keep_work]
                       [--compact_results] [--scratch_dir SCRATCH_DIR]
-                      [--resume] [--plan] [--params PARAMS]
+                      [--resume | --fresh_work] [--plan] [--params PARAMS]
                       [--kingdom {Bacteria,Archaea,Eukaryota}]
 
 options:
   -h, --help            show this help message and exit
-  -i, --input INPUT     Genome FASTA directory (searched recursively)
+  -i INPUT, --input INPUT
+                        Genome FASTA directory (searched recursively)
+  --no_recursive        Only discover FASTAs directly inside -i; do not search
+                        subdirectories
   --manifest MANIFEST   TSV with id and fasta; relative paths resolve beside
                         the manifest
-  -o, --output OUTPUT
-  -d, --database DATABASE
+  -o OUTPUT, --output OUTPUT
+  -d DATABASE, --database DATABASE
   --threads THREADS
   --resume
+  --fresh_work          Start a new execution session with unchanged
+                        inputs/settings; permit changed work/cache paths
   --plan                Validate inputs and save commands without executing
   --params PARAMS       Advanced Nextflow parameters as a JSON object
   --kingdom {Bacteria,Archaea,Eukaryota}
@@ -459,7 +511,8 @@ Execution and resources:
                         Slurm has no default aggregate cap
   --max_memory MAX_MEMORY
                         Total memory budget; local defaults to 90% of
-                        physical/cgroup capacity, not free RAM at startup
+                        physical/cgroup/Slurm capacity, not free RAM at
+                        startup
   --memory MEMORY       Override memory requested per task unless a tool-
                         specific override is supplied
   --max_tasks MAX_TASKS
@@ -488,28 +541,33 @@ Execution and resources:
 ## trna
 
 ```text
-usage: genome_qc trna [-h] (-i INPUT | --manifest MANIFEST) -o OUTPUT
-                      [-d DATABASE] [--threads THREADS] [--max_cpus MAX_CPUS]
-                      [--max_memory MAX_MEMORY] [--memory MEMORY]
-                      [--trnascan_memory TRNASCAN_MEMORY]
+usage: genome_qc trna [-h] [-i INPUT] [--no_recursive] [--manifest MANIFEST]
+                      -o OUTPUT [-d DATABASE] [--threads THREADS]
+                      [--max_cpus MAX_CPUS] [--max_memory MAX_MEMORY]
+                      [--memory MEMORY] [--trnascan_memory TRNASCAN_MEMORY]
                       [--max_tasks MAX_TASKS] [--executor {local,slurm}]
                       [--account ACCOUNT] [--partition PARTITION] [--qos QOS]
                       [--reservation RESERVATION] [--time_limit TIME_LIMIT]
                       [--submit_rate SUBMIT_RATE] [--work_dir WORK_DIR]
                       [--conda_cache CONDA_CACHE] [--keep_work]
                       [--compact_results] [--scratch_dir SCRATCH_DIR]
-                      [--resume] [--plan] [--params PARAMS]
+                      [--resume | --fresh_work] [--plan] [--params PARAMS]
                       [--kingdom {Bacteria,Archaea,Eukaryota}]
 
 options:
   -h, --help            show this help message and exit
-  -i, --input INPUT     Genome FASTA directory (searched recursively)
+  -i INPUT, --input INPUT
+                        Genome FASTA directory (searched recursively)
+  --no_recursive        Only discover FASTAs directly inside -i; do not search
+                        subdirectories
   --manifest MANIFEST   TSV with id and fasta; relative paths resolve beside
                         the manifest
-  -o, --output OUTPUT
-  -d, --database DATABASE
+  -o OUTPUT, --output OUTPUT
+  -d DATABASE, --database DATABASE
   --threads THREADS
   --resume
+  --fresh_work          Start a new execution session with unchanged
+                        inputs/settings; permit changed work/cache paths
   --plan                Validate inputs and save commands without executing
   --params PARAMS       Advanced Nextflow parameters as a JSON object
   --kingdom {Bacteria,Archaea,Eukaryota}
@@ -519,7 +577,8 @@ Execution and resources:
                         Slurm has no default aggregate cap
   --max_memory MAX_MEMORY
                         Total memory budget; local defaults to 90% of
-                        physical/cgroup capacity, not free RAM at startup
+                        physical/cgroup/Slurm capacity, not free RAM at
+                        startup
   --memory MEMORY       Override memory requested per task unless a tool-
                         specific override is supplied
   --trnascan_memory TRNASCAN_MEMORY
@@ -551,28 +610,34 @@ Execution and resources:
 ## chimera
 
 ```text
-usage: genome_qc chimera [-h] (-i INPUT | --manifest MANIFEST) -o OUTPUT
-                         [-d DATABASE] [--threads THREADS]
-                         [--max_cpus MAX_CPUS] [--max_memory MAX_MEMORY]
-                         [--memory MEMORY] [--gunc_memory GUNC_MEMORY]
-                         [--max_tasks MAX_TASKS] [--executor {local,slurm}]
-                         [--account ACCOUNT] [--partition PARTITION]
-                         [--qos QOS] [--reservation RESERVATION]
-                         [--time_limit TIME_LIMIT] [--submit_rate SUBMIT_RATE]
-                         [--work_dir WORK_DIR] [--conda_cache CONDA_CACHE]
-                         [--keep_work] [--compact_results]
-                         [--scratch_dir SCRATCH_DIR] [--resume] [--plan]
-                         [--params PARAMS] [--max_batch_size MAX_BATCH_SIZE]
+usage: genome_qc chimera [-h] [-i INPUT] [--no_recursive]
+                         [--manifest MANIFEST] -o OUTPUT [-d DATABASE]
+                         [--threads THREADS] [--max_cpus MAX_CPUS]
+                         [--max_memory MAX_MEMORY] [--memory MEMORY]
+                         [--gunc_memory GUNC_MEMORY] [--max_tasks MAX_TASKS]
+                         [--executor {local,slurm}] [--account ACCOUNT]
+                         [--partition PARTITION] [--qos QOS]
+                         [--reservation RESERVATION] [--time_limit TIME_LIMIT]
+                         [--submit_rate SUBMIT_RATE] [--work_dir WORK_DIR]
+                         [--conda_cache CONDA_CACHE] [--keep_work]
+                         [--compact_results] [--scratch_dir SCRATCH_DIR]
+                         [--resume | --fresh_work] [--plan] [--params PARAMS]
+                         [--max_batch_size MAX_BATCH_SIZE]
 
 options:
   -h, --help            show this help message and exit
-  -i, --input INPUT     Genome FASTA directory (searched recursively)
+  -i INPUT, --input INPUT
+                        Genome FASTA directory (searched recursively)
+  --no_recursive        Only discover FASTAs directly inside -i; do not search
+                        subdirectories
   --manifest MANIFEST   TSV with id and fasta; relative paths resolve beside
                         the manifest
-  -o, --output OUTPUT
-  -d, --database DATABASE
+  -o OUTPUT, --output OUTPUT
+  -d DATABASE, --database DATABASE
   --threads THREADS
   --resume
+  --fresh_work          Start a new execution session with unchanged
+                        inputs/settings; permit changed work/cache paths
   --plan                Validate inputs and save commands without executing
   --params PARAMS       Advanced Nextflow parameters as a JSON object
   --max_batch_size MAX_BATCH_SIZE
@@ -584,7 +649,8 @@ Execution and resources:
                         Slurm has no default aggregate cap
   --max_memory MAX_MEMORY
                         Total memory budget; local defaults to 90% of
-                        physical/cgroup capacity, not free RAM at startup
+                        physical/cgroup/Slurm capacity, not free RAM at
+                        startup
   --memory MEMORY       Override memory requested per task unless a tool-
                         specific override is supplied
   --gunc_memory GUNC_MEMORY
@@ -618,8 +684,8 @@ Execution and resources:
 usage: genome_qc report [-h] -o OUTPUT [--serve] [--port PORT]
 
 options:
-  -h, --help           show this help message and exit
-  -o, --output OUTPUT
+  -h, --help            show this help message and exit
+  -o OUTPUT, --output OUTPUT
   --serve
   --port PORT
 ```
@@ -663,7 +729,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  -o, --output-dir OUTPUT_DIR
+  -o OUTPUT_DIR, --output-dir OUTPUT_DIR
                         Output directory. Defaults to <master-
                         dir>/genome_quality_atlas.
   --prefix PREFIX       Prefix for output files. Default: genome_quality
@@ -765,7 +831,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  -o, --output-dir OUTPUT_DIR
+  -o OUTPUT_DIR, --output-dir OUTPUT_DIR
                         Output directory for the combined master and global
                         atlas. Defaults to <manifest-dir>/genome_atlas_batch.
   --atlas-script ATLAS_SCRIPT
@@ -903,7 +969,8 @@ usage: genome_qc render init-config [-h] [-o OUTPUT] [--tree TREE]
 
 options:
   -h, --help            show this help message and exit
-  -o, --output OUTPUT   Output JSON config path.
+  -o OUTPUT, --output OUTPUT
+                        Output JSON config path.
   --tree TREE           Optional tree path to seed autodiscovered
                         metadata/output paths.
   --metadata [METADATA ...]
@@ -923,7 +990,8 @@ usage: genome_qc render render [-h] -c CONFIG [--tree TREE]
 
 options:
   -h, --help            show this help message and exit
-  -c, --config CONFIG   JSON rendering config.
+  -c CONFIG, --config CONFIG
+                        JSON rendering config.
   --tree TREE           Override tree path from config.
   --metadata [METADATA ...]
                         Override metadata TSV paths from config.
@@ -946,8 +1014,9 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  -c, --config CONFIG   Base JSON rendering config.
-  -o, --output-dir OUTPUT_DIR
+  -c CONFIG, --config CONFIG
+                        Base JSON rendering config.
+  -o OUTPUT_DIR, --output-dir OUTPUT_DIR
                         Optional directory for rendered outputs.
   --limit LIMIT         Render only the first N discovered trees.
   --dry-run             Print intended output paths without rendering.
@@ -959,9 +1028,10 @@ options:
 usage: genome_qc render convert-config [-h] -o OUTPUT input
 
 positional arguments:
-  input                Input JSON or YAML config.
+  input                 Input JSON or YAML config.
 
 options:
-  -h, --help           show this help message and exit
-  -o, --output OUTPUT  Output JSON/YAML config path.
+  -h, --help            show this help message and exit
+  -o OUTPUT, --output OUTPUT
+                        Output JSON/YAML config path.
 ```

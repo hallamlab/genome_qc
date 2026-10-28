@@ -59,19 +59,32 @@ def capacity():
             cpus = min(cpus, max(1, int(quota) // int(period)))
     except (OSError, ValueError):
         pass
-    try:
-        limit = Path('/sys/fs/cgroup/memory.max').read_text().strip()
-        if limit != 'max':
-            total = min(total, int(limit)) if total else int(limit)
-    except (OSError, ValueError):
-        pass
+    from .hpc import controller_limits
+    limit = controller_limits().get('memory.max')
+    if limit:
+        total = min(total, limit) if total else limit
+    # Slurm may not expose its allocation at the cgroup namespace root.
+    for key in ('SLURM_CPUS_PER_TASK', 'SLURM_CPUS_ON_NODE'):
+        value = os.environ.get(key, '')
+        if value.isdigit() and int(value) > 0:
+            cpus = min(cpus, int(value))
+    allocations = []
+    value = os.environ.get('SLURM_MEM_PER_NODE', '')
+    if value.isdigit() and int(value) > 0:
+        allocations.append(int(value) * 1024**2)
+    value = os.environ.get('SLURM_MEM_PER_CPU', '')
+    allocated_cpus = os.environ.get('SLURM_CPUS_ON_NODE', os.environ.get('SLURM_CPUS_PER_TASK', ''))
+    if value.isdigit() and allocated_cpus.isdigit() and int(value) > 0 and int(allocated_cpus) > 0:
+        allocations.append(int(value) * int(allocated_cpus) * 1024**2)
+    if allocations:
+        total = min([total] + allocations) if total else min(allocations)
     # Reserve headroom once, across the entire run, rather than per task.
     return cpus, f'{max(1, int(total * 0.9) // 1024**2)} MB' if total else None
 
 
 def add_options(parser, tools=None):
     parser.add_argument('--max_cpus', type=positive, help='Total CPU budget; local defaults to available CPUs, Slurm has no default aggregate cap')
-    parser.add_argument('--max_memory', type=memory, help='Total memory budget; local defaults to 90%% of physical/cgroup capacity, not free RAM at startup')
+    parser.add_argument('--max_memory', type=memory, help='Total memory budget; local defaults to 90%% of physical/cgroup/Slurm capacity, not free RAM at startup')
     parser.add_argument('--memory', type=memory, help='Override memory requested per task unless a tool-specific override is supplied')
     for name in (('checkm', 'gtdb', 'gunc', 'trnascan', 'atlas') if tools is None else tools):
         parser.add_argument('--' + name + '_memory', type=memory,
@@ -125,7 +138,7 @@ def configuration(args, cache):
              "process.errorStrategy = 'finish'", 'process.maxRetries = 0',
              f'process.time = {literal(args.time_limit)}', f'process.memory = {literal(request("4 GB"))}']
     for name, tool in [('CHECKM_SINGLE', 'checkm'), ('GTDBTK', 'gtdb'), ('GUNC', 'gunc'),
-                       ('TRNASCAN', 'trnascan'), ('GENOME_QUALITY_ATLAS', 'atlas'), ('COHORT_ANI', 'atlas'), ('COHORT_PHYLOGENY', 'atlas')]:
+                       ('TRNASCAN', 'trnascan'), ('TRNA_BATCH', 'trnascan'), ('GENOME_QUALITY_ATLAS', 'atlas'), ('COHORT_ANI', 'atlas'), ('COHORT_PHYLOGENY', 'atlas')]:
         lines.append(f"process {{ withName: '{name}' {{ memory = '{task_memory[tool]}' }} }}")
     lines.append(f"process {{ withName: 'MERGE_MASTER|DEDUPE|QSCORE' {{ memory = '{request('8 GB')}' }} }}")
     if args.executor == 'local':
