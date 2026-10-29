@@ -8,6 +8,10 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import uuid
+
+CHECKPOINT = None
+REUSE_RRNA = None
 
 import assessment_task
 
@@ -20,8 +24,17 @@ def assess(stage, identity, target, lines, token, fasta, blocked=False):
     script = Path(identity + '.' + stage + '.sh')
     script.write_text('\n'.join(lines) + '\n')
     try:
-        return assessment_task.run(stage, target, identity + '.' + stage + '.assessment.json',
-                                   str(script), [fasta], token, blocked)
+        record = assessment_task.run(stage, target, identity + '.' + stage + '.assessment.json',
+                                     str(script), [fasta], token, blocked)
+        if CHECKPOINT:
+            files = sorted(Path('.').glob(identity + '.*'), key=lambda p: p.name.endswith('.assessment.json'))
+            for source in files:
+                if not source.is_file() or source.suffix == '.sh':
+                    continue
+                pending = CHECKPOINT / ('.' + source.name + '.' + uuid.uuid4().hex)
+                shutil.copy2(source, pending)
+                pending.replace(CHECKPOINT / source.name)
+        return record
     finally:
         script.unlink(missing_ok=True)
 
@@ -51,7 +64,14 @@ def preprocess(record, cpus, compact):
 def rrna(record, cpus, compact):
     identity, kingdom, fasta, token, check_token = record
     k = 'arc' if kingdom == 'Archaea' else 'bac'
-    status = assess('rrna', identity, identity + '.rRNA.gff',
+    prior = REUSE_RRNA / (identity + '.rrna.assessment.json') if REUSE_RRNA else None
+    if prior and prior.is_file():
+        status = json.loads(prior.read_text())
+        for suffix in ('.rRNA.gff', '.rRNA.fasta', '.rrna.assessment.json', '.rrna.assessment.log'):
+            source = REUSE_RRNA / (identity + suffix)
+            if source.exists(): shutil.copy2(source, source.name)
+    else:
+        status = assess('rrna', identity, identity + '.rRNA.gff',
                     [command(['barrnap', '--kingdom', k, '--threads', '1', '--outseq',
                               identity + '.rRNA.fasta', fasta]) + ' > ' + shlex.quote(identity + '.rRNA.gff')], token, fasta)
     # Database index files are temporary even in keep-everything mode: final
@@ -81,7 +101,11 @@ def trna(record, cpus, compact):
             Path(identity + suffix).unlink(missing_ok=True)
 
 
-def run(mode, records, cpus=1, compact=False):
+def run(mode, records, cpus=1, compact=False, checkpoint_dir=None, reuse_rrna=None):
+    global CHECKPOINT, REUSE_RRNA
+    CHECKPOINT = Path(checkpoint_dir).resolve() if checkpoint_dir else None
+    REUSE_RRNA = Path(reuse_rrna).resolve() if reuse_rrna else None
+    if CHECKPOINT: CHECKPOINT.mkdir(parents=True, exist_ok=True)
     required = {'preprocess': ['seqkit'], 'rrna': ['barrnap', 'makeblastdb', 'blastn'], 'trna': ['tRNAscan-SE']}[mode]
     for name in required:
         if not shutil.which(name):
@@ -103,6 +127,8 @@ def run(mode, records, cpus=1, compact=False):
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
+    p.add_argument('--checkpoint-dir')
+    p.add_argument('--reuse-rrna')
     p.add_argument('mode', choices=['preprocess', 'rrna', 'trna'])
     p.add_argument('manifest')
     p.add_argument('--cpus', type=int, default=1)
@@ -110,4 +136,4 @@ if __name__ == '__main__':
     a = p.parse_args()
     if a.cpus < 1:
         p.error('--cpus must be positive')
-    run(a.mode, json.loads(Path(a.manifest).read_text()), a.cpus, a.compact)
+    run(a.mode, json.loads(Path(a.manifest).read_text()), a.cpus, a.compact, a.checkpoint_dir, a.reuse_rrna)

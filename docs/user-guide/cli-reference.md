@@ -19,6 +19,7 @@ use their own hyphen-style flags. These are not interchangeable aliases.
 | `-o`, `--output` | Required analysis output directory. Keep outside the recursively searched input tree. Standalone analyses may call this `--output-dir`; read their help. |
 | `-d`, `--database` | Reference root; default `~/.local/share/genome_qc/databases`. Complete existing references are reused. |
 | `--threads` | CPUs requested per parallel tool (default 8 for workflow stages); not an aggregate machine/job limit. See `--max_cpus`. |
+| `--rescue` | Full run only: reuse successful assessments and retry failed/unfinished assessments with user-selected resources; rebuild final cohort products. See recovery documentation for batch boundaries. |
 | `--resume` | Ask Nextflow to reuse matching cached work. Requires the original inputs/settings and work/cache locations. Completed compact results are verified/reused without needing task caches. |
 | `--plan` | Validate/stage inputs and save commands/settings without launching Nextflow or downloading references. Creates files: use a disposable planning output directory. |
 | `--params` | Advanced Nextflow parameters in a JSON object. Explicit CLI selection/resource settings can override corresponding values; inspect the saved `params.json`. This is not a free-form shell config. |
@@ -77,7 +78,7 @@ usage: genome_qc run [-h] [-i INPUT] [--no_recursive] [--manifest MANIFEST] -o
                      [--submit_rate SUBMIT_RATE] [--work_dir WORK_DIR]
                      [--conda_cache CONDA_CACHE] [--keep_work]
                      [--compact_results] [--scratch_dir SCRATCH_DIR]
-                     [--resume | --fresh_work]
+                     [--resume | --rescue | --fresh_work]
                      [--small_batch_size SMALL_BATCH_SIZE]
                      [--file_budget FILE_BUDGET] [--plan] [--params PARAMS]
                      [--max_batch_size MAX_BATCH_SIZE]
@@ -103,6 +104,8 @@ options:
   -d DATABASE, --database DATABASE
   --threads THREADS
   --resume
+  --rescue              Full run only: reuse successful assessments and retry
+                        failures with the requested resources
   --fresh_work          Start a new execution session with unchanged
                         inputs/settings; permit changed work/cache paths
   --small_batch_size SMALL_BATCH_SIZE

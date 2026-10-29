@@ -47,8 +47,8 @@ that runs but supplies no measurement is distinguished as `not_reported`.
 When taxonomy is unavailable, barrnap uses its bacterial model and tRNAscan-SE
 uses the general model; the fallback is recorded.
 
-After fixing a cause, use `--resume`. Failure receipts make failed assessments
-eligible for retry while successful tasks remain eligible for caching. Wrapped
+After fixing a cause in a completed run, use `--rescue` as described below.
+For an interrupted workflow, `--resume` uses the original Nextflow task cache. Wrapped
 assessment processes receive one Nextflow retry for whole-task exit 137/143;
 this does not guarantee that an out-of-memory job will fit on retry. Inspect the
 logs and adjust resource requests when needed. Global setup, invalid inputs,
@@ -131,3 +131,51 @@ its previous `$SLURM_TMPDIR` has been removed. Subsequent `--resume` calls with
 that session's work/cache locations reuse the recorded fresh session. Earlier
 work directories are preserved rather than silently deleted. No option can
 recover checkpoints that the cluster has already removed.
+
+## Inspect failures and explicitly rescue a completed run
+
+`Assessment_failures.tsv` lists failed or blocked genome assessments, diagnostic
+log paths, and failure classifications. When Slurm accounting is available it
+also includes job ID, scheduler state, requested CPUs/memory/time and maximum
+RSS. A scheduler OOM is reported even when the biological wrapper only reports
+exit code 2. Missing accounting or an ambiguous log leaves the cause `unknown`;
+exit code 2 alone is not interpreted as a memory failure. Raw accounting and
+failure tables are retained in each launch's `logs/<run-id>/` directory.
+
+Repeat the original full-run command with `--rescue` and your chosen resource
+changes. For example, from a project directory containing `inputs/`:
+
+```bash
+genome_qc run -i "$PWD/inputs" -o "$PWD/output" -d "$PWD/databases" \
+  --executor slurm --account YOUR_ACCOUNT --threads 8 \
+  --max_tasks 20 --submit_rate 6 --time_limit 24h \
+  --compact_results --rescue
+```
+
+General tasks now reserve 32 GB by default; heavier tools retain higher requests.
+`--memory` overrides **all** task memory requests unless a tool override is
+supplied, so do not set it to 32 GB expecting GTDB-Tk to retain its larger default.
+There is no automatic resource escalation or automatic rescue loop. Each rescue
+is a user decision; local execution is supported too.
+
+Rescue validates unchanged input checksums and scientific settings, then builds
+an explicit reuse plan independent of Nextflow's resource-sensitive task cache.
+Threads, batch sizes and resource requests may change. Keep the reference data
+and existing Conda environments unchanged. Do not upgrade tools within a cached
+environment: a rescue is recovery of the same analysis, not a method comparison.
+
+RNA and preprocessing are recovered per genome. Successful rRNA prediction is
+reused if only its comparison failed. Successfully completed CheckM, GTDB-Tk and
+GUNC **batches** are reused; a failed native tool batch is rerun for all its
+members because its partial outputs are not certified as completed assessments.
+Successful taxonomy is required to reuse downstream RNA assessments; otherwise
+those assessments are rerun after taxonomy recovery to use the correct model.
+Final cohort tables, ANI/phylogeny products, atlas and explorer are rebuilt.
+
+Each rescue retains its plan, previous assessment table and failed diagnostics
+under `.genome_qc/rescue/<run-id>/`. Results must have the expected products to be
+reused; missing products are scheduled again. Legacy 0.1.1 unpublished RNA and
+preprocessing outputs can be recovered from the retained work directories.
+Do not delete work or cache directories before rescue. Compact cleanup remains
+deferred while failures remain. `--rescue` requires a previous final assessment
+table and cannot be combined with `--resume` or `--fresh_work`.

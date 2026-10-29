@@ -1,4 +1,16 @@
 nextflow.enable.dsl=2
+params.rescue_plan = params.rescue_plan ?: ''
+// Recovery products were validated by the controller before scheduling.
+def rescueStage(stage) {
+    if (!params.rescue_plan) return [ids: [], outputs: [], receipts: []]
+    return new groovy.json.JsonSlurper().parse(new File(params.rescue_plan.toString()))[stage]
+}
+def rescueReady(stage, id) { rescueStage(stage).ids.contains(id.toString()) }
+def rescuePaths(stage, suffix = '') {
+    rescueStage(stage).outputs.findAll { !suffix || it.endsWith(suffix) }.collect { file(it) }
+}
+def rescueReceipts(stage) { rescueStage(stage).receipts.collect { file(it) } }
+
 params.reference_cpus = params.reference_cpus ?: 1
 params.compact_results = params.compact_results ?: false
 
@@ -219,7 +231,7 @@ process PREPROCESS_BATCH {
     input:
     tuple val(batch_id), val(records), path(fastas)
     output:
-    path('results'), emit: results
+    path('results/*'), emit: results
     script:
     def manifest = groovy.json.JsonOutput.toJson(records)
     def helper = helperDigest(['small_task_batch.py', 'assessment_task.py'])
@@ -228,7 +240,7 @@ process PREPROCESS_BATCH {
     cat > batch.json <<'BATCH_JSON'
     ${manifest}
 BATCH_JSON
-    python ${projectDir}/small_task_batch.py preprocess batch.json --cpus ${task.cpus} ${params.compact_results ? '--compact' : ''}
+    python ${projectDir}/small_task_batch.py preprocess batch.json --cpus ${task.cpus} --checkpoint-dir ${params.working_dir}/genomes_pruned ${params.compact_results ? '--compact' : ''}
     """
 }
 
@@ -243,7 +255,7 @@ process RRNA_BATCH {
     input:
     tuple val(batch_id), val(records), path(fastas)
     output:
-    path('results'), emit: results
+    path('results/*'), emit: results
     script:
     def manifest = groovy.json.JsonOutput.toJson(records)
     def helper = helperDigest(['small_task_batch.py', 'assessment_task.py'])
@@ -252,7 +264,7 @@ process RRNA_BATCH {
     cat > batch.json <<'BATCH_JSON'
     ${manifest}
 BATCH_JSON
-    python ${projectDir}/small_task_batch.py rrna batch.json --cpus ${task.cpus} ${params.compact_results ? '--compact' : ''}
+    python ${projectDir}/small_task_batch.py rrna batch.json --cpus ${task.cpus} --checkpoint-dir ${params.working_dir}/barrnap ${params.rescue_plan ? '--reuse-rrna ' + new File(params.rescue_plan.toString()).parent + '/rrna' : ''} ${params.compact_results ? '--compact' : ''}
     """
 }
 
@@ -267,7 +279,7 @@ process TRNA_BATCH {
     input:
     tuple val(batch_id), val(records), path(fastas)
     output:
-    path('results'), emit: results
+    path('results/*'), emit: results
     script:
     def manifest = groovy.json.JsonOutput.toJson(records)
     def helper = helperDigest(['small_task_batch.py', 'assessment_task.py'])
@@ -276,7 +288,7 @@ process TRNA_BATCH {
     cat > batch.json <<'BATCH_JSON'
     ${manifest}
 BATCH_JSON
-    python ${projectDir}/small_task_batch.py trna batch.json --cpus ${task.cpus} ${params.compact_results ? '--compact' : ''}
+    python ${projectDir}/small_task_batch.py trna batch.json --cpus ${task.cpus} --checkpoint-dir ${params.working_dir}/trnascan ${params.compact_results ? '--compact' : ''}
     """
 }
 
@@ -1263,7 +1275,7 @@ workflow COMPLETE {
             ).ready :
             Channel.of("validated")
 
-        preprocess_input = raw_genomes.toSortedList().flatMap { rows ->
+        preprocess_input = raw_genomes.filter { id, size, fasta -> !rescueReady('preprocess', id + '.' + size) }.toSortedList().flatMap { rows ->
             rows.groupBy { it[1] }.values().collectMany { group ->
                 smallBatches(group, 2).collect { batch ->
                     tuple(batchId(batch.collect { it[2] }) + '-' + batch[0][1],
@@ -1271,7 +1283,7 @@ workflow COMPLETE {
                 }
             }
         }
-        preprocessed = PREPROCESS_BATCH(preprocess_input).results
+        preprocessed = PREPROCESS_BATCH(preprocess_input).results.map { fs -> normalizeToList(fs)[0].parent }
         pruned = preprocessed.flatMap { dir ->
             file("${dir}/*.fasta").with { value -> normalizeToList(value) }.findAll { it.exists() }.collect { f ->
                 def stem = f.baseName
@@ -1279,11 +1291,15 @@ workflow COMPLETE {
                 tuple(stem.substring(0, at), stem.substring(at + 1), f)
             }
         }
+        pruned = pruned.mix(Channel.fromList(rescuePaths('preprocess')).map { f ->
+            def at = f.baseName.lastIndexOf('.')
+            tuple(f.baseName.substring(0, at), f.baseName.substring(at + 1), f)
+        })
         stats = preprocessed.flatMap { dir -> normalizeToList(file("${dir}/*.seqkit.tsv")).findAll { it.exists() } }
-        seqkit_combined = COMBINE_SEQKIT_STATS(stats.toSortedList()).stats
+        seqkit_combined = COMBINE_SEQKIT_STATS(stats.mix(Channel.fromList(rescuePaths('sequence_stats'))).toSortedList()).stats
 
         def checkmBatchSize = Math.max(1, params.checkm_batch_size as Integer)
-        checkm_batches = pruned
+        checkm_batches = pruned.filter { id, size, fasta -> !rescueReady('checkm', fasta.baseName) }
             .map { id, size, fasta -> tuple(size, tuple(id, size, fasta)) }
             .groupTuple()
             .flatMap { size, records ->
@@ -1298,7 +1314,7 @@ workflow COMPLETE {
             checkm_batches.map { size, batch_id, fastas -> tuple(size, batch_id, fastas, resolvedCheckmData) }
 
         checkm = CHECKM_SINGLE(checkm_input.map { row -> new ArrayList(row) + [assessmentToken('checkm/individual', "${row[0]}.batch${row[1]}")] }).tsv
-        checkm_combined = COMBINE_CHECKM(checkm.toSortedList())
+        checkm_combined = COMBINE_CHECKM(checkm.mix(Channel.fromList(rescuePaths('checkm'))).toSortedList())
 
         qscore = QSCORE(checkm_combined.full, seqkit_combined, pruned.map { it[2] }.toSortedList())
         qscore_for_dedupe = qscore.all.map { it }
@@ -1309,7 +1325,7 @@ workflow COMPLETE {
         subset_for_dedupe = subset.map { it }
         def gtdbtkBatchSize = Math.max(1, params.gtdbtk_batch_size as Integer)
         selected_files = subset_for_gtdbtk.toSortedList()
-        gtdbtk_manifest_input = selected_files.map { files -> tuple(files, gtdbtkBatchSize) }
+        gtdbtk_manifest_input = selected_files.map { files -> tuple(files.findAll { !rescueReady('gtdbtk', it.baseName) }, gtdbtkBatchSize) }.filter { fs, size -> !fs.isEmpty() }
         gtdbtk_manifests = PREP_GTDBTK_BATCHES(gtdbtk_manifest_input).manifests
             .flatMap { manifests -> normalizeToList(manifests) }
 
@@ -1330,13 +1346,13 @@ workflow COMPLETE {
             tuple(batchId, manifest, fastas.findAll { names.contains(it.name) }, db)
         }
         gtdbtk_batches_out = GTDBTK(gtdbtk_staged.map { row -> new ArrayList(row) + [assessmentToken('gtdbtk/individual', "gtdbtk_${row[0]}")] }).outdir
-        gtdbtk = COMBINE_GTDBTK(gtdbtk_batches_out.toSortedList()).outdir
+        gtdbtk = COMBINE_GTDBTK(gtdbtk_batches_out.mix(Channel.fromList(rescuePaths('gtdbtk').findAll { it.name.startsWith('gtdbtk_') })).toSortedList()).outdir
         gtdbtk_map = PARSE_GTDBTK(gtdbtk).mapping
 
         subset_ids = subset_for_ids.map { f -> tuple(f.baseName, f) }
         barrnap_in = subset_ids.combine(gtdbtk_map)
 
-        rrna_input = barrnap_in.toSortedList().flatMap { rows ->
+        rrna_input = barrnap_in.filter { id, fasta, mapping -> !(rescueReady('rrna', id) && rescueReady('rrna_check', id)) }.toSortedList().flatMap { rows ->
             smallBatches(rows, 1).collect { batch ->
                 def kingdoms = batch[0][2].toFile().readLines().findAll { it.trim() }.collectEntries { line ->
                     def fields = line.split('\t'); [(fields[0]): fields[1]]
@@ -1347,10 +1363,10 @@ workflow COMPLETE {
                 }, batch.collect { it[1] })
             }
         }
-        rrna = RRNA_BATCH(rrna_input).results
-        rrna_fastas = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.rRNA.fasta")) }
-        rrna_gffs = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.rRNA.gff")) }
-        blast = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.blastout")) }
+        rrna = RRNA_BATCH(rrna_input).results.map { fs -> normalizeToList(fs)[0].parent }
+        rrna_fastas = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.rRNA.fasta")) }.mix(Channel.fromList(rescuePaths('rrna', '.rRNA.fasta').findAll { rescueReady('rrna', it.name.replace('.rRNA.fasta', '')) && rescueReady('rrna_check', it.name.replace('.rRNA.fasta', '')) }))
+        rrna_gffs = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.rRNA.gff")) }.mix(Channel.fromList(rescuePaths('rrna', '.rRNA.gff').findAll { rescueReady('rrna', it.name.replace('.rRNA.gff', '')) && rescueReady('rrna_check', it.name.replace('.rRNA.gff', '')) }))
+        blast = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.blastout")) }.mix(Channel.fromList(rescuePaths('rrna_check', '.blastout').findAll { rescueReady('rrna', it.name.replace('.blastout', '')) && rescueReady('rrna_check', it.name.replace('.blastout', '')) }))
         barblast = COMPARE_BARRNAP(blast.toSortedList(), rrna_fastas.toSortedList(), rrna_gffs.toSortedList())
 
         dedupe = DEDUPE(qscore_for_dedupe, barblast.pass, gtdbtk)
@@ -1378,26 +1394,31 @@ workflow COMPLETE {
                 tuple(id, kingdom, fasta)
             }
 
-        trna_input = trna_in.toSortedList().flatMap { rows -> smallBatches(rows, 2).collect { batch ->
+        trna_input = trna_in.filter { id, kingdom, fasta -> !rescueReady('trna', id) }.toSortedList().flatMap { rows -> smallBatches(rows, 2).collect { batch ->
             tuple(batchId(batch.collect { it[2] }), batch.collect { row ->
                 [row[0], row[1], row[2].name, assessmentToken('trnascan', "${row[0]}.trna")]
             }, batch.collect { it[2] })
         } }
-        trna_results = TRNA_BATCH(trna_input).results
+        trna_results = TRNA_BATCH(trna_input).results.map { fs -> normalizeToList(fs)[0].parent }
         trna_gffs = trna_results.flatMap { dir -> normalizeToList(file("${dir}/*.gff")) }
 
-        trna_counts = TRNASCAN_PARSE(trna_gffs.toSortedList())
+        trna_counts = TRNASCAN_PARSE(trna_gffs.mix(Channel.fromList(rescuePaths('trna'))).toSortedList())
 
-        gunc_input = dedupe_fasta.toSortedList().flatMap { fs -> balancedBatches(fs, params.gunc_batch_size, params.gunc_parallel_batches).collect { group -> tuple(batchId(group), group) } }.combine(gunc_ready).map { id, fastas, ready -> tuple(id, fastas, resolvedGuncDb) }
+        gunc_input = dedupe_fasta.filter { !rescueReady('gunc', it.baseName) }.toSortedList().flatMap { fs -> balancedBatches(fs, params.gunc_batch_size, params.gunc_parallel_batches).collect { group -> tuple(batchId(group), group) } }.combine(gunc_ready).map { id, fastas, ready -> tuple(id, fastas, resolvedGuncDb) }
         gunc_batches = GUNC(gunc_input.map { row -> new ArrayList(row) + [assessmentToken('gunc', "gunc_${row[0]}")] }).outdir.toSortedList()
-        gunc = COMBINE_GUNC(gunc_batches).outdir
+        gunc = COMBINE_GUNC(gunc_batches.map { it + rescuePaths('gunc') }).outdir
 
         rna_receipts = rrna.mix(trna_results).flatMap { dir -> normalizeToList(file("${dir}/*.assessment.json")) }
-        receipts = CHECKM_SINGLE.out.assessment.mix(GTDBTK.out.assessment, rna_receipts, GUNC.out.assessment).toSortedList()
+        reused_receipts = ['checkm', 'gtdbtk', 'trna', 'gunc'].collectMany { rescueReceipts(it) }
+        reused_receipts += ['rrna', 'rrna_check'].collectMany { stage -> rescueReceipts(stage).findAll { f ->
+            def r = new groovy.json.JsonSlurper().parse(f.toFile())
+            rescueReady('rrna', r.genomes[0]) && rescueReady('rrna_check', r.genomes[0])
+        } }
+        receipts = CHECKM_SINGLE.out.assessment.mix(GTDBTK.out.assessment, rna_receipts, GUNC.out.assessment, Channel.fromList(reused_receipts)).toSortedList()
         master = MERGE_MASTER(dedupe_for_merge, barblast.subunits, trna_counts.counts, gunc, receipts)
         ani = params.cohort_ani_enabled ? COHORT_ANI(master.master, dedupe_fasta.toSortedList()).results : Channel.value([])
         phylogeny = params.cohort_phylogeny_enabled ?
-            COHORT_PHYLOGENY(master.master, GTDBTK.out.alignments.toSortedList(), ani).results : Channel.value([])
+            COHORT_PHYLOGENY(master.master, GTDBTK.out.alignments.mix(Channel.fromList(rescuePaths('gtdbtk').findAll { it.name.startsWith('marker_alignments_') })).toSortedList(), ani).results : Channel.value([])
         atlas = params.atlas_enabled ?
             GENOME_QUALITY_ATLAS(master.master, master.gunc_data, dedupe_fasta.toSortedList(), ani, phylogeny).outdir :
             Channel.empty()

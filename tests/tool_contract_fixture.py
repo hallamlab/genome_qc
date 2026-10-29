@@ -12,6 +12,8 @@ def table(path,cols,rows):
 if (Path(__file__).parent / ('fail-' + name)).exists():
  print('Injected assessment failure: ' + name, file=sys.stderr)
  raise SystemExit(7)
+if name == 'barrnap' and (Path(__file__).parent / ('fail-barrnap-' + Path(a[-1]).stem.split('.')[0])).exists():
+ raise SystemExit(7)
 if name=='checkm':
  cols=['Bin Id','Marker lineage','# genomes','# markers','# marker sets','0','1','2','3','4','5+','Completeness','Contamination','Strain heterogeneity']
  table(opt('-f'),cols,[[p.stem,'root',1,100,10,0,100,0,0,0,0,20 if p.stem.startswith('g2.') else 90+i,25 if p.stem.startswith('g1.') else 1,0] for i,p in enumerate(sorted(Path(a[1]).glob('*.fasta')))])

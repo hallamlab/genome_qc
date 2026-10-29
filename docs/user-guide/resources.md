@@ -111,6 +111,12 @@ changing resource limits or the batch cap can change membership and require
 those tasks to run again. Per-batch assessment receipts list the genome IDs,
 and GTDB-Tk manifests are retained under `manifests/`.
 
+General tasks, including batched rRNA prediction and database setup, default to
+32 GB per task. Memory-heavy tools retain their higher defaults. This reservation
+is shared by all concurrent genomes within a batch, not assigned to each genome.
+It reduces memory pressure but does not guarantee that every input fits. Local
+capacity caps and explicit memory overrides still apply.
+
 Use `--checkm_memory`, `--gtdb_memory`, `--gunc_memory`, `--trnascan_memory`, or
 `--atlas_memory` to override one tool, for example `--checkm_memory '64 GB'`.
 These take precedence over the global `--memory` override. Explicit requests

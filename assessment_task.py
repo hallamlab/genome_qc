@@ -57,7 +57,7 @@ def run(stage, target, receipt, script, inputs, token='0', blocked=False):
             # The GFF target and FASTA must both exist for dependency bookkeeping.
             target.with_suffix('.fasta').write_text('')
     record = dict(stage=stage, status=status, exit_code=code, reason=reason,
-                  genomes=[Path(f).name.removesuffix('.fasta') for f in inputs],
+                  genomes=[target.stem] if stage == 'preprocess' else [Path(f).name.removesuffix('.fasta') for f in inputs],
                   retry_token=token, finished_utc=datetime.now(timezone.utc).isoformat(),
                   log=log.name)
     receipt.write_text(json.dumps(record, indent=2) + '\n')

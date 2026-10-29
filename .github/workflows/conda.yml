@@ -67,6 +67,7 @@ jobs:
           python -m unittest discover -s tests -p test_hpc_scale.py -v
           python -m unittest discover -s tests -p test_database_download.py -v
           python -m unittest discover -s tests -p test_small_task_batch.py -v
+          python -m unittest discover -s tests -p test_rescue.py -v
       - name: Prepare allow-listed source and recipe
         run: python scripts/prepare_conda_recipe.py --output dist/conda-source
       - name: Build package and test installed CLI

@@ -124,7 +124,7 @@ def configuration(args, cache):
         ('trnascan', '32 GB'), ('atlas', '64 GB'))}
     active = {'run': tuple(task_memory), 'quality': ('checkm',),
               'taxonomy': ('gtdb',), 'chimera': ('gunc',), 'trna': ('trnascan',)}
-    requests = [request('8 GB' if args.command in ('run', 'quality', 'build_db') else '4 GB')]
+    requests = [request('32 GB')]
     requests += [task_memory[name] for name in active.get(args.command, ())]
     largest = max(requests, key=memory_bytes)
     if budget and memory_bytes(largest) > memory_bytes(budget):
@@ -136,11 +136,12 @@ def configuration(args, cache):
     jobs = args.max_tasks or (cpus if args.executor == 'local' else 4)
     lines = [f'conda.cacheDir = {literal(cache)}', f'process.executor = {literal(args.executor)}',
              "process.errorStrategy = 'finish'", 'process.maxRetries = 0',
-             f'process.time = {literal(args.time_limit)}', f'process.memory = {literal(request("4 GB"))}']
+             f'process.time = {literal(args.time_limit)}', f'process.memory = {literal(request("32 GB"))}']
+    lines.append("trace.fields = 'task_id,hash,native_id,name,status,exit,submit,duration,realtime,%cpu,peak_rss,cpus,memory,time'")
     for name, tool in [('CHECKM_SINGLE', 'checkm'), ('GTDBTK', 'gtdb'), ('GUNC', 'gunc'),
                        ('TRNASCAN', 'trnascan'), ('TRNA_BATCH', 'trnascan'), ('GENOME_QUALITY_ATLAS', 'atlas'), ('COHORT_ANI', 'atlas'), ('COHORT_PHYLOGENY', 'atlas')]:
         lines.append(f"process {{ withName: '{name}' {{ memory = '{task_memory[tool]}' }} }}")
-    lines.append(f"process {{ withName: 'MERGE_MASTER|DEDUPE|QSCORE' {{ memory = '{request('8 GB')}' }} }}")
+    lines.append(f"process {{ withName: 'MERGE_MASTER|DEDUPE|QSCORE' {{ memory = '{request('32 GB')}' }} }}")
     if args.executor == 'local':
         if any(getattr(args, key) for key in ('account', 'partition', 'qos', 'reservation')):
             raise ValueError('Slurm options require --executor slurm')

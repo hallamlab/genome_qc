@@ -80,6 +80,8 @@ def parser():
         add_options(s.add_argument_group('Execution and resources'), tools=None if name == 'run' else {'quality': ('checkm',), 'taxonomy': ('gtdb',), 'trna': ('trnascan',), 'chimera': ('gunc',)}.get(name, ()))
         restart = s.add_mutually_exclusive_group()
         restart.add_argument('--resume', action='store_true')
+        if name == 'run':
+            restart.add_argument('--rescue', action='store_true', help='Full run only: reuse successful assessments and retry failures with the requested resources')
         restart.add_argument('--fresh_work', action='store_true', help='Start a new execution session with unchanged inputs/settings; permit changed work/cache paths')
         if name == 'run':
             s.add_argument('--small_batch_size', type=batch_limit, default=128, help='Maximum genomes per lightweight task batch [128]')
@@ -155,6 +157,9 @@ def run(args):
 
 
 def _run(args, root, output, control):
+    args.rescue = getattr(args, 'rescue', False)
+    if args.rescue and args.command != 'run':
+        raise ValueError('--rescue is available for the complete run command')
     params = json.loads(args.params.read_text()) if args.params else {}
     if not isinstance(params, dict):
         raise ValueError('--params must contain a JSON object')
@@ -248,7 +253,7 @@ def _run(args, root, output, control):
                     {**budgets['batch_slots'], 'small': int(params['max_forks'])}, args.submit_rate, len(list((root / 'envs').glob('*.yaml'))))
         describe_workload(estimate, args.executor, args.file_budget)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8]
-    if args.resume and locations_file.exists():
+    if (args.resume or args.rescue) and locations_file.exists():
         previous = json.loads(locations_file.read_text())
         work = Path(previous.get('session_work', work))
     if args.fresh_work:
@@ -276,8 +281,20 @@ def _run(args, root, output, control):
     if rows and not args.plan:
         stage(rows, output)
     settings_path = control / (args.command + '.settings.json')
-    if settings_path.exists() and json.loads(settings_path.read_text()) != scientific:
+    from .rescue import normalize_settings, prepare as prepare_rescue, failure_report
+    if settings_path.exists() and normalize_settings(json.loads(settings_path.read_text())) != normalize_settings(scientific):
         raise ValueError('Analysis settings changed for this output directory; use a new output directory to avoid mixing results.')
+    if args.rescue:
+        if not settings_path.exists():
+            raise ValueError('--rescue requires existing analysis settings')
+        # Preserve history and use a fresh NF session. Reuse is explicit in the
+        # recovery plan, independent of NF task hashes and resource changes.
+        rescue_dir = control / 'rescue' / stamp
+        params['rescue_plan'] = str(prepare_rescue(output, work, rescue_dir))
+        parameters.write_text(json.dumps(params, indent=2) + '\n')
+        session = 'rescue-session-' + stamp
+        cleanup_paths.append(control / session)
+        print(f'Rescue plan: {params["rescue_plan"]}; resources are user-selected, without automatic escalation.', flush=True)
     settings_path.write_text(json.dumps(scientific, indent=2))
     if not args.plan:
         locations_file.write_text(json.dumps({**locations, 'session_work': str(work), 'session': session}, indent=2))
@@ -297,7 +314,7 @@ def _run(args, root, output, control):
         dbparams.write_text(json.dumps({**params, 'ref_dir': str(database), 'stage': 'build_db',
                                        'databases': required, 'reference_cpus': db_cpus}, indent=2))
         dbconfig = logs / 'databases.config'
-        db_memory = f"{min(8192, memory_bytes(budgets['memory']) // 1024**2)} MB" if budgets['memory'] else '8 GB'
+        db_memory = f"{min(32768, memory_bytes(budgets['memory'] or capacity()[1]) // 1024**2)} MB"
         dbconfig.write_text(f"process.executor = 'local'\nprocess.memory = {literal(db_memory)}\nexecutor.cpus = {db_cpus}\nexecutor.queueSize = 1\nconda.cacheDir = {literal(cache)}\n")
         preparation = [executable, '-c', str(dbconfig), '-log', str(logs / 'databases.log'),
                        'run', str(root / 'main.nf'),
@@ -327,6 +344,7 @@ def _run(args, root, output, control):
                     raise RuntimeError('Workflow did not produce required final outputs: ' + ', '.join(missing))
                 write_inventory(rows, output)
             from .report import build
+            failure_report(output, work, logs)
             build(output)
         receipt['status'] = 'complete'
         status_table = output / 'Assessment_status.tsv'
@@ -343,6 +361,7 @@ def _run(args, root, output, control):
                 receipt['status'] = 'complete_with_assessment_failures'
                 print(f'WARNING: {len(failures)} genome/tool assessments failed or could not complete; see {status_table}. All available results were retained.', flush=True)
     except BaseException:
+        failure_report(output, work, logs)
         receipt['status'] = 'failed'
         raise
     finally:

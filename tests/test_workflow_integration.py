@@ -28,10 +28,19 @@ class WorkflowIntegration(unittest.TestCase):
     def test_assessment_failures_continue_and_resume(self):
         self.exercise(False, failures=('checkm', 'gtdbtk', 'barrnap', 'tRNAscan-SE'))
 
+    def test_selective_rescue_with_changed_resources(self):
+        self.exercise(False, failures=('barrnap',), rescue=True)
+
+    def test_selective_rescue_mixed_batch(self):
+        self.exercise(False, failures=('barrnap-g0',), rescue=True)
+
+    def test_selective_rescue_heavy_batch(self):
+        self.exercise(False, failures=('checkm',), rescue=True)
+
     def test_phylogeny_without_ani(self):
         self.exercise(True, skip_ani=True)
 
-    def exercise(self, compact_mode, failures=(), skip_ani=False):
+    def exercise(self, compact_mode, failures=(), skip_ani=False, rescue=False):
         root = Path(__file__).resolve().parents[1]
         runtime = Path(os.environ.get('GQC_TEST_RUNTIME', root))
         with tempfile.TemporaryDirectory(prefix='gqc-integration-') as tmp:
@@ -88,6 +97,30 @@ class WorkflowIntegration(unittest.TestCase):
             with annotated.open() as handle:
                 rows = list(csv.DictReader(handle, delimiter='\t'))
             self.assertEqual({r['Genome_Id'] for r in rows}, {f'g{i}' for i in range(10)})
+            if rescue:
+                from genome_qc.rescue import prepare, failure_report
+                failure_report(output, work / 'work', output)
+                plan = prepare(output, work / 'work', output / '.genome_qc/rescue/test')
+                reuse = json.loads(plan.read_text())
+                self.assertEqual(len(reuse['checkm']['ids']), 0 if 'checkm' in failures else 10)
+                self.assertEqual(len(reuse['preprocess']['ids']), 10)
+                self.assertEqual(len(reuse['trna']['ids']), 10)
+                self.assertEqual(len(reuse['rrna']['ids']), 0 if 'barrnap' in failures else 9 if 'barrnap-g0' in failures else 10)
+                for name in failures: (bins / ('fail-' + name)).unlink()
+                # A successful heavy assessment MUST NOT execute during rescue.
+                for name in ('checkm', 'gtdbtk', 'gunc', 'tRNAscan-SE'):
+                    if name not in failures: (bins / ('fail-' + name)).touch()
+                params.update(rescue_plan=str(plan), small_batch_size=2, small_batch_cpus=1,
+                              checkm_parallel_batches=3, gtdbtk_parallel_batches=3, gunc_parallel_batches=3)
+                (work / 'params.json').write_text(json.dumps(params))
+                recovered = subprocess.run(command, cwd=work, env=env, text=True, capture_output=True, timeout=300)
+                self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+                with (output / 'Assessment_status.tsv').open() as handle:
+                    assessments = list(csv.DictReader(handle, delimiter='\t'))
+                self.assertFalse([r for r in assessments if r['status'] in ('failed','blocked','not_completed')], assessments)
+                if 'checkm' not in failures:
+                    self.assertNotIn('Submitted process > COMPLETE:CHECKM_SINGLE', recovered.stdout)
+                return
             if failures:
                 self.assertTrue(all(r['checkm_status'] == 'failed' for r in rows))
                 self.assertTrue(all(r['gtdbtk_status'] == 'failed' for r in rows))

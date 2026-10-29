@@ -37,6 +37,13 @@ class ExecutionTests(unittest.TestCase):
     def args(self, *extra):
         return parser().parse_args(['run', '-i', '/inputs', '-o', '/output', *extra])
 
+    def test_general_tasks_request_32gb_without_lowering_heavy_tools(self):
+        config, resources = configuration(self.args('--executor', 'slurm', '--account', 'test', '--threads', '8'), '/cache')
+        self.assertIn('process.memory = "32 GB"', config)
+        self.assertIn("withName: 'MERGE_MASTER|DEDUPE|QSCORE' { memory = '32 GB'", config)
+        self.assertEqual(resources['task_memory']['checkm'], '48 GB')
+        self.assertEqual(resources['task_memory']['gtdb'], '160 GB')
+
     def test_slurm_not_headnode_limited(self):
         with patch('genome_qc.execution.capacity', side_effect=AssertionError):
             config, resources = configuration(self.args('--executor', 'slurm', '--account', 'project',
