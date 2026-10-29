@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "genome-qc"
-version = "0.1.2"
+version = "0.1.3"
 description = "Genome quality assessment and genome atlas controller"
 requires-python = ">=3.11"
 dependencies = ["numpy", "pandas", "scipy", "matplotlib", "seaborn", "statsmodels"]

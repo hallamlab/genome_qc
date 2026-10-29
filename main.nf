@@ -1285,7 +1285,7 @@ workflow COMPLETE {
         }
         preprocessed = PREPROCESS_BATCH(preprocess_input).results.map { fs -> normalizeToList(fs)[0].parent }
         pruned = preprocessed.flatMap { dir ->
-            file("${dir}/*.fasta").with { value -> normalizeToList(value) }.findAll { it.exists() }.collect { f ->
+            files("${dir}/*.fasta").with { value -> normalizeToList(value) }.findAll { it.exists() }.collect { f ->
                 def stem = f.baseName
                 def at = stem.lastIndexOf('.')
                 tuple(stem.substring(0, at), stem.substring(at + 1), f)
@@ -1295,7 +1295,7 @@ workflow COMPLETE {
             def at = f.baseName.lastIndexOf('.')
             tuple(f.baseName.substring(0, at), f.baseName.substring(at + 1), f)
         })
-        stats = preprocessed.flatMap { dir -> normalizeToList(file("${dir}/*.seqkit.tsv")).findAll { it.exists() } }
+        stats = preprocessed.flatMap { dir -> normalizeToList(files("${dir}/*.seqkit.tsv")).findAll { it.exists() } }
         seqkit_combined = COMBINE_SEQKIT_STATS(stats.mix(Channel.fromList(rescuePaths('sequence_stats'))).toSortedList()).stats
 
         def checkmBatchSize = Math.max(1, params.checkm_batch_size as Integer)
@@ -1364,9 +1364,9 @@ workflow COMPLETE {
             }
         }
         rrna = RRNA_BATCH(rrna_input).results.map { fs -> normalizeToList(fs)[0].parent }
-        rrna_fastas = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.rRNA.fasta")) }.mix(Channel.fromList(rescuePaths('rrna', '.rRNA.fasta').findAll { rescueReady('rrna', it.name.replace('.rRNA.fasta', '')) && rescueReady('rrna_check', it.name.replace('.rRNA.fasta', '')) }))
-        rrna_gffs = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.rRNA.gff")) }.mix(Channel.fromList(rescuePaths('rrna', '.rRNA.gff').findAll { rescueReady('rrna', it.name.replace('.rRNA.gff', '')) && rescueReady('rrna_check', it.name.replace('.rRNA.gff', '')) }))
-        blast = rrna.flatMap { dir -> normalizeToList(file("${dir}/*.blastout")) }.mix(Channel.fromList(rescuePaths('rrna_check', '.blastout').findAll { rescueReady('rrna', it.name.replace('.blastout', '')) && rescueReady('rrna_check', it.name.replace('.blastout', '')) }))
+        rrna_fastas = rrna.flatMap { dir -> normalizeToList(files("${dir}/*.rRNA.fasta")) }.mix(Channel.fromList(rescuePaths('rrna', '.rRNA.fasta').findAll { rescueReady('rrna', it.name.replace('.rRNA.fasta', '')) && rescueReady('rrna_check', it.name.replace('.rRNA.fasta', '')) }))
+        rrna_gffs = rrna.flatMap { dir -> normalizeToList(files("${dir}/*.rRNA.gff")) }.mix(Channel.fromList(rescuePaths('rrna', '.rRNA.gff').findAll { rescueReady('rrna', it.name.replace('.rRNA.gff', '')) && rescueReady('rrna_check', it.name.replace('.rRNA.gff', '')) }))
+        blast = rrna.flatMap { dir -> normalizeToList(files("${dir}/*.blastout")) }.mix(Channel.fromList(rescuePaths('rrna_check', '.blastout').findAll { rescueReady('rrna', it.name.replace('.blastout', '')) && rescueReady('rrna_check', it.name.replace('.blastout', '')) }))
         barblast = COMPARE_BARRNAP(blast.toSortedList(), rrna_fastas.toSortedList(), rrna_gffs.toSortedList())
 
         dedupe = DEDUPE(qscore_for_dedupe, barblast.pass, gtdbtk)
@@ -1400,7 +1400,7 @@ workflow COMPLETE {
             }, batch.collect { it[2] })
         } }
         trna_results = TRNA_BATCH(trna_input).results.map { fs -> normalizeToList(fs)[0].parent }
-        trna_gffs = trna_results.flatMap { dir -> normalizeToList(file("${dir}/*.gff")) }
+        trna_gffs = trna_results.flatMap { dir -> normalizeToList(files("${dir}/*.gff")) }
 
         trna_counts = TRNASCAN_PARSE(trna_gffs.mix(Channel.fromList(rescuePaths('trna'))).toSortedList())
 
@@ -1408,7 +1408,7 @@ workflow COMPLETE {
         gunc_batches = GUNC(gunc_input.map { row -> new ArrayList(row) + [assessmentToken('gunc', "gunc_${row[0]}")] }).outdir.toSortedList()
         gunc = COMBINE_GUNC(gunc_batches.map { it + rescuePaths('gunc') }).outdir
 
-        rna_receipts = rrna.mix(trna_results).flatMap { dir -> normalizeToList(file("${dir}/*.assessment.json")) }
+        rna_receipts = rrna.mix(trna_results).flatMap { dir -> normalizeToList(files("${dir}/*.assessment.json")) }
         reused_receipts = ['checkm', 'gtdbtk', 'trna', 'gunc'].collectMany { rescueReceipts(it) }
         reused_receipts += ['rrna', 'rrna_check'].collectMany { stage -> rescueReceipts(stage).findAll { f ->
             def r = new groovy.json.JsonSlurper().parse(f.toFile())

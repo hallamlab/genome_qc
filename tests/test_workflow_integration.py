@@ -93,6 +93,7 @@ class WorkflowIntegration(unittest.TestCase):
                        '-params-file', str(work / 'params.json'), '-work-dir', str(work / 'work')]
             first = subprocess.run(command, cwd=work, env=env, text=True, capture_output=True, timeout=300)
             self.assertEqual(first.returncode, 0, first.stdout + first.stderr + (work / '.nextflow.log').read_text()[-12000:])
+            self.assertNotIn('glob pattern that matched a collection', first.stdout + first.stderr)
             annotated = output / 'genome_quality_atlas/genome_quality_annotated.tsv'
             with annotated.open() as handle:
                 rows = list(csv.DictReader(handle, delimiter='\t'))
@@ -115,6 +116,7 @@ class WorkflowIntegration(unittest.TestCase):
                 (work / 'params.json').write_text(json.dumps(params))
                 recovered = subprocess.run(command, cwd=work, env=env, text=True, capture_output=True, timeout=300)
                 self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+                self.assertNotIn('glob pattern that matched a collection', recovered.stdout + recovered.stderr)
                 with (output / 'Assessment_status.tsv').open() as handle:
                     assessments = list(csv.DictReader(handle, delimiter='\t'))
                 self.assertFalse([r for r in assessments if r['status'] in ('failed','blocked','not_completed')], assessments)
