@@ -262,10 +262,12 @@ def _run(args, root, output, control):
     logs.mkdir(parents=True)
     cfg = logs / 'controller.config'
     cfg.write_text(config)
+    if args.resume and prior_locations.get('rescue_plan'):
+        params['rescue_plan'] = prior_locations['rescue_plan']
     parameters = logs / 'params.json'
     parameters.write_text(json.dumps(params, indent=2) + '\n')
     scientific = {key: value for key, value in params.items()
-                  if key not in ('implementation_digest', 'compact_results', 'max_forks', 'small_batch_size', 'db_download_only', 'db_extract_only', 'db_attempts', 'db_urls') and not key.endswith(('_cpus', '_threads', '_memory', '_time', '_max_forks', '_parallel_batches'))}
+                  if key not in ('implementation_digest', 'rescue_plan', 'compact_results', 'max_forks', 'small_batch_size', 'db_download_only', 'db_extract_only', 'db_attempts', 'db_urls') and not key.endswith(('_cpus', '_threads', '_memory', '_time', '_max_forks', '_parallel_batches'))}
     identity = compact.signature(rows, scientific, params['implementation_digest'])
     session = 'analysis-session'
     if args.fresh_work:
@@ -293,11 +295,11 @@ def _run(args, root, output, control):
         params['rescue_plan'] = str(prepare_rescue(output, work, rescue_dir))
         parameters.write_text(json.dumps(params, indent=2) + '\n')
         session = 'rescue-session-' + stamp
-        cleanup_paths.append(control / session)
+        cleanup_paths.extend([control / session, *control.glob('analysis-session*'), *control.glob('rescue-session*')])
         print(f'Rescue plan: {params["rescue_plan"]}; resources are user-selected, without automatic escalation.', flush=True)
     settings_path.write_text(json.dumps(scientific, indent=2))
     if not args.plan:
-        locations_file.write_text(json.dumps({**locations, 'session_work': str(work), 'session': session}, indent=2))
+        locations_file.write_text(json.dumps({**locations, 'session_work': str(work), 'session': session, 'rescue_plan': params.get('rescue_plan', '')}, indent=2))
     executable = shutil.which('nextflow') or 'nextflow'
     command = [executable, '-c', str(cfg), '-log', str(logs / 'nextflow.log'),
                'run', str(root / 'main.nf'), '-params-file', str(parameters),
